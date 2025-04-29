@@ -1,0 +1,12 @@
+﻿{
+  "name": "com.fluxinteractive.alpinelib",
+  "displayName": "AlpineLib",
+  "description": "A simple library for use with Unity.",
+  "version": "0.0.1",
+  "unity": "6000.0",
+  "author": {
+    "name": "Flux Interactive",
+    "email": "hello@fluxinteractive.com.au",
+    "url": "https://fluxinteractive.com.au"
+  }
+}

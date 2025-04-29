@@ -1,0 +1,16 @@
+﻿{
+  "name": "FluxInteractive.AlpineLib",
+  "references": [
+    "FluxInteractive.AlpineLib.DI",
+    "FluxInteractive.AlpineLib.Arch"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}
