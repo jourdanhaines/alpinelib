@@ -140,7 +140,7 @@ namespace AlpineLib.DI {
         /// Registers a dependency provider and its provided dependencies.
         /// </summary>
         /// <param name="provider">The provider to register.</param>
-        private void RegisterProvider(IDependencyProvider provider) {
+        public void RegisterProvider(IDependencyProvider provider) {
             var methods = provider.GetType().GetMethods(bindingFlags);
 
             foreach (var method in methods) {
