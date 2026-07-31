@@ -1,8 +1,8 @@
 ﻿{
   "name": "com.fluxinteractive.alpinelib",
   "displayName": "AlpineLib",
-  "description": "A simple library for use with Unity.",
-  "version": "0.0.1",
+  "description": "Reusable gameplay systems for Unity: dependency injection, stats, needs, anatomical injuries, melee combat, AI perception, pointer input, spawning, and app bootstrap.",
+  "version": "0.1.0",
   "unity": "6000.0",
   "author": {
     "name": "Flux Interactive",
