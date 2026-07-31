@@ -1,0 +1,26 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 7d412e8c2a3d40e99e823ab1ecf106fa, type: 3}
+  m_Name: HumanoidBodyPlan
+  m_EditorClassIdentifier: FluxInteractive.AlpineLib::AlpineLib.Body.BodyPlanDefinition
+  parts:
+  - {fileID: 11400000, guid: 1f166bc8ff5a4ee5af93dd8c08a42d5e, type: 2}
+  - {fileID: 11400000, guid: f39ec75fa1b24cff835c5dca71f9715e, type: 2}
+  - {fileID: 11400000, guid: b5f7a470e78d4bd6ba5d20d46b690736, type: 2}
+  - {fileID: 11400000, guid: 0a13a46ecc0f427f8c29c2fc6d083801, type: 2}
+  - {fileID: 11400000, guid: 7366e6e19ae54c478f4974083e7195bf, type: 2}
+  - {fileID: 11400000, guid: d56e021b66dd483a8d66688ff23fc1a0, type: 2}
+  - {fileID: 11400000, guid: 9ca9f8c947b44cf1a8941dab78d608c0, type: 2}
+  - {fileID: 11400000, guid: be812d2731e349afb29a8de7605b2dd5, type: 2}
+  - {fileID: 11400000, guid: 424c48a6bd534021b9a34349619fe1ae, type: 2}
+  - {fileID: 11400000, guid: bd61cab6fb9a4bd0ac816739f5a68767, type: 2}
+  - {fileID: 11400000, guid: 3eb3040e458a46818d5f360ff79766b1, type: 2}
