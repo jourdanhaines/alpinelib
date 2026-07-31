@@ -32,8 +32,16 @@ namespace AlpineLib.DI {
         /// Called when the singleton instance is initialized. Registers providers and injects dependencies.
         /// </summary>
         protected override void Awake() {
+            if (HasInstance && !ReferenceEquals(Current, this)) {
+                // Installing the injector is racy by nature: it is created from a BeforeSceneLoad hook and
+                // by whoever touches Instance first. A second registry would hand out stale instances, so
+                // the loser of the race removes itself.
+                Destroy(gameObject);
+                return;
+            }
+
             base.Awake();
-            
+
             DontDestroyOnLoad(this);
 
             SceneManager.sceneLoaded += OnSceneLoaded;
@@ -163,6 +171,32 @@ namespace AlpineLib.DI {
                 _registry.Add(returnType, providedInstance);
                 
                 Debug.Log($"Provider registered {returnType.Name} from {provider.GetType().Name}");
+            }
+        }
+
+        /// <summary>
+        /// Unregisters a dependency provider, dropping the dependencies it supplied from the registry.
+        /// </summary>
+        /// <remarks>
+        /// Only entries the given provider supplied are removed, so a replacement that registered ahead of
+        /// this call survives. Call this before destroying a provider: a registry entry pointing at a
+        /// destroyed instance is injected into every object loaded afterwards.
+        /// </remarks>
+        /// <param name="provider">The provider to unregister.</param>
+        public void UnregisterProvider(IDependencyProvider provider) {
+            var methods = provider.GetType().GetMethods(bindingFlags);
+
+            foreach (var method in methods) {
+                if (!Attribute.IsDefined(method, typeof(ProvideAttribute))) continue;
+
+                var returnType = method.ReturnType;
+
+                if (!_registry.TryGetValue(returnType, out var registeredInstance)) continue;
+                if (!ReferenceEquals(registeredInstance, provider)) continue;
+
+                _registry.Remove(returnType);
+
+                Debug.Log($"Provider unregistered {returnType.Name} from {provider.GetType().Name}");
             }
         }
 
