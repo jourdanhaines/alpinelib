@@ -1,7 +1,11 @@
-﻿{
-  "name": "FluxInteractive.AlpineLib",
-  "references": [],
-  "includePlatforms": [],
+{
+  "name": "FluxInteractive.AlpineLib.Editor",
+  "references": [
+    "FluxInteractive.AlpineLib"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
   "excludePlatforms": [],
   "allowUnsafeCode": false,
   "overrideReferences": false,
