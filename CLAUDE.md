@@ -1,3 +1,7 @@
+# alpinelib
+
+Core reusable library for genre-agnostic Unity game development. Provides reusable systems (animation, networking, editor tooling, build pipelining, etc.) to make bootstrapping and developing Unity games easier and more consistent. No limits on scope of what it provides.
+
 ## Git Conventions
 
 - **Never** use `Co-authored-by` trailers.
