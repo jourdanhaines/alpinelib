@@ -135,6 +135,7 @@ namespace AlpineLib.Skills {
 
         private readonly List<SkillInstance> _skills = new();
         private readonly List<SkillInstance> _slots = new();
+        private readonly Dictionary<string, Transform> _spawnBoneCache = new();
 
         private Actor _actor;
         private ResourceSet _resources;
@@ -413,11 +414,55 @@ namespace AlpineLib.Skills {
         }
 
         private void LaunchProjectile(ProjectileSkillDefinition skill, int index, int count) {
-            Vector3 origin = projectileOrigin != null ? projectileOrigin.position : transform.position + Vector3.up;
+            Vector3 origin = ResolveProjectileOrigin(skill);
             Vector3 direction = ProjectilePatterns.GetDirection(skill.pattern, index, count, transform.forward, Vector3.up, skill.spreadAngle);
 
             var projectile = Instantiate(skill.projectilePrefab, origin, Quaternion.LookRotation(direction, Vector3.up));
             projectile.Launch(origin, direction, skill.projectileSpeed, skill.projectileLifetime, BuildDamagePacket(skill), gameObject);
+        }
+
+        /// <summary>
+        /// Position shots leave from: the skill's named bone when set and found, else the serialized
+        /// origin transform, else a metre above the actor's feet.
+        /// </summary>
+        /// <remarks>
+        /// Bone lookups are cached by name after the first search, so per-shot cost is a dictionary
+        /// hit. A named bone that does not exist under the animator falls back silently — the skill
+        /// still fires, just from the generic origin — because a rig swap should degrade aim polish,
+        /// not break the skill.
+        /// </remarks>
+        private Vector3 ResolveProjectileOrigin(ProjectileSkillDefinition skill) {
+            Transform bone = ResolveSpawnBone(skill.spawnBoneName);
+            if (bone != null) return bone.position;
+            if (projectileOrigin != null) return projectileOrigin.position;
+
+            return transform.position + Vector3.up;
+        }
+
+        private Transform ResolveSpawnBone(string boneName) {
+            if (string.IsNullOrEmpty(boneName)) return null;
+            if (_actor == null || _actor.Animator == null) return null;
+            if (_spawnBoneCache.TryGetValue(boneName, out Transform cached)) return cached;
+
+            Transform bone = FindDescendant(_actor.Animator.transform, boneName);
+            _spawnBoneCache[boneName] = bone;
+
+            return bone;
+        }
+
+        /// <summary>
+        /// Depth-first search for a descendant transform by exact name, including the root itself.
+        /// </summary>
+        /// <returns>The matching transform, or null when the hierarchy contains no such name.</returns>
+        private static Transform FindDescendant(Transform root, string name) {
+            if (root.name == name) return root;
+
+            foreach (Transform child in root) {
+                var found = FindDescendant(child, name);
+                if (found != null) return found;
+            }
+
+            return null;
         }
 
         /// <remarks>

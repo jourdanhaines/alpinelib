@@ -27,6 +27,17 @@ namespace AlpineLib.Skills {
         public Projectile projectilePrefab;
 
         /// <summary>
+        /// Name of the bone shots spawn from, searched for under the actor's animator. Empty falls
+        /// back to the <see cref="SkillSystem"/>'s serialized origin transform.
+        /// </summary>
+        /// <remarks>
+        /// Only the spawn position comes from the bone — direction always follows the actor's
+        /// facing, so a hand mid-swing never flings a shot sideways.
+        /// </remarks>
+        [Tooltip("Bone the shots spawn from (e.g. mixamorig1:LeftHand); empty uses the skill system's origin transform")]
+        public string spawnBoneName;
+
+        /// <summary>
         /// Normalized animation time at which the volley starts. For a spiral this is when the first
         /// shot leaves, not the whole volley.
         /// </summary>
