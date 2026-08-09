@@ -157,6 +157,20 @@ namespace AlpineLib.Skills {
 
             if (hitBox != null)
                 hitBox.Init(this);
+
+            EnsureUpperBodyAim();
+        }
+
+        /// <summary>
+        /// Adds an <see cref="UpperBodyAim"/> to the animator's GameObject when none is present, so
+        /// upper-body skills aim where the actor faces without per-prefab wiring. Hand-place the
+        /// component on the animator to override its default weights.
+        /// </summary>
+        private void EnsureUpperBodyAim() {
+            if (_actor == null || _actor.Animator == null) return;
+            if (_actor.Animator.GetComponent<UpperBodyAim>() != null) return;
+
+            _actor.Animator.gameObject.AddComponent<UpperBodyAim>();
         }
 
         protected override void OnOwnerDeath() {
