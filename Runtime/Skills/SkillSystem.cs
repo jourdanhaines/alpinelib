@@ -32,11 +32,14 @@ namespace AlpineLib.Skills {
     /// <see cref="ModifierOperation.Multiply"/> modifier for as long as they run.
     /// </para>
     /// <para>
-    /// A full-body <see cref="MeleeSkillDefinition"/> runs as a chain of
-    /// <see cref="MeleeComboStage"/> swings. Each stage names an animator trigger, and every stage
-    /// must land in its own state tagged "Attack": the chain is followed by watching that layer's
-    /// current state change from one Attack-tagged state to the next, so two stages sharing a state
-    /// read as one swing. Re-using the running skill while a stage is past its
+    /// A <see cref="MeleeSkillDefinition"/> runs as a chain of
+    /// <see cref="MeleeComboStage"/> swings on whichever layer its body domain plays on — an
+    /// upper-body chain keeps the base layer animating locomotion, which is how a weave attacks
+    /// while the legs keep walking. Each stage names an animator trigger, and every stage must land
+    /// in its own state carrying the domain's tag: the chain is followed by watching that layer's
+    /// current state change from one tagged state to the next, so two stages sharing a state read
+    /// as one swing. Stage movement is code-driven by the possessing controller, so staged skills
+    /// suppress root motion per stage on any domain. Re-using the running skill while a stage is past its
     /// <see cref="MeleeComboStage.comboWindowStart"/> buffers an advance, which fires at
     /// <see cref="MeleeComboStage.comboAdvanceTime"/> — that must sit before the state's exit
     /// transition, which by convention leaves attack states at normalized time 0.9, or the animator
@@ -127,22 +130,23 @@ namespace AlpineLib.Skills {
         public int ActiveStageIndex => _stageIndex;
 
         /// <summary>
-        /// How much of the actor's movement the active skill gives back, or null when no full-body
-        /// skill is running and the controller owns movement outright.
+        /// How much of the actor's movement the active skill claims, or null when the controller
+        /// owns movement outright.
         /// </summary>
         /// <remarks>
         /// A staged melee skill reports its current stage's own
-        /// <see cref="MeleeComboStage.locomotion"/>; every other full-body skill reports
-        /// <see cref="StageLocomotion.Locked"/>, which is the behaviour full-body skills have always
-        /// had. Upper-body skills report null rather than a mode, because they never claimed
-        /// movement in the first place — they only slow it.
+        /// <see cref="MeleeComboStage.locomotion"/> regardless of body domain — an upper-body combo
+        /// still steers or carries momentum through its stages even though its legs keep animating.
+        /// A non-staged full-body skill reports <see cref="StageLocomotion.Locked"/>, the behaviour
+        /// full-body skills have always had. Non-staged upper-body skills report null rather than a
+        /// mode, because they never claimed movement in the first place — they only slow it.
         /// </remarks>
         public StageLocomotion? ActiveStageLocomotion {
             get {
-                if (!IsFullBodySkillActive()) return null;
-
                 var stage = ActiveStage;
-                return stage != null ? stage.locomotion : StageLocomotion.Locked;
+                if (stage != null) return stage.locomotion;
+
+                return IsFullBodySkillActive() ? StageLocomotion.Locked : (StageLocomotion?)null;
             }
         }
 
@@ -160,12 +164,20 @@ namespace AlpineLib.Skills {
 
         /// <inheritdoc />
         /// <remarks>
-        /// Only full-body skills suppress, and only when they have not opted into root motion — a
-        /// lunge is expected to carry the actor, a stationary swing is not. A staged melee skill
-        /// answers per stage, so a combo can plant its opener and let only its finisher travel;
-        /// suppression is therefore re-evaluated on every stage change rather than once per skill.
+        /// A staged melee skill suppresses on any stage that has not opted into root motion,
+        /// whatever its body domain: stage movement is code-driven by the possessing controller, so
+        /// forwarding the base layer's locomotion root motion at the same time would double-move the
+        /// actor. Non-staged skills keep the original rule — full body suppresses unless the skill
+        /// opted in (a lunge is expected to carry the actor), upper body never suppresses so a cast
+        /// keeps walking on root motion. Re-evaluated every stage change rather than once per skill.
         /// </remarks>
-        public bool IsSuppressingRootMotion => IsFullBodySkillActive() && !UsesRootMotion();
+        public bool IsSuppressingRootMotion {
+            get {
+                if (ActiveStage != null) return !UsesRootMotion();
+
+                return IsFullBodySkillActive() && !UsesRootMotion();
+            }
+        }
 
         /// <summary>
         /// Degrees of turn the active skill still allows. Zero when no skill is running, so
@@ -447,31 +459,37 @@ namespace AlpineLib.Skills {
         private void TickActiveSkill() {
             if (_actor.Animator == null) return;
 
-            if (_active.Definition.bodyDomain != SkillBodyDomain.FullBody) {
-                TickAnimatorDrivenSkill(upperBodyLayerIndex, UpperBodyStateTag);
-                return;
-            }
+            bool isFullBody = _active.Definition.bodyDomain == SkillBodyDomain.FullBody;
 
             if (_runtimeStages != null) {
-                TickStagedMeleeSkill();
+                TickStagedMeleeSkill(
+                    isFullBody ? fullBodyLayerIndex : upperBodyLayerIndex,
+                    isFullBody ? FullBodyStateTag : UpperBodyStateTag);
                 return;
             }
 
-            TickAnimatorDrivenSkill(fullBodyLayerIndex, FullBodyStateTag);
+            if (isFullBody) {
+                TickAnimatorDrivenSkill(fullBodyLayerIndex, FullBodyStateTag);
+                return;
+            }
+
+            TickAnimatorDrivenSkill(upperBodyLayerIndex, UpperBodyStateTag);
         }
 
         /// <summary>
-        /// Drives a full-body melee chain: waits for each stage's clip to actually take over the
-        /// full-body layer, runs that stage's damage window, and hands off to the next stage when a
-        /// buffered press comes due.
+        /// Drives a staged melee chain on the layer its body domain plays on: waits for each stage's
+        /// clip to actually take over that layer, runs that stage's damage window, and hands off to
+        /// the next stage when a buffered press comes due.
         /// </summary>
         /// <remarks>
         /// <para>
         /// This replaces the entered/left latch <see cref="TickAnimatorDrivenSkill"/> uses, because
-        /// that latch cannot tell one swing from the next: consecutive stages are both tagged
-        /// "Attack", so "still in a tagged state" is true across the whole chain. Stages are
-        /// separated by identity instead — the state's <c>fullPathHash</c> — and the skill ends the
-        /// moment the layer leaves the state the current stage claimed.
+        /// that latch cannot tell one swing from the next: consecutive stages carry the same tag, so
+        /// "still in a tagged state" is true across the whole chain. Stages are separated by
+        /// identity instead — the state's <c>fullPathHash</c> — and the skill ends the moment the
+        /// layer leaves the state the current stage claimed. An upper-body chain works exactly the
+        /// same way through "UpperSkill"-tagged states on the upper-body layer, with the base layer
+        /// left free to keep animating locomotion.
         /// </para>
         /// <para>
         /// Hence the wait branch. During the crossfade into the next stage,
@@ -484,9 +502,9 @@ namespace AlpineLib.Skills {
         /// skill's own trigger was just fired at it.
         /// </para>
         /// </remarks>
-        private void TickStagedMeleeSkill() {
-            var stateInfo = _actor.Animator.GetCurrentAnimatorStateInfo(fullBodyLayerIndex);
-            bool inSkillState = stateInfo.IsTag(FullBodyStateTag);
+        private void TickStagedMeleeSkill(int layerIndex, string stateTag) {
+            var stateInfo = _actor.Animator.GetCurrentAnimatorStateInfo(layerIndex);
+            bool inSkillState = stateInfo.IsTag(stateTag);
 
             if (!_stageEntered && !TryClaimStageState(stateInfo, inSkillState)) return;
 
@@ -510,8 +528,8 @@ namespace AlpineLib.Skills {
         }
 
         /// <summary>
-        /// Binds the current stage to the animator state now playing, once that state is both
-        /// Attack-tagged and no longer the one the previous stage was in.
+        /// Binds the current stage to the animator state now playing, once that state carries the
+        /// chain's tag and is no longer the one the previous stage was in.
         /// </summary>
         /// <returns>True once the stage owns a state; false while still waiting for the transition.</returns>
         /// <remarks>
