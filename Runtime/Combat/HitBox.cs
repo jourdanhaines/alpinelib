@@ -5,7 +5,7 @@ namespace AlpineLib.Combat {
     /// <summary>
     /// The business end of a weapon or limb: a kinematic trigger collider that stays disabled until
     /// the attack's damage window opens, then reports every <see cref="HurtBox"/> it overlaps back to
-    /// the <see cref="CombatSystem"/> that drives it.
+    /// the <see cref="IHitBoxOwner"/> that drives it.
     /// </summary>
     /// <remarks>
     /// Targets are de-duplicated for the duration of one activation, so a swing never hits the same
@@ -17,7 +17,7 @@ namespace AlpineLib.Combat {
         [Tooltip("Stop after the first target this swing connects with")]
         [SerializeField] private bool isSingleHit = true;
 
-        private CombatSystem _combat;
+        private IHitBoxOwner _owner;
         private Collider _collider;
         private bool _hasConnected;
         private readonly HashSet<HurtBox> _hitTargets = new();
@@ -34,10 +34,15 @@ namespace AlpineLib.Combat {
         }
 
         /// <summary>
-        /// Tells this hit box which combat system to report contacts to. Called by that system on start.
+        /// Tells this hit box who to report contacts to. Called by that owner on start.
         /// </summary>
-        public void Init(CombatSystem combat) {
-            _combat = combat;
+        /// <param name="owner">Driver of this hit box — a combat system, a projectile, a hazard.</param>
+        /// <remarks>
+        /// Must be called before the first <see cref="Activate"/>: an un-initialized hit box that is
+        /// opened will throw on its first contact rather than silently swallow hits.
+        /// </remarks>
+        public void Init(IHitBoxOwner owner) {
+            _owner = owner;
         }
 
         /// <summary>
@@ -96,7 +101,7 @@ namespace AlpineLib.Combat {
             if (isSingleHit)
                 _hasConnected = true;
 
-            _combat.OnHitBoxContact(hurtBox);
+            _owner.OnHitBoxContact(hurtBox);
         }
     }
 }

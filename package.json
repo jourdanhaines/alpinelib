@@ -1,8 +1,8 @@
 ﻿{
   "name": "com.fluxinteractive.alpinelib",
   "displayName": "AlpineLib",
-  "description": "Reusable gameplay systems for Unity: dependency injection, stats, needs, anatomical injuries, melee combat, AI perception, pointer input, spawning, and app bootstrap.",
-  "version": "0.2.0",
+  "description": "Reusable gameplay systems for Unity: dependency injection, tagged stats, needs, anatomical injuries, melee combat, projectiles, skills, equipment, passive progression, AI perception, pointer input, spawning, and app bootstrap.",
+  "version": "0.3.0",
   "unity": "6000.0",
   "author": {
     "name": "Flux Interactive",

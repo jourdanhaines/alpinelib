@@ -55,20 +55,38 @@ namespace AlpineLib.Actors {
         /// </summary>
         public Vector3 Velocity { get; private set; }
 
+        /// <summary>
+        /// True while the <see cref="CharacterController"/> reports ground contact from its last move.
+        /// </summary>
+        /// <remarks>
+        /// False for every frame before <c>Start</c> has resolved the controller, so callers polling this
+        /// from their own <c>Awake</c> see "airborne" rather than a null reference.
+        /// </remarks>
+        public bool IsGrounded => Controller != null && Controller.isGrounded;
+
         [SerializeField] private bool useRootMotion;
 
         [Header("Stats")]
         [SerializeField] private StatDefinition moveSpeedStat;
         [SerializeField] private StatDefinition rotationSpeedStat;
 
+        [Header("Gravity")]
+        [Tooltip("Downward acceleration in metres per second squared. Negative points at the floor.")]
+        [SerializeField] private float gravity = -20f;
+        [Tooltip("Upward speed in metres per second applied on the frame a jump starts.")]
+        [SerializeField] private float jumpSpeed = 4.5f;
+
         [Header("Animator Parameters")]
         [SerializeField] private string speedParameter = "Speed";
         [SerializeField] private string turnParameter = "Turn";
+        [SerializeField] private string jumpParameter = "Jump";
 
         private int _speedParameterHash;
         private int _turnParameterHash;
+        private int _jumpParameterHash;
         private float _currentSpeed;
         private float _currentTurn;
+        private float _verticalVelocity;
         private Vector3 _previousPosition;
         private bool _isLocomotionSuppressed;
         private bool _isRotationLocked;
@@ -76,6 +94,7 @@ namespace AlpineLib.Actors {
         protected virtual void Awake() {
             _speedParameterHash = UnityEngine.Animator.StringToHash(speedParameter);
             _turnParameterHash = UnityEngine.Animator.StringToHash(turnParameter);
+            _jumpParameterHash = UnityEngine.Animator.StringToHash(jumpParameter);
         }
 
         protected virtual void Start() {
@@ -95,6 +114,8 @@ namespace AlpineLib.Actors {
         }
 
         protected virtual void LateUpdate() {
+            ApplyGravity();
+
             if (!_isLocomotionSuppressed) {
                 Animator.SetFloat(_speedParameterHash, _currentSpeed);
                 Animator.SetFloat(_turnParameterHash, _currentTurn);
@@ -105,6 +126,48 @@ namespace AlpineLib.Actors {
 
             _currentSpeed = 0f;
             _currentTurn = 0f;
+        }
+
+        /// <summary>
+        /// Integrates vertical velocity and feeds it to the controller once per frame, so actors fall off
+        /// ledges and land instead of walking on air.
+        /// </summary>
+        /// <remarks>
+        /// Grounded actors are parked at a small negative velocity rather than zero: a
+        /// <see cref="CharacterController"/> only reports <c>isGrounded</c> after a move that pushes it
+        /// into the floor, so a true zero makes ground contact flicker on slopes and steps. The
+        /// controller is resolved in <c>Start</c>, so this must tolerate the frames before that; dead
+        /// actors are skipped because <see cref="Kill"/> disables the controller entirely.
+        /// </remarks>
+        private void ApplyGravity() {
+            if (!IsAlive) return;
+            if (Controller == null) return;
+
+            if (Controller.isGrounded && _verticalVelocity < 0f) {
+                _verticalVelocity = -2f;
+            } else {
+                _verticalVelocity += gravity * Time.deltaTime;
+            }
+
+            Controller.Move(Vector3.up * (_verticalVelocity * Time.deltaTime));
+        }
+
+        /// <summary>
+        /// Launches the actor upwards at <c>jumpSpeed</c>, if it is alive and standing on something.
+        /// </summary>
+        /// <remarks>
+        /// The jump trigger is only ever set from here, so animator controllers that do not declare the
+        /// parameter — zombies and every actor in games that never call this — never see it and never log
+        /// a missing-parameter warning.
+        /// </remarks>
+        public void Jump() {
+            if (!IsAlive) return;
+            if (!IsGrounded) return;
+
+            _verticalVelocity = jumpSpeed;
+
+            if (Animator == null) return;
+            Animator.SetTrigger(_jumpParameterHash);
         }
 
         /// <summary>

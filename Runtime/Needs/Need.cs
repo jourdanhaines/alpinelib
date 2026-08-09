@@ -184,7 +184,7 @@ namespace AlpineLib.Needs {
         private void ApplyModifiers(Threshold threshold) {
             if (threshold.Modifiers == null) return;
             foreach (var modifier in threshold.Modifiers) {
-                var sourced = new StatModifier(modifier.Stat, modifier.Operation, modifier.Value, threshold, modifier.Priority);
+                var sourced = new StatModifier(modifier.Stat, modifier.Operation, modifier.Value, threshold, modifier.Tags, modifier.Priority);
                 _stats.AddModifier(sourced);
             }
         }

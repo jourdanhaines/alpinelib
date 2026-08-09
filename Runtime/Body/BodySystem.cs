@@ -128,7 +128,7 @@ namespace AlpineLib.Body {
             if (injury.Modifiers == null) return;
 
             foreach (var modifier in injury.Modifiers) {
-                var sourced = new StatModifier(modifier.Stat, modifier.Operation, modifier.Value, injury, modifier.Priority);
+                var sourced = new StatModifier(modifier.Stat, modifier.Operation, modifier.Value, injury, modifier.Tags, modifier.Priority);
                 _stats.AddModifier(sourced);
             }
         }

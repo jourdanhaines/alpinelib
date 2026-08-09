@@ -18,15 +18,28 @@ namespace AlpineLib.Editor {
         private const string logPrefix = "[AlpineLib] AssetValidator";
 
         /// <summary>
-        /// Serialized object references that must be assigned, keyed by the runtime type name that
-        /// declares them. Deliberately keyed by string rather than by <see cref="Type"/> so the
-        /// validator keeps working while these types are being moved between assemblies or do not
-        /// exist yet — an entry whose type is absent from the project is skipped silently.
+        /// Serialized fields that must be filled in, keyed by the runtime type name that declares
+        /// them. Deliberately keyed by string rather than by <see cref="Type"/> so the validator keeps
+        /// working while these types are being moved between assemblies or do not exist yet — an entry
+        /// whose type is absent from the project is skipped silently.
         /// </summary>
+        /// <remarks>
+        /// One entry per type: the field picked is the one whose absence turns the asset into a silent
+        /// no-op rather than a visible error. An unassigned <c>animationTrigger</c>, for instance,
+        /// leaves a skill that consumes its cost and never plays, which is far harder to trace back
+        /// than a failed import.
+        /// </remarks>
         private static readonly Dictionary<string, string> criticalFields = new Dictionary<string, string> {
             { "SpawnConfig", "spawnActorPrefab" },
             { "HurtBox", "bodyPart" },
-            { "BodySystem", "bodyPlan" }
+            { "BodySystem", "bodyPlan" },
+            { "MeleeSkillDefinition", "animationTrigger" },
+            { "ProjectileSkillDefinition", "projectilePrefab" },
+            { "WeaponDefinition", "locomotionOverride" },
+            { "LoadoutDefinition", "weapon" },
+            { "ClassDefinition", "passiveTree" },
+            { "SpecializationDefinition", "parentClass" },
+            { "StatConversionDefinition", "target" }
         };
 
         /// <summary>
@@ -137,12 +150,29 @@ namespace AlpineLib.Editor {
                 return;
             }
 
-            // A non-reference property means the field has not been migrated to an asset
-            // reference yet; the assertion only applies to its final object-reference form.
-            if (property.propertyType != SerializedPropertyType.ObjectReference) return;
-            if (property.objectReferenceValue != null) return;
+            if (IsCriticalFieldFilled(property)) return;
 
             failures.Add($"{assetPath}: {typeName}.{propertyName} is not assigned.");
+        }
+
+        /// <summary>
+        /// True when a critical field carries a usable value.
+        /// </summary>
+        /// <remarks>
+        /// Only object references and strings are judged. Any other property type means the field has
+        /// not been migrated to its final form yet, and is treated as filled so a table entry written
+        /// ahead of a refactor cannot fail the gate on shape alone.
+        /// </remarks>
+        private static bool IsCriticalFieldFilled(SerializedProperty property) {
+            if (property.propertyType == SerializedPropertyType.ObjectReference) {
+                return property.objectReferenceValue != null;
+            }
+
+            if (property.propertyType == SerializedPropertyType.String) {
+                return !string.IsNullOrWhiteSpace(property.stringValue);
+            }
+
+            return true;
         }
 
         private static List<string> GatherAssetPaths(string extension) {

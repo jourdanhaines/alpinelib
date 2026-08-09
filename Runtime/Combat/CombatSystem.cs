@@ -20,7 +20,7 @@ namespace AlpineLib.Combat {
     /// clip does.
     /// </remarks>
     [RequireComponent(typeof(Actor))]
-    public class CombatSystem : ActorSubsystem, IRootMotionSuppressor {
+    public class CombatSystem : ActorSubsystem, IRootMotionSuppressor, IHitBoxOwner {
         [Tooltip("Attacks this actor can perform, indexed in order")]
         [SerializeField] private AttackDefinition[] attacks;
 
