@@ -51,9 +51,12 @@ namespace AlpineLib.Equipment {
         private RuntimeAnimatorController _originalController;
         private bool _hasCachedController;
 
-        protected override void Start() {
-            base.Start();
-
+        /// <remarks>
+        /// Sibling references are resolved here rather than in <c>Start</c> because loadout appliers
+        /// equip a weapon on a freshly spawned actor from the spawner's <c>Start</c>, before this
+        /// component's own <c>Start</c> has run.
+        /// </remarks>
+        private void Awake() {
             _actor = GetComponent<Actor>();
             _stats = GetComponent<StatSheet>();
             _skills = GetComponent<SkillSystem>();

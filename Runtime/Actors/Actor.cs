@@ -91,13 +91,18 @@ namespace AlpineLib.Actors {
         private bool _isLocomotionSuppressed;
         private bool _isRotationLocked;
 
+        /// <remarks>
+        /// Component references are resolved here rather than in <c>Start</c> so systems configuring a
+        /// freshly spawned actor — equipment, passives, loadout appliers — can reach
+        /// <see cref="Animator"/> and <see cref="Stats"/> immediately. Spawners commonly instantiate
+        /// and configure an actor from another component's <c>Start</c>, which runs before this
+        /// actor's own <c>Start</c> would have.
+        /// </remarks>
         protected virtual void Awake() {
             _speedParameterHash = UnityEngine.Animator.StringToHash(speedParameter);
             _turnParameterHash = UnityEngine.Animator.StringToHash(turnParameter);
             _jumpParameterHash = UnityEngine.Animator.StringToHash(jumpParameter);
-        }
 
-        protected virtual void Start() {
             Controller = GetComponent<CharacterController>();
             Controller.minMoveDistance = 0f;
             Stats = GetComponent<StatSheet>();
@@ -136,7 +141,7 @@ namespace AlpineLib.Actors {
         /// Grounded actors are parked at a small negative velocity rather than zero: a
         /// <see cref="CharacterController"/> only reports <c>isGrounded</c> after a move that pushes it
         /// into the floor, so a true zero makes ground contact flicker on slopes and steps. The
-        /// controller is resolved in <c>Start</c>, so this must tolerate the frames before that; dead
+        /// controller reference is still guarded for objects whose <c>Awake</c> has not run; dead
         /// actors are skipped because <see cref="Kill"/> disables the controller entirely.
         /// </remarks>
         private void ApplyGravity() {
