@@ -11,9 +11,19 @@ namespace AlpineLib.Animation {
     /// <list type="bullet">
     /// <item><description><c>Speed</c> — signed forward locomotion speed, driven every frame by the actor.</description></item>
     /// <item><description><c>Turn</c> — signed turn rate, driven every frame by the actor.</description></item>
-    /// <item><description><c>SlowWalk</c> — 0 to 1 blend towards the slow walk / aiming gait.</description></item>
-    /// <item><description><c>StrafeX</c>, <c>StrafeY</c> — local-space strafe direction used while the actor
-    /// holds a facing independent of its movement direction.</description></item>
+    /// <item><description><c>StrafeX</c>, <c>StrafeY</c> — local-space movement direction, <c>+X</c> right and
+    /// <c>+Y</c> forward, scaled the same way as <c>Speed</c>. Driven every frame by the actor whenever its
+    /// animator controller declares both, which is what lets a controller blend movement against a facing
+    /// the camera or a skill stage is steering independently. Controllers that declare neither are never
+    /// written to.</description></item>
+    /// </list>
+    ///
+    /// Legacy parameters — hashed here for games that still reference them, but not driven by any library
+    /// system:
+    /// <list type="bullet">
+    /// <item><description><c>SlowWalk</c> — Bool, not a float blend, despite living alongside the float
+    /// hashes. Nothing in the library reads or writes it; a game that wants a slow walk gait owns both
+    /// ends of it.</description></item>
     /// </list>
     ///
     /// Trigger parameters:
@@ -30,9 +40,13 @@ namespace AlpineLib.Animation {
     /// <item><description><c>Stagger</c> — every stagger state, so the stagger system knows when the reaction ends.</description></item>
     /// </list>
     ///
-    /// Motion: locomotion, attack and stagger clips must carry root motion, and the actor's animator
-    /// needs <c>applyRootMotion</c> enabled so movement is delivered through <c>OnAnimatorMove</c>
-    /// instead of being integrated in code.
+    /// Motion: locomotion clips carry root motion, and a root motion actor enables
+    /// <c>applyRootMotion</c> so locomotion displacement arrives through <c>OnAnimatorMove</c> instead of
+    /// being integrated in code. Skill clips are not held to that rule — each skill stage opts into root
+    /// motion individually, and a stage that opts out has its root motion suppressed and its displacement
+    /// driven from code instead. Code driven displacement during such a stage is the intended path, not a
+    /// workaround, because a stage may need to travel at a speed or along a direction the authored clip
+    /// does not encode.
     /// </remarks>
     public static class AnimatorParameters {
         /// <summary>Float. Forward locomotion speed.</summary>
@@ -47,13 +61,13 @@ namespace AlpineLib.Animation {
         /// <summary>Trigger. Death animation.</summary>
         public static readonly int Die = Animator.StringToHash("Die");
 
-        /// <summary>Float. Blend towards the slow walk gait.</summary>
+        /// <summary>Bool. Legacy slow walk / aiming gait flag, unused by library systems.</summary>
         public static readonly int SlowWalk = Animator.StringToHash("SlowWalk");
 
-        /// <summary>Float. Local-space strafe direction on the X axis.</summary>
+        /// <summary>Float. Local-space movement direction on the X axis, positive to the actor's right.</summary>
         public static readonly int StrafeX = Animator.StringToHash("StrafeX");
 
-        /// <summary>Float. Local-space strafe direction on the Y axis.</summary>
+        /// <summary>Float. Local-space movement direction on the Y axis, positive along the actor's forward.</summary>
         public static readonly int StrafeY = Animator.StringToHash("StrafeY");
     }
 }

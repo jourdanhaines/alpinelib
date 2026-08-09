@@ -34,8 +34,15 @@ namespace AlpineLib.Combat {
         public bool IsStaggered { get; private set; }
 
         /// <summary>
-        /// Raised when a stagger lands.
+        /// Raised when a stagger lands, before the actor is pinned, so listeners can interrupt
+        /// whatever they were doing.
         /// </summary>
+        /// <remarks>
+        /// Raised after <see cref="IsStaggered"/> is set but before <c>SuppressLocomotion</c> and
+        /// <c>LockRotation</c>, for the same reason <see cref="CombatSystem.CancelAttack"/> is called
+        /// first: an interrupted action typically resumes locomotion as it tears down, and that must
+        /// not land after the stagger has suppressed it or the actor walks through its own stagger.
+        /// </remarks>
         public event Action OnStaggerStarted;
 
         /// <summary>
@@ -113,11 +120,11 @@ namespace AlpineLib.Combat {
             IsStaggered = true;
             _enteredStaggerState = false;
 
+            OnStaggerStarted?.Invoke();
+
             _actor.SuppressLocomotion();
             _actor.LockRotation();
             _actor.Animator.SetTrigger(animationTrigger);
-
-            OnStaggerStarted?.Invoke();
         }
 
         private void FinishStagger() {
