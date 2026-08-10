@@ -24,6 +24,11 @@ namespace AlpineLib.Actors {
     /// The actor owns movement and liveness only. Health, damage reactions and game specific idle
     /// behaviour belong on sibling components, which react to <see cref="OnDeath"/> rather than being
     /// switched off from here.
+    ///
+    /// Code-driven actors move in two regimes: grounded displacement is direct and instant, while
+    /// airborne displacement integrates a horizontal velocity carried from the last grounded stride
+    /// and steered at <see cref="airAcceleration"/> — see <see cref="UpdateAirLocomotion"/>. The old
+    /// instant air steering is recoverable with a very large acceleration and drag.
     /// </remarks>
     [RequireComponent(typeof(CharacterController))]
     [RequireComponent(typeof(StatSheet))]
@@ -77,6 +82,14 @@ namespace AlpineLib.Actors {
         [Tooltip("Upward speed in metres per second applied on the frame a jump starts.")]
         [SerializeField] private float jumpSpeed = 4.5f;
 
+        [Header("Air Locomotion")]
+        [Tooltip("Horizontal steering acceleration while airborne, in metres per second squared. " +
+                 "Higher values give more air control; very large values approach instant air steering.")]
+        [SerializeField] private float airAcceleration = 10f;
+        [Tooltip("Exponential decay per second applied to horizontal air velocity while no move input " +
+                 "is held. Zero carries momentum through the whole arc; large values approach a hard stop.")]
+        [SerializeField] private float airDrag;
+
         [Header("Animator Parameters")]
         [SerializeField] private string speedParameter = "Speed";
         [SerializeField] private string turnParameter = "Turn";
@@ -96,6 +109,13 @@ namespace AlpineLib.Actors {
         private float _currentTurn;
         private Vector2 _currentStrafe;
         private float _verticalVelocity;
+        private Vector3 _airVelocity;
+        private Vector3 _groundedVelocity;
+        private Vector3 _airMoveTarget;
+        private bool _hasAirIntentThisFrame;
+        private bool _groundedMoveThisFrame;
+        private bool _kinematicMoveThisFrame;
+        private bool _wasAirborne;
         private Vector3 _previousPosition;
         private bool _isLocomotionSuppressed;
         private bool _isRotationLocked;
@@ -157,6 +177,7 @@ namespace AlpineLib.Actors {
         }
 
         protected virtual void LateUpdate() {
+            UpdateAirLocomotion();
             ApplyGravity();
 
             if (!_isLocomotionSuppressed) {
@@ -169,6 +190,58 @@ namespace AlpineLib.Actors {
             _currentSpeed = 0f;
             _currentTurn = 0f;
             _currentStrafe = Vector2.zero;
+            _groundedMoveThisFrame = false;
+            _hasAirIntentThisFrame = false;
+            _kinematicMoveThisFrame = false;
+        }
+
+        /// <summary>
+        /// Integrates horizontal velocity for a code-driven actor while it is airborne, running before
+        /// gravity so each frame resolves horizontal then vertical like the grounded path does.
+        /// </summary>
+        /// <remarks>
+        /// The velocity is seeded from the last grounded stride on the frame the actor leaves the
+        /// ground, steered towards this frame's <see cref="Move"/> target at <see cref="airAcceleration"/>
+        /// while input is held, and decayed by <see cref="airDrag"/> while it is not — so momentum is
+        /// carried through the arc instead of stopping the instant input is released. A frame already
+        /// displaced through <see cref="MoveKinematic"/> is skipped entirely: the caller owns that frame.
+        ///
+        /// Root motion actors are exempt because their air displacement is authored into the animation;
+        /// integrating a second velocity under them would fight the clip. Grounded frames clear all air
+        /// state, and a grounded frame without a <see cref="Move"/> call zeroes the stored stride so a
+        /// standing walk-off drops straight down — matching the instant stop ground movement already has.
+        /// </remarks>
+        private void UpdateAirLocomotion() {
+            if (!IsAlive || Controller == null || useRootMotion) return;
+
+            if (IsGrounded) {
+                if (!_groundedMoveThisFrame) {
+                    _groundedVelocity = Vector3.zero;
+                }
+
+                _airVelocity = Vector3.zero;
+                _wasAirborne = false;
+                return;
+            }
+
+            if (!_wasAirborne) {
+                _airVelocity = _groundedVelocity;
+                _wasAirborne = true;
+
+                // A grounded stride this frame already displaced the actor before its move carried it
+                // off the edge; adding the first air step on top would double the transition frame.
+                if (_groundedMoveThisFrame) return;
+            }
+
+            if (_kinematicMoveThisFrame) return;
+
+            if (_hasAirIntentThisFrame) {
+                _airVelocity = Vector3.MoveTowards(_airVelocity, _airMoveTarget, airAcceleration * Time.deltaTime);
+            } else if (airDrag > 0f) {
+                _airVelocity *= Mathf.Exp(-airDrag * Time.deltaTime);
+            }
+
+            Controller.Move(_airVelocity * Time.deltaTime);
         }
 
         /// <summary>
@@ -257,6 +330,13 @@ namespace AlpineLib.Actors {
         /// and strafe direction to the animator. With root motion enabled the animation supplies the
         /// displacement instead.
         /// </summary>
+        /// <remarks>
+        /// Grounded movement displaces immediately, so ground control keeps its direct, instant feel.
+        /// Airborne movement on a code-driven actor instead records this frame's steering target for
+        /// <see cref="UpdateAirLocomotion"/> to integrate: the actor carries the momentum of its last
+        /// grounded stride and accelerates towards the input rather than teleporting its velocity, so
+        /// releasing input mid-jump coasts along the arc instead of stopping dead.
+        /// </remarks>
         public virtual void Move(Vector3 direction) {
             if (!IsAlive) return;
 
@@ -264,7 +344,14 @@ namespace AlpineLib.Actors {
             float effectiveSpeed = Stats.Get(moveSpeedStat);
 
             if (!useRootMotion) {
-                Controller.Move(direction * (Time.deltaTime * effectiveSpeed));
+                if (IsGrounded) {
+                    Controller.Move(direction * (Time.deltaTime * effectiveSpeed));
+                    _groundedVelocity = new Vector3(direction.x, 0f, direction.z) * effectiveSpeed;
+                    _groundedMoveThisFrame = true;
+                } else {
+                    _airMoveTarget = new Vector3(direction.x, 0f, direction.z) * effectiveSpeed;
+                    _hasAirIntentThisFrame = true;
+                }
             }
 
             RecordLocomotionIntent(direction, baseSpeed > 0f ? effectiveSpeed / baseSpeed : 1f);
@@ -295,6 +382,14 @@ namespace AlpineLib.Actors {
             float effectiveSpeed = Stats.Get(moveSpeedStat);
 
             Controller.Move(direction * (effectiveSpeed * Time.deltaTime));
+
+            if (!IsGrounded && !useRootMotion) {
+                // The caller owns this frame's displacement, so the air model must not add its own;
+                // adopting the kinematic velocity instead lets the arc continue seamlessly from
+                // whatever the stage carried once the caller stops driving.
+                _airVelocity = new Vector3(direction.x, 0f, direction.z) * effectiveSpeed;
+                _kinematicMoveThisFrame = true;
+            }
 
             RecordLocomotionIntent(direction, baseSpeed > 0f ? effectiveSpeed / baseSpeed : 1f);
         }
