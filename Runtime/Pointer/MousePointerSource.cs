@@ -7,8 +7,14 @@ namespace AlpineLib.Pointer {
     /// when the cursor is over empty space.
     /// </summary>
     /// <remarks>
-    /// Reads the legacy <see cref="Input"/> API, which requires the old input handling to stay enabled in
-    /// the player settings.
+    /// Reads the legacy <see cref="UnityEngine.Input"/> API, which requires the old input handling to
+    /// stay enabled in the player settings.
+    ///
+    /// Every call is fully qualified as <c>UnityEngine.Input</c> rather than left bare. A bare
+    /// <c>Input</c> inside <c>AlpineLib.Pointer</c> now resolves to the sibling
+    /// <see cref="AlpineLib.Input"/> namespace — namespace lookup walks outwards through
+    /// <c>AlpineLib</c> and finds it before ever reaching the <c>using UnityEngine;</c> — so the
+    /// unqualified form stopped compiling the moment the input module was added.
     /// </remarks>
     public sealed class MousePointerSource : IPointerSource {
         private readonly Camera _camera;
@@ -29,7 +35,7 @@ namespace AlpineLib.Pointer {
 
         public Ray GetRay() {
             var camera = _camera == null ? Camera.main : _camera;
-            return camera.ScreenPointToRay(Input.mousePosition);
+            return camera.ScreenPointToRay(UnityEngine.Input.mousePosition);
         }
 
         /// <summary>
@@ -44,7 +50,7 @@ namespace AlpineLib.Pointer {
         }
 
         public bool IsInteractPressed() {
-            return Input.GetMouseButtonDown(0);
+            return UnityEngine.Input.GetMouseButtonDown(0);
         }
     }
 }
