@@ -181,8 +181,14 @@ namespace AlpineLib.Actors {
         /// direction flips relative to a facing the camera is steering. Speed and turn keep their
         /// existing undamped writes so nothing that already tunes damping inside the controller changes
         /// behaviour.
+        ///
+        /// Animator-less actors are skipped here rather than at the call site, the same way
+        /// <see cref="Awake"/> and <see cref="Jump"/> guard: greybox and placeholder actors legitimately
+        /// ship without an animator, and without this guard every one of them throws once per frame.
         /// </remarks>
         private void WriteLocomotionParameters() {
+            if (Animator == null) return;
+
             Animator.SetFloat(_speedParameterHash, _currentSpeed);
             Animator.SetFloat(_turnParameterHash, _currentTurn);
 
