@@ -94,6 +94,10 @@ namespace AlpineLib.Actors {
         [SerializeField] private string speedParameter = "Speed";
         [SerializeField] private string turnParameter = "Turn";
         [SerializeField] private string jumpParameter = "Jump";
+        [Tooltip("Seconds of damping applied to the speed parameter. Digital move keys flip intent " +
+                 "in a single frame; without damping a speed-driven blend tree snaps between " +
+                 "locomotion poses instead of easing.")]
+        [SerializeField] private float speedDampTime = 0.12f;
 
         private const string StrafeXParameter = "StrafeX";
         private const string StrafeYParameter = "StrafeY";
@@ -251,9 +255,10 @@ namespace AlpineLib.Actors {
         /// <remarks>
         /// The strafe axes are damped rather than written raw: they are the only parameters a controller
         /// blends in two dimensions, and an undamped write makes the blend tree pop when the movement
-        /// direction flips relative to a facing the camera is steering. Speed and turn keep their
-        /// existing undamped writes so nothing that already tunes damping inside the controller changes
-        /// behaviour.
+        /// direction flips relative to a facing the camera is steering. Speed is damped for the same
+        /// reason in one dimension — digital move keys flip intent in a single frame, and a raw write
+        /// snaps a speed-driven blend tree between idle and locomotion poses. Turn keeps its undamped
+        /// write; it derives from an angle that already changes continuously.
         ///
         /// Animator-less actors are skipped here rather than at the call site, the same way
         /// <see cref="Awake"/> and <see cref="Jump"/> guard: greybox and placeholder actors legitimately
@@ -262,7 +267,7 @@ namespace AlpineLib.Actors {
         private void WriteLocomotionParameters() {
             if (Animator == null) return;
 
-            Animator.SetFloat(_speedParameterHash, _currentSpeed);
+            Animator.SetFloat(_speedParameterHash, _currentSpeed, speedDampTime, Time.deltaTime);
             Animator.SetFloat(_turnParameterHash, _currentTurn);
 
             if (!_hasStrafeParameters) return;
