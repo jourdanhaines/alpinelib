@@ -14,7 +14,7 @@ namespace AlpineLib.Cameras {
     /// <see cref="PlanarRight"/> are yaw-only, so movement stays camera-relative without ever tilting
     /// into or out of the ground.
     /// </remarks>
-    public class ThirdPersonCameraRig : MonoBehaviour {
+    public class ThirdPersonCameraRig : MonoBehaviour, ICameraRig {
         [Header("Target")]
         [Tooltip("Child transform the camera lives on. Falls back to the first child, then to a created anchor.")]
         [SerializeField] private Transform cameraAnchor;
@@ -45,20 +45,24 @@ namespace AlpineLib.Cameras {
         [Tooltip("Radius of the sphere cast that probes for geometry between the pivot and the camera.")]
         [SerializeField] private float collisionRadius = 0.25f;
 
+        /// <inheritdoc />
+        public Transform CameraAnchor => cameraAnchor;
+
         /// <summary>
         /// Transform the camera is mounted on. Positioned every <c>LateUpdate</c>; never parent anything
         /// to it that should stay put.
         /// </summary>
-        public Transform CameraTransform => cameraAnchor;
+        /// <remarks>
+        /// Kept as an alias of <see cref="CameraAnchor"/>, which is the name <see cref="ICameraRig"/>
+        /// gives the same transform. Games written against this rig before the interface existed still
+        /// read it, and renaming it would break them for no behavioural gain.
+        /// </remarks>
+        public Transform CameraTransform => CameraAnchor;
 
-        /// <summary>
-        /// Current orbit yaw in degrees.
-        /// </summary>
+        /// <inheritdoc />
         public float Yaw => _yaw;
 
-        /// <summary>
-        /// Current orbit pitch in degrees, already clamped to the authored range.
-        /// </summary>
+        /// <inheritdoc />
         public float Pitch => _pitch;
 
         /// <summary>
@@ -102,6 +106,17 @@ namespace AlpineLib.Cameras {
             if (!snap) return;
 
             SnapToTarget();
+        }
+
+        /// <remarks>
+        /// Implemented explicitly and routed through the rig's own two-argument
+        /// <see cref="SetTarget(Transform, bool)"/>: the snap flag is specific to a damped rig and has no
+        /// place on <see cref="ICameraRig"/>, and adding a one-argument overload beside a method whose
+        /// second parameter is optional would leave that default unreachable. Interface callers get the
+        /// snapping default, and every existing call site keeps the signature it was written against.
+        /// </remarks>
+        void ICameraRig.SetTarget(Transform target) {
+            SetTarget(target);
         }
 
         /// <summary>
