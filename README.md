@@ -54,7 +54,7 @@ consuming project's next compile.
 | `AlpineLib.Spawning` | Scene-placed spawn points. A spawner picks a random position inside its config's radius, optionally snaps it to the ground, and instantiates the configured prefab. The service does typed spawner lookups (games filter by declaring empty `Spawner` subclasses), spawns everything on start by default, and raises `OnSpawned`. | `Spawner`, `SpawnConfig`, `ISpawnerService`, `SpawnerService` |
 | `AlpineLib.Actors` | The actor itself: a `CharacterController` character that can be possessed by a `Controller` brain, moves either in code or by root motion scaled to its current move speed, and publishes speed and turn to the animator. It owns movement and liveness only — `Kill()` raises `OnDeath` and everything else reacts. Code-driven actors carry horizontal momentum through the air: airborne velocity is seeded from the last grounded stride and steered towards input at a tunable `airAcceleration` (with optional `airDrag`), while grounded movement stays direct and instant; root-motion actors are exempt. `ActorSubsystem` is the base for behaviours that self-disable on their owner's death. | `Actor`, `IActor`, `IMortal`, `Controller`, `ActorSubsystem`, `RootMotionForwarder`, `IRootMotionSuppressor` |
 | `AlpineLib.Actors.Locomotion` | Gait handling: `LocomotionSystem` translates the current gait into move-speed and noise-radius stat modifiers, swapped out whenever the gait changes. Walk is neutral. `CrouchSystem` owns capsule geometry only — it lerps the `CharacterController` between a standing and a crouched height, recentring so the feet stay planted, and refuses to stand while an upward sphere cast finds a ceiling. Standing is a request, not a command: releasing crouch under a low ceiling latches `WantsToStand` and the actor pops up on its own the first frame the ceiling clears, which is what makes a crouch tunnel feel right. The two are independent — a controller that crouches an actor calls both, because neither speed nor noise is this system's business. | `LocomotionSystem`, `LocomotionState`, `CrouchSystem` |
-| `AlpineLib.Animation` | Animator parameter hashes shared by the actor systems (see the contract below), plus a helper that re-rolls a blend tree index whenever a watched parameter crosses a threshold, so idles vary, and `ExpressionSystem`, which fires face-expression triggers (auto-blink plus a scripted `Play`) on a masked expressions layer. | `AnimatorParameters`, `AnimateRandomIndex`, `ExpressionSystem` |
+| `AlpineLib.Animation` | Animator parameter hashes shared by the actor systems (see the contract below), plus a helper that re-rolls a blend tree index whenever a watched parameter crosses a threshold, so idles vary, `ExpressionSystem`, which fires face-expression triggers (auto-blink plus a scripted `Play`) on a masked expressions layer, and `IdleVariationSystem`, which fires a random variation trigger (optionally paired with an expression) after a random stretch of genuine idleness. | `AnimatorParameters`, `AnimateRandomIndex`, `ExpressionSystem`, `IdleVariationSystem`, `IdleVariation` |
 | `AlpineLib.Utilities` | Weighted random selection over any read-only list. | `WeightedRandom` |
 | `AlpineLib.Editor` | Editor tooling. `BootSceneLoader` redirects play mode to a designated boot scene (`AlpineLib/Editor/Play From Boot Scene`). `RegenerateProjectFiles` syncs the external script editor's project files on demand or after every script reload, for scripts added outside Unity. `AssetValidator` is a batch-mode integrity gate over prefabs, ScriptableObjects and build scenes: `-batchmode -quit -executeMethod AlpineLib.Editor.AssetValidator.ValidateAll`. `BodySystemEditor` adds a play-mode inspector showing injuries, bleed rate breakdown and condition progress per body part. | `BootSceneLoader`, `RegenerateProjectFiles`, `AssetValidator`, `BodySystemEditor` |
 
@@ -81,6 +81,7 @@ the rest are fixed.
 | Parameter | Meaning |
 | --- | --- |
 | `Grounded` | Character controller ground contact. Written every frame by `Actor`, but only when the controller declares it — controllers with no airborne states are never written to. |
+| `Crouching` | Crouch state, written by `CrouchSystem` on change, but only when the controller declares it — controllers without crouched locomotion are never written to. |
 
 **Trigger parameters**
 
@@ -109,6 +110,10 @@ free:
 `Play(trigger)` for scripted moments) that expect a masked expressions layer — face bones only,
 empty default state, weight 1 — so expressions ride over any base motion. Author it above the
 `UpperBody` layer described next, which keeps layer 1 free.
+`IdleVariationSystem` fires at the base layer: each variation's trigger must reach a base-layer
+state from the locomotion state (`locomotionStateName`, `Locomotion` by default), and nothing
+fires unless the animator is resting in that state with `Speed` near zero and `Grounded` true.
+A variation's paired expression trigger rides the expressions layer above.
 `SkillSystem` expects layer 0 to be the base locomotion layer and layer 1 to be an
 override layer named `UpperBody` carrying an avatar mask over the upper body. `SkillSystem` owns
 that layer's weight, blending it in and out at `upperBodyBlendSpeed`, so it must be authored at a

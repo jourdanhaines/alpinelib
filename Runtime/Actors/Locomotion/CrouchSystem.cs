@@ -28,6 +28,12 @@ namespace AlpineLib.Actors.Locomotion {
     /// <see cref="Actor"/> already implies it: the capsule is the one thing this component exists to
     /// resize, and relying on another component's requirement to guarantee it leaves a per-frame null
     /// dereference waiting on any object where that chain is broken.
+    ///
+    /// Crouch state is mirrored into the animator's <c>Crouching</c> bool whenever the actor's
+    /// controller declares it, following the same opt-in convention as the actor's <c>Grounded</c>
+    /// and strafe parameters: controllers without crouch locomotion are never written to. The write
+    /// happens on state change rather than per frame because <see cref="IsCrouching"/> is edge-driven
+    /// — there is nothing to re-derive between changes.
     /// </remarks>
     [RequireComponent(typeof(Actor))]
     [RequireComponent(typeof(CharacterController))]
@@ -88,12 +94,25 @@ namespace AlpineLib.Actors.Locomotion {
         /// </summary>
         private const float HeightSnapEpsilon = 0.001f;
 
+        /// <summary>
+        /// Animator bool mirroring <see cref="IsCrouching"/>, written only when the controller
+        /// declares it.
+        /// </summary>
+        private const string CrouchingParameter = "Crouching";
+
         private CharacterController _controller;
+        private Animator _animator;
+        private int _crouchingParameterHash;
+        private bool _hasCrouchingParameter;
 
         protected override void Start() {
             base.Start();
 
             _controller = GetComponent<CharacterController>();
+            _animator = GetComponent<Actor>().Animator;
+            _crouchingParameterHash = Animator.StringToHash(CrouchingParameter);
+            _hasCrouchingParameter = DeclaresCrouchingParameter();
+            WriteCrouchingParameter();
         }
 
         /// <summary>
@@ -203,7 +222,29 @@ namespace AlpineLib.Actors.Locomotion {
             if (IsCrouching == crouching) return;
 
             IsCrouching = crouching;
+            WriteCrouchingParameter();
             OnCrouchChanged?.Invoke(crouching);
+        }
+
+        private void WriteCrouchingParameter() {
+            if (!_hasCrouchingParameter) return;
+
+            _animator.SetBool(_crouchingParameterHash, IsCrouching);
+        }
+
+        /// <remarks>
+        /// Resolved once, in <c>Start</c>, because <see cref="Animator.parameters"/> allocates on
+        /// every access — same convention as the actor's optional parameter scans.
+        /// </remarks>
+        private bool DeclaresCrouchingParameter() {
+            if (_animator == null) return false;
+            if (_animator.runtimeAnimatorController == null) return false;
+
+            foreach (AnimatorControllerParameter parameter in _animator.parameters) {
+                if (parameter.name == CrouchingParameter) return true;
+            }
+
+            return false;
         }
     }
 }
