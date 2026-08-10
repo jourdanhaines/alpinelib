@@ -101,6 +101,7 @@ namespace AlpineLib.Actors {
 
         private const string StrafeXParameter = "StrafeX";
         private const string StrafeYParameter = "StrafeY";
+        private const string GroundedParameter = "Grounded";
         private const float StrafeDampTime = 0.1f;
 
         private int _speedParameterHash;
@@ -108,7 +109,9 @@ namespace AlpineLib.Actors {
         private int _jumpParameterHash;
         private int _strafeXHash;
         private int _strafeYHash;
+        private int _groundedParameterHash;
         private bool _hasStrafeParameters;
+        private bool _hasGroundedParameter;
         private float _currentSpeed;
         private float _currentTurn;
         private Vector2 _currentStrafe;
@@ -137,6 +140,7 @@ namespace AlpineLib.Actors {
             _jumpParameterHash = UnityEngine.Animator.StringToHash(jumpParameter);
             _strafeXHash = UnityEngine.Animator.StringToHash(StrafeXParameter);
             _strafeYHash = UnityEngine.Animator.StringToHash(StrafeYParameter);
+            _groundedParameterHash = UnityEngine.Animator.StringToHash(GroundedParameter);
 
             Controller = GetComponent<CharacterController>();
             Controller.minMoveDistance = 0f;
@@ -149,6 +153,7 @@ namespace AlpineLib.Actors {
 
             Animator.applyRootMotion = useRootMotion;
             _hasStrafeParameters = DeclaresStrafeParameters();
+            _hasGroundedParameter = DeclaresGroundedParameter();
 
             if (useRootMotion && Animator.gameObject != gameObject && Animator.GetComponent<RootMotionForwarder>() == null) {
                 Animator.gameObject.AddComponent<RootMotionForwarder>();
@@ -178,6 +183,24 @@ namespace AlpineLib.Actors {
             }
 
             return hasStrafeX && hasStrafeY;
+        }
+
+        /// <summary>
+        /// Reports whether the resolved animator's controller declares the grounded parameter.
+        /// </summary>
+        /// <remarks>
+        /// Resolved once for the same reason as <see cref="DeclaresStrafeParameters"/>: controllers
+        /// with no airborne states — and animators with no controller — are never written to, so
+        /// Unity never logs a missing-parameter warning for them.
+        /// </remarks>
+        private bool DeclaresGroundedParameter() {
+            if (Animator.runtimeAnimatorController == null) return false;
+
+            foreach (AnimatorControllerParameter parameter in Animator.parameters) {
+                if (parameter.name == GroundedParameter) return true;
+            }
+
+            return false;
         }
 
         protected virtual void LateUpdate() {
@@ -269,6 +292,10 @@ namespace AlpineLib.Actors {
 
             Animator.SetFloat(_speedParameterHash, _currentSpeed, speedDampTime, Time.deltaTime);
             Animator.SetFloat(_turnParameterHash, _currentTurn);
+
+            if (_hasGroundedParameter) {
+                Animator.SetBool(_groundedParameterHash, IsGrounded);
+            }
 
             if (!_hasStrafeParameters) return;
 

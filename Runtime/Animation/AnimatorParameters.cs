@@ -18,6 +18,14 @@ namespace AlpineLib.Animation {
     /// written to.</description></item>
     /// </list>
     ///
+    /// Bool parameters:
+    /// <list type="bullet">
+    /// <item><description><c>Grounded</c> — whether the actor's character controller reports ground
+    /// contact. Driven every frame by the actor whenever its animator controller declares it, so a
+    /// controller can leave locomotion while airborne and land when contact returns. Controllers
+    /// that do not declare it are never written to.</description></item>
+    /// </list>
+    ///
     /// Legacy parameters — hashed here for games that still reference them, but not driven by any library
     /// system:
     /// <list type="bullet">
@@ -54,6 +62,9 @@ namespace AlpineLib.Animation {
 
         /// <summary>Float. Turn rate.</summary>
         public static readonly int Turn = Animator.StringToHash("Turn");
+
+        /// <summary>Bool. Character controller ground contact.</summary>
+        public static readonly int Grounded = Animator.StringToHash("Grounded");
 
         /// <summary>Trigger. Hit reaction.</summary>
         public static readonly int Hit = Animator.StringToHash("Hit");
