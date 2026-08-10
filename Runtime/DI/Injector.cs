@@ -145,6 +145,29 @@ namespace AlpineLib.DI {
         }
 
         /// <summary>
+        /// Attempts to resolve a registered dependency without throwing when it is absent.
+        /// </summary>
+        /// <remarks>
+        /// Injection via <see cref="InjectAttribute"/> treats a missing dependency as a fatal wiring error.
+        /// Services that must tolerate an optional collaborator — one whose provider only exists in some
+        /// app configurations — ask for it through this method instead and degrade gracefully.
+        /// </remarks>
+        /// <typeparam name="T">The dependency type, matched exactly as the provider declared it.</typeparam>
+        /// <param name="instance">The resolved instance, or the type default when unregistered.</param>
+        /// <returns>True when a registered instance of the requested type was found, otherwise false.</returns>
+        public bool TryResolve<T>(out T instance) {
+            var resolvedInstance = Resolve(typeof(T));
+
+            if (resolvedInstance is T typedInstance) {
+                instance = typedInstance;
+                return true;
+            }
+
+            instance = default;
+            return false;
+        }
+
+        /// <summary>
         /// Registers a dependency provider and its provided dependencies.
         /// </summary>
         /// <param name="provider">The provider to register.</param>

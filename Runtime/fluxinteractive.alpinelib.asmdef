@@ -1,7 +1,10 @@
 ﻿{
   "name": "FluxInteractive.AlpineLib",
   "references": [
-    "Unity.InputSystem"
+    "Unity.InputSystem",
+    "FluxInteractive.AlpineLib.Netcode",
+    "FluxInteractive.AlpineLib.Chat",
+    "LiteNetLib"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],

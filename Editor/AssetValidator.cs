@@ -39,7 +39,11 @@ namespace AlpineLib.Editor {
             { "LoadoutDefinition", "weapon" },
             { "ClassDefinition", "passiveTree" },
             { "SpecializationDefinition", "parentClass" },
-            { "StatConversionDefinition", "target" }
+            { "StatConversionDefinition", "target" },
+            { "NetworkConfig", "gameProtocolName" },
+            { "MatchDefinition", "matchId" },
+            { "SessionConfig", "profile" },
+            { "LobbyConfig", "lobbySceneName" }
         };
 
         /// <summary>
@@ -52,6 +56,7 @@ namespace AlpineLib.Editor {
 
             ValidatePrefabs(failures);
             ValidateScriptableObjects(failures);
+            SessionConfigValidator.Validate(failures);
             ValidateScenes(failures);
 
             Report(failures);
