@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using AlpineLib.Netcode;
+using AlpineLib.Netcode.Collision;
 using AlpineLib.Netcode.Protocol;
 using AlpineLib.Netcode.Replication;
 using AlpineLib.Netcode.Sessions;
@@ -23,9 +24,9 @@ namespace AlpineLib.Sessions {
     /// </para>
     /// <para>
     /// It also owns the session's <see cref="ServerReplication"/>, because on a listen host the pawn
-    /// simulation is server work like any other and has to be ticked from the same pump. The ground
-    /// seam it steps over is the engine's collision world, which is the entire reason a listen host
-    /// simulates differently from a v1 dedicated server.
+    /// simulation is server work like any other and has to be ticked from the same pump. The collision
+    /// world it steps against is the scene's exported geometry — the same bytes a dedicated server
+    /// loads, so a listen host and a dedicated one simulate the same igloo rather than two of them.
     /// </para>
     /// </remarks>
     public class ListenServerFrontDesk : ISessionFrontDesk {
@@ -37,8 +38,8 @@ namespace AlpineLib.Sessions {
         private readonly NetConfig _netConfig;
         private readonly SessionAuthDesk _authDesk;
         private readonly JoinCodeGenerator _joinCodeGenerator = new JoinCodeGenerator();
-        private readonly IGroundProvider _groundProvider;
 
+        private CollisionWorld _collisionWorld;
         private SessionHost _host;
         private ServerReplication _replication;
         private bool _isClosed;
@@ -50,17 +51,20 @@ namespace AlpineLib.Sessions {
         /// <param name="config">Session rules, already converted from the authored asset.</param>
         /// <param name="netConfig">Transport and timing tuning the world is simulated and judged with.</param>
         /// <param name="validator">Who decides whether an identity claim is accepted.</param>
-        /// <param name="groundProvider">Where the floor is for the pawns this host simulates.</param>
+        /// <param name="collisionWorld">
+        /// The scene collision the pawns this host simulates are stepped against. Null falls back to an
+        /// endless floor at y = 0, which is what a scene with no exported geometry gets.
+        /// </param>
         public ListenServerFrontDesk(
             NetServer server,
             SessionConfigData config,
             NetConfig netConfig,
             IAuthValidator validator,
-            IGroundProvider groundProvider) {
+            CollisionWorld collisionWorld) {
             _server = server ?? throw new ArgumentNullException(nameof(server));
             _config = config ?? throw new ArgumentNullException(nameof(config));
             _netConfig = netConfig ?? throw new ArgumentNullException(nameof(netConfig));
-            _groundProvider = groundProvider ?? new FlatGroundProvider();
+            _collisionWorld = collisionWorld ?? CollisionWorld.Flat();
             _authDesk = new SessionAuthDesk(server, validator ?? new AnonymousAuthValidator());
 
             _authDesk.RegisterHandlers(server.Router);
@@ -77,6 +81,29 @@ namespace AlpineLib.Sessions {
 
         /// <summary>Code a second player types to reach this session, or empty before it exists.</summary>
         public string JoinCode => _host != null ? _host.JoinCode : string.Empty;
+
+        /// <summary>The scene collision this host simulates against.</summary>
+        public CollisionWorld CollisionWorld => _collisionWorld;
+
+        /// <summary>
+        /// Moves the host onto another scene's collision, replacing the platforms of the old scene with
+        /// the new one's.
+        /// </summary>
+        /// <remarks>
+        /// A listen host changes scene the same way a dedicated server's session does, and for the same
+        /// reason: the pawns stay, the geometry under them does not. Called by whoever owns the phase — the
+        /// session service, from the very event it swaps its own prediction world on — so that the host's
+        /// two halves never disagree about the floor. Before a session exists the world is only recorded;
+        /// the replication that would spawn its movers is created by the first create request.
+        /// </remarks>
+        public void UseWorld(CollisionWorld collisionWorld) {
+            if (collisionWorld == null) {
+                throw new ArgumentNullException(nameof(collisionWorld));
+            }
+
+            _collisionWorld = collisionWorld;
+            _replication?.UseWorld(collisionWorld);
+        }
 
         /// <inheritdoc />
         public void HandleCreateSession(PeerHandle peer, PlayerIdentity identity, string profileId) {
@@ -169,9 +196,15 @@ namespace AlpineLib.Sessions {
             _host.Open();
 
             _replication = new ServerReplication(
-                _server, ResolveSessionPeers, new MovementValidator(_netConfig), _groundProvider
+                _server, ResolveSessionPeers, new MovementValidator(_netConfig), _collisionWorld
             );
             _replication.AttachToRouter();
+
+            // The constructor installs the world but spawns nothing: entities for the scene's movers are
+            // UseWorld's doing, and without this call a listen host would simulate platforms nobody was
+            // ever told about. Nobody has attached yet, so the spawns go to an empty peer list and reach
+            // the first member as part of the keyframe its join sends.
+            _replication.UseWorld(_collisionWorld);
         }
 
         private void AttachPeer(PeerHandle peer, PlayerIdentity identity) {

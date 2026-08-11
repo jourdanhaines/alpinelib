@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using AlpineLib.Collision;
 using AlpineLib.DI;
 using AlpineLib.Netcode;
+using AlpineLib.Netcode.Collision;
 using AlpineLib.Netcode.Protocol;
 using AlpineLib.Netcode.Replication;
 using AlpineLib.Netcode.Sessions;
@@ -143,9 +145,20 @@ namespace AlpineLib.Sessions {
         [Tooltip("Host the session in this process instead of asking the configured server for one. Local development convenience; shipped builds host on the dedicated server.")]
         [SerializeField] private bool listenHost;
 
+        [Header("Collision")]
+        [Tooltip("Every scene's exported collision geometry. The client predicts against the entry matching the scene the session is in; a scene missing from here stands on flat ground at y = 0, which will not match a server that has the export.")]
+        [SerializeField] private SceneGeometryRegistry geometryRegistry;
+
         [Header("Diagnostics")]
         [Tooltip("Read-only. Round trip to the server in milliseconds, mirrored every frame so it can be watched in the inspector during play. Editing it does nothing.")]
         [SerializeField] private int pingMs;
+
+        /// <summary>
+        /// Tick length a collision world is built with when one is asked for before a net config has been
+        /// installed. Matches <see cref="NetConfig"/>'s own default rate, so the mover paths such a world
+        /// evaluates are the ones a default session would have produced anyway.
+        /// </summary>
+        private const float DefaultTickIntervalSeconds = 1f / 30f;
 
         /// <inheritdoc />
         public ClientSessionState State => _sessionClient?.State ?? ClientSessionState.Offline;
@@ -250,6 +263,8 @@ namespace AlpineLib.Sessions {
         private SessionClient _sessionClient;
         private ClientReplication _replication;
         private ListenServerFrontDesk _frontDesk;
+        private CollisionWorld _collisionWorld;
+        private string _currentSceneName = string.Empty;
         private SessionEndReason _pendingTearDownReason;
         private bool _isTearDownPending;
 
@@ -274,6 +289,26 @@ namespace AlpineLib.Sessions {
             _netConfig = _config.ToNetConfig();
             ResolveNetworkService()?.Configure(_netConfig);
             _identity = ResolveIdentityStore().Load(_config.defaultDisplayName);
+        }
+
+        /// <summary>
+        /// Installs the registry the client resolves each scene's collision geometry from.
+        /// </summary>
+        /// <remarks>
+        /// The registry is normally dragged onto the serialized field in the inspector, which is the
+        /// right answer whenever this service is authored into a scene or a prefab. A game that installs
+        /// its app root entirely from code — Project Penguin does — has no inspector to drag it onto, so
+        /// it hands the asset over here instead, alongside the session config, before anything asks for a
+        /// world. Passing null leaves whatever the field already holds alone: a caller with no registry to
+        /// offer should not be able to unassign an authored one by accident.
+        /// </remarks>
+        public void ConfigureGeometry(SceneGeometryRegistry registry) {
+            if (registry == null) {
+                Debug.LogWarning("SessionService::ConfigureGeometry->No scene geometry registry; scenes without one stand on flat ground at y = 0.");
+                return;
+            }
+
+            geometryRegistry = registry;
         }
 
         /// <inheritdoc />
@@ -419,7 +454,7 @@ namespace AlpineLib.Sessions {
                 _config.ToData(),
                 _netConfig,
                 new AnonymousAuthValidator(_config.defaultDisplayName),
-                new FlatGroundProvider());
+                CurrentCollisionWorld());
 
             return LoopbackEndpoint();
         }
@@ -481,21 +516,101 @@ namespace AlpineLib.Sessions {
             _sessionClient = new SessionClient(client, new AnonymousAuthProvider(), _identity);
             SubscribeToSessionClient();
 
-            _replication = new ClientReplication(client, _netConfig, ResolveClientGroundProvider());
+            _replication = new ClientReplication(client, _netConfig, CurrentCollisionWorld());
         }
 
         /// <summary>
-        /// The ground a predicting client steps its own pawn over.
+        /// The scene collision both halves of this process simulate against: the client's prediction and,
+        /// on a listen host, the server's authority. Resolves the lobby's geometry the first time it is
+        /// asked, so a world exists before the first phase change arrives.
         /// </summary>
         /// <remarks>
-        /// A listen host must predict against the same collision world its server half simulates with,
-        /// or the host's own pawn would be corrected every tick. Every topology therefore stands on the
-        /// same <see cref="FlatGroundProvider"/> — dedicated server, pure client and listen host alike —
-        /// until a real heightfield provider exists; a listen host on raycast ground while its guests
-        /// predict on the plane would put every guest pawn on a different floor than its owner sees.
+        /// A listen host must predict against exactly the world its server half steps, or the host's own
+        /// pawn is corrected every tick — which is why one field answers for both and neither builds its
+        /// own. A guest is in the same position against a dedicated server: it predicts against the
+        /// registry's copy of the very bytes the server loaded, and a scene missing from the registry puts
+        /// that client on a floor nobody else is standing on.
         /// </remarks>
-        private IGroundProvider ResolveClientGroundProvider() {
-            return new FlatGroundProvider();
+        private CollisionWorld CurrentCollisionWorld() {
+            if (_collisionWorld == null) {
+                UseSceneGeometry(ResolveLobbySceneName());
+            }
+
+            return _collisionWorld;
+        }
+
+        /// <summary>
+        /// Moves this process onto a scene's collision: the client's prediction world, and on a listen
+        /// host the server half's as well.
+        /// </summary>
+        /// <remarks>
+        /// Re-entry on the same scene is skipped, and that is load-bearing rather than an optimisation.
+        /// A match announcement and the match start that follows it name the same scene, and on a listen
+        /// host the second swap would despawn every platform and respawn it under fresh entity ids while
+        /// the players are already standing on them.
+        /// </remarks>
+        private void UseSceneGeometry(string sceneName) {
+            string requested = sceneName ?? string.Empty;
+
+            if (_collisionWorld != null && string.Equals(requested, _currentSceneName, StringComparison.Ordinal)) return;
+
+            _currentSceneName = requested;
+            _collisionWorld = ResolveCollisionWorld(requested);
+
+            if (_replication != null) {
+                _replication.CollisionWorld = _collisionWorld;
+            }
+
+            _frontDesk?.UseWorld(_collisionWorld);
+        }
+
+        /// <summary>
+        /// Builds — or reuses — the collision world a scene exported, falling back to an endless floor at
+        /// y = 0 when the registry has nothing for it.
+        /// </summary>
+        /// <remarks>
+        /// The fallback is loud when a scene was actually asked for, because it is the shape of the worst
+        /// bug this system can produce: the client predicts on a plane, the server simulates the real
+        /// igloo, and the owner's pawn is dragged back by a correction on every single tick. A session with
+        /// no scene name asked for nothing and gets flat ground quietly, which is what a headless test or
+        /// an unconfigured lobby wants.
+        /// </remarks>
+        private CollisionWorld ResolveCollisionWorld(string sceneName) {
+            if (string.IsNullOrEmpty(sceneName)) return CollisionWorld.Flat();
+
+            float tickIntervalSeconds = _netConfig != null ? _netConfig.ServerTickInterval : DefaultTickIntervalSeconds;
+
+            if (geometryRegistry == null) {
+                Debug.LogWarning($"SessionService::ResolveCollisionWorld->No scene geometry registry assigned; '{sceneName}' falls back to flat ground at y = 0.");
+                return CollisionWorld.Flat();
+            }
+
+            // The null test is belt and braces against a registry row whose asset was deleted from under
+            // it: both halves of this service hand the result straight to something that rejects null, and
+            // a scene that resolves to nothing is exactly the scene that should fall back.
+            if (geometryRegistry.TryResolveWorld(sceneName, tickIntervalSeconds, out CollisionWorld world) && world != null) {
+                return world;
+            }
+
+            Debug.LogWarning($"SessionService::ResolveCollisionWorld->No geometry was exported for scene '{sceneName}'; it falls back to flat ground at y = 0.");
+            return CollisionWorld.Flat();
+        }
+
+        /// <summary>Scene the lobby itself lives in, or empty when none is configured.</summary>
+        private string ResolveLobbySceneName() {
+            if (_config == null || _config.lobby == null) return string.Empty;
+
+            return _config.lobby.lobbySceneName ?? string.Empty;
+        }
+
+        /// <summary>
+        /// Scene a match run takes place in. Falls back to the lobby scene, because a match announced with
+        /// no scene of its own leaves everybody standing where they already were.
+        /// </summary>
+        private string ResolveMatchSceneName(MatchContextData match) {
+            if (match == null || string.IsNullOrEmpty(match.SceneName)) return ResolveLobbySceneName();
+
+            return match.SceneName;
         }
 
         private void SubscribeToSessionClient() {
@@ -544,11 +659,24 @@ namespace AlpineLib.Sessions {
             OnPhaseChanged?.Invoke(phase);
         }
 
+        /// <remarks>
+        /// The world moves before anybody hears about the match, so the scene flow's load and this
+        /// client's first predicted tick in the new scene both happen against the geometry the server has
+        /// already switched to. The server swaps on the same event for the same reason.
+        /// </remarks>
         private void HandleMatchLoading(MatchContextData match) {
+            UseSceneGeometry(ResolveMatchSceneName(match));
             OnMatchLoading?.Invoke(match);
         }
 
+        /// <remarks>
+        /// Swapping here as well is not redundant with <see cref="HandleMatchLoading"/>: a player
+        /// rejoining a match that is already running is told it started rather than that it is loading,
+        /// and would otherwise predict the whole match against the lobby. In the ordinary path the scene
+        /// is the one already in force and the swap costs nothing.
+        /// </remarks>
         private void HandleMatchActive(MatchContextData match) {
+            UseSceneGeometry(ResolveMatchSceneName(match));
             OnMatchActive?.Invoke(match);
         }
 
@@ -557,6 +685,7 @@ namespace AlpineLib.Sessions {
         }
 
         private void HandleReturnedToLobby() {
+            UseSceneGeometry(ResolveLobbySceneName());
             OnReturnedToLobby?.Invoke();
         }
 
@@ -619,6 +748,12 @@ namespace AlpineLib.Sessions {
 
             _frontDesk?.Close(reason);
             _frontDesk = null;
+
+            // Dropped rather than kept: a player who left in the middle of a match would otherwise host or
+            // join their next session predicting against the match scene they walked out of, until a phase
+            // change happened to name something else.
+            _collisionWorld = null;
+            _currentSceneName = string.Empty;
 
             _networkService?.Shutdown();
         }
