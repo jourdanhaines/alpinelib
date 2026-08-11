@@ -101,6 +101,9 @@ namespace AlpineLib.Sessions {
         /// <summary>Renames the local player and persists the new name.</summary>
         void SetDisplayName(string displayName);
 
+        /// <summary>Sets the game-defined appearance code sent with the next host or join.</summary>
+        void SetAvatarData(ushort avatarData);
+
         /// <summary>Connects to the configured server and asks it for a session of our own.</summary>
         Task<SessionJoinResult> HostSessionAsync();
 
@@ -287,6 +290,20 @@ namespace AlpineLib.Sessions {
             // The session client holds this very instance, so renaming here renames it there too.
             _identity.DisplayName = PlayerIdentity.Sanitize(displayName);
             ResolveIdentityStore().Save(_identity);
+        }
+
+        /// <inheritdoc />
+        /// <remarks>
+        /// Not persisted, unlike the display name: the appearance is session state owned by the game,
+        /// which re-sends it before every host or join. The identity store stays a name-and-id file.
+        /// </remarks>
+        public void SetAvatarData(ushort avatarData) {
+            if (_identity == null) {
+                Debug.LogWarning("SessionService::SetAvatarData->No identity yet; configure the service first.");
+                return;
+            }
+
+            _identity.AvatarData = avatarData;
         }
 
         /// <inheritdoc />

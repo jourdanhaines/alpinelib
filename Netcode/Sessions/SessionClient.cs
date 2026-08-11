@@ -453,6 +453,7 @@ namespace AlpineLib.Netcode.Sessions {
             existing.IsOwner = incoming.IsOwner;
             existing.IsConnected = incoming.IsConnected;
             existing.PartyId = incoming.PartyId;
+            existing.AvatarData = incoming.AvatarData;
             return existing;
         }
 

@@ -49,6 +49,13 @@ namespace AlpineLib.Netcode.Sessions {
         /// <summary>Party grouping. v1 hardcodes every lobby member into one party; this is the seam.</summary>
         public byte PartyId { get; set; }
 
+        /// <summary>Game-defined appearance code the member joined with. Zero when unset.</summary>
+        /// <remarks>
+        /// Carried on the roster rather than on spawn messages because it is a property of the player,
+        /// not of any one pawn — and the roster reaches every client before their pawn does.
+        /// </remarks>
+        public ushort AvatarData { get; set; }
+
         /// <summary>Writes the member to the wire.</summary>
         public void Serialize(ref NetWriter writer) {
             writer.WriteInt(PeerId);
@@ -56,6 +63,7 @@ namespace AlpineLib.Netcode.Sessions {
             writer.WriteString(DisplayName ?? string.Empty);
             writer.WriteByte(PackFlags());
             writer.WriteByte(PartyId);
+            writer.WriteUShort(AvatarData);
         }
 
         /// <summary>Reads a member written by <see cref="Serialize"/>.</summary>
@@ -65,6 +73,7 @@ namespace AlpineLib.Netcode.Sessions {
             DisplayName = PlayerIdentity.Sanitize(reader.ReadString());
             UnpackFlags(reader.ReadByte());
             PartyId = reader.ReadByte();
+            AvatarData = reader.ReadUShort();
         }
 
         private byte PackFlags() {

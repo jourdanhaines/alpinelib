@@ -21,6 +21,7 @@ namespace AlpineLib.Netcode.Sessions.Messages {
             PlayerId = source.PlayerId;
             DisplayName = PlayerIdentity.Sanitize(source.DisplayName);
             AuthMethod = source.Method;
+            AvatarData = source.AvatarData;
             Token = token ?? Array.Empty<byte>();
         }
 
@@ -33,12 +34,15 @@ namespace AlpineLib.Netcode.Sessions.Messages {
         /// <summary>How the claim is meant to be proven.</summary>
         public AuthMethod AuthMethod { get; set; }
 
+        /// <summary>Game-defined appearance code carried with the claim. Zero when unset.</summary>
+        public ushort AvatarData { get; set; }
+
         /// <summary>Proof blob interpreted only by the matching validator. Empty under Anonymous auth.</summary>
         public byte[] Token { get; set; }
 
         /// <summary>Rebuilds the claimed identity, for handing to a validator.</summary>
         public PlayerIdentity ToIdentity() {
-            return new PlayerIdentity(PlayerId, DisplayName, AuthMethod);
+            return new PlayerIdentity(PlayerId, DisplayName, AuthMethod) { AvatarData = AvatarData };
         }
 
         /// <inheritdoc />
@@ -53,6 +57,7 @@ namespace AlpineLib.Netcode.Sessions.Messages {
             PlayerId.Serialize(ref writer);
             writer.WriteString(PlayerIdentity.Sanitize(DisplayName));
             writer.WriteByte((byte)AuthMethod);
+            writer.WriteUShort(AvatarData);
             writer.WriteBytes(token);
         }
 
@@ -61,6 +66,7 @@ namespace AlpineLib.Netcode.Sessions.Messages {
             PlayerId = PlayerId.Deserialize(ref reader);
             DisplayName = PlayerIdentity.Sanitize(reader.ReadString());
             AuthMethod = (AuthMethod)reader.ReadByte();
+            AvatarData = reader.ReadUShort();
 
             byte[] token = reader.ReadBytes();
 

@@ -411,7 +411,9 @@ namespace AlpineLib.Netcode.Sessions {
             }
 
             bool takesOwnership = !_ownerId.IsValid;
-            SessionMember member = new SessionMember(peer.Id, identity.PlayerId, identity.DisplayName, takesOwnership, DefaultPartyId);
+            SessionMember member = new SessionMember(peer.Id, identity.PlayerId, identity.DisplayName, takesOwnership, DefaultPartyId) {
+                AvatarData = identity.AvatarData
+            };
             _members.Add(member);
             _playerByPeerId[peer.Id] = identity.PlayerId;
             RebuildConnectedPeers();
@@ -433,6 +435,7 @@ namespace AlpineLib.Netcode.Sessions {
             member.PeerId = peer.Id;
             member.IsConnected = true;
             member.DisplayName = PlayerIdentity.Sanitize(identity.DisplayName);
+            member.AvatarData = identity.AvatarData;
             _playerByPeerId[peer.Id] = member.PlayerId;
             _reservationSecondsLeft.Remove(member.PlayerId);
             RebuildConnectedPeers();

@@ -55,7 +55,9 @@ namespace AlpineLib.Netcode.Sessions {
             PlayerIdentity resolved = new PlayerIdentity(
                 claimedIdentity.PlayerId,
                 displayName,
-                AuthMethod.Anonymous);
+                AuthMethod.Anonymous) {
+                AvatarData = claimedIdentity.AvatarData,
+            };
 
             return AuthVerdict.Accept(resolved);
         }

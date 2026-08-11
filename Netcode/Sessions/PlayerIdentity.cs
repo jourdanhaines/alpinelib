@@ -36,6 +36,17 @@ namespace AlpineLib.Netcode.Sessions {
         /// <summary>How this identity is proven.</summary>
         public AuthMethod Method { get; set; }
 
+        /// <summary>
+        /// Game-defined appearance code, replicated verbatim with the identity. Zero when unset.
+        /// </summary>
+        /// <remarks>
+        /// Opaque by design: the session layer carries it from the joining client into the roster so
+        /// every member can dress every pawn, but only the game knows what the bits mean. One
+        /// <c>ushort</c> rather than a blob because appearance-at-join is a code, not a document — a
+        /// game outgrowing sixteen bits has outgrown identity-carried cosmetics.
+        /// </remarks>
+        public ushort AvatarData { get; set; }
+
         /// <summary>Trims, collapses empties to a fallback, and caps length.</summary>
         public static string Sanitize(string displayName) {
             if (string.IsNullOrWhiteSpace(displayName)) {
@@ -56,6 +67,7 @@ namespace AlpineLib.Netcode.Sessions {
             PlayerId.Serialize(ref writer);
             writer.WriteString(DisplayName ?? string.Empty);
             writer.WriteByte((byte)Method);
+            writer.WriteUShort(AvatarData);
         }
 
         /// <summary>Reads an identity written by <see cref="Serialize"/>.</summary>
@@ -63,6 +75,7 @@ namespace AlpineLib.Netcode.Sessions {
             PlayerId = PlayerId.Deserialize(ref reader);
             DisplayName = Sanitize(reader.ReadString());
             Method = (AuthMethod)reader.ReadByte();
+            AvatarData = reader.ReadUShort();
         }
 
         /// <inheritdoc />
