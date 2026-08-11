@@ -39,6 +39,23 @@ namespace AlpineLib.Collision {
     /// <b>Translation only.</b> The rotation of a v1 mover is never touched, matching the exporter, which
     /// ignores the authored rotation rather than pretending to honour it.
     /// </para>
+    /// <para>
+    /// <b>The view needs a Unity collider.</b> The shared simulation stands the pawn on the mover's
+    /// exported box, but the locally-owned pawn's <c>CharacterController</c> also runs Unity physics —
+    /// gravity grounds it against Unity colliders, and against nothing else. A mover view without a
+    /// collider leaves Unity believing there is no deck at all: gravity drags the visible pawn down to
+    /// whatever static floor is underneath while the simulation insists its feet are on the platform,
+    /// and the pawn renders sunk inside the mesh. Give the view a collider matching the exported box;
+    /// <see cref="Start"/> warns when there is none.
+    /// </para>
+    /// <para>
+    /// <b>Vertically-moving movers</b> work, with a caveat: the collider is moved by writing the
+    /// transform, not by sweeping a rigidbody, so a descending deck is only tracked as fast as gravity
+    /// re-grounds the controller each frame, and an ascending one relies on next-frame depenetration
+    /// plus the sync component's convergence to the simulated height — which already contains the ride.
+    /// That equilibrates within a frame or two at sensible speeds; keep vertical mover speeds well below
+    /// the per-frame gravity ramp rather than expecting a rider-parenting system that does not exist.
+    /// </para>
     /// </remarks>
     [DefaultExecutionOrder(NetExecutionOrder.PawnDrivers)]
     [RequireComponent(typeof(NetEntityView))]
@@ -71,6 +88,8 @@ namespace AlpineLib.Collision {
         private int moverIndex = -1;
         private bool isCarryingLocalPawn;
         private float blendWeight;
+        private Numerics.Vector3 renderOffset;
+        private bool hasWarnedTickIntervalMismatch;
 
         /// <summary>The replicated entity this platform stands for.</summary>
         public NetEntityView EntityView => entityView;
@@ -137,6 +156,7 @@ namespace AlpineLib.Collision {
             Numerics.Vector3 interpolated = EvaluateAt(interpolationTick);
 
             if (blendWeight <= 0f) {
+                renderOffset = Numerics.Vector3.Zero;
                 transform.position = interpolated.ToUnity();
                 return;
             }
@@ -144,11 +164,14 @@ namespace AlpineLib.Collision {
             Numerics.Vector3 predicted = EvaluateAt(predictedTick);
 
             if (blendWeight >= 1f) {
+                renderOffset = predicted - interpolated;
                 transform.position = predicted.ToUnity();
                 return;
             }
 
-            transform.position = Vector3.Lerp(interpolated.ToUnity(), predicted.ToUnity(), blendWeight);
+            Numerics.Vector3 drawn = Numerics.Vector3.Lerp(interpolated, predicted, blendWeight);
+            renderOffset = drawn - interpolated;
+            transform.position = drawn.ToUnity();
         }
 
         private void Awake() {
@@ -161,12 +184,32 @@ namespace AlpineLib.Collision {
         /// stays where the designer left it.
         /// </remarks>
         private void Start() {
+            if (GetComponent<Collider>() == null) {
+                Debug.LogWarning(
+                    $"NetMoverView::Start->{name} has no Collider. The simulation stands pawns on this " +
+                    "mover, but the locally-owned pawn's CharacterController grounds against Unity " +
+                    "colliders — without one it sinks through the deck. Add a collider matching the " +
+                    "exported mover box.");
+            }
+
             if (!Injector.HasInstance) {
                 return;
             }
 
             Injector.Instance.TryResolve(out sessionService);
             Injector.Instance.TryResolve(out networkService);
+        }
+
+        /// <remarks>
+        /// A published offset outliving its view would pin remote riders to a platform that is no longer
+        /// being drawn away from the interpolation timeline.
+        /// </remarks>
+        private void OnDisable() {
+            if (moverIndex < 0) {
+                return;
+            }
+
+            sessionService?.Replication?.ClearMoverRenderOffset(moverIndex);
         }
 
         private void Update() {
@@ -196,6 +239,27 @@ namespace AlpineLib.Collision {
             }
 
             Render(interpolationTick, predictedTick, Time.deltaTime);
+            PublishRenderOffset(replication);
+        }
+
+        /// <summary>
+        /// Tells the client world how far this platform is currently drawn from its interpolation-tick
+        /// pose, so remote-pawn drivers can re-anchor riders onto the deck as it is actually rendered.
+        /// </summary>
+        /// <remarks>
+        /// The offset is only ever non-zero while the local pawn is riding — that is the one time the
+        /// platform is drawn ahead of the interpolation timeline, and exactly the time a remote rider
+        /// drawn on that timeline would otherwise trail across the deck by the interpolation delay's
+        /// worth of travel. Consumers may read it a frame stale, because every driver shares one
+        /// execution-order slot; the blend ramps the offset over <see cref="BlendSeconds"/>, so a frame
+        /// of staleness is sub-millimetre.
+        /// </remarks>
+        private void PublishRenderOffset(ClientReplication replication) {
+            if (moverIndex < 0) {
+                return;
+            }
+
+            replication.SetMoverRenderOffset(moverIndex, renderOffset);
         }
 
         /// <summary>
@@ -251,11 +315,36 @@ namespace AlpineLib.Collision {
         /// The fractional tick everything else in the scene is being rendered at: the client's estimate
         /// of the server clock, held back by the timeline's current interpolation delay.
         /// </summary>
-        private static double ResolveInterpolationTick(ClientReplication replication, NetClock clock) {
+        /// <remarks>
+        /// Seconds become ticks through the world's tick interval, not the clock's: the paths were
+        /// exported against the world's interval, and it is the world's number the simulation evaluates
+        /// them with. The two agree whenever config and export are in step; when they are not, the world
+        /// wins here so the platform at least runs at the speed the server is running it, and the
+        /// mismatch is reported once instead of rendered as a permanently wrong platform speed.
+        /// </remarks>
+        private double ResolveInterpolationTick(ClientReplication replication, NetClock clock) {
+            WarnOnceOnTickIntervalMismatch(clock);
+
             double renderSeconds = clock.EstimatedServerSeconds - replication.Timeline.DelaySeconds;
-            double tick = renderSeconds / clock.TickInterval;
+            double tick = renderSeconds / tickIntervalSeconds;
 
             return tick > 0.0 ? tick : 0.0;
+        }
+
+        private void WarnOnceOnTickIntervalMismatch(NetClock clock) {
+            if (hasWarnedTickIntervalMismatch) {
+                return;
+            }
+
+            if (Math.Abs(tickIntervalSeconds - clock.TickInterval) <= 1e-6) {
+                return;
+            }
+
+            hasWarnedTickIntervalMismatch = true;
+            Debug.LogWarning(
+                $"NetMoverView::ResolveInterpolationTick->{name}: geometry tick interval " +
+                $"{tickIntervalSeconds:0.####}s does not match the clock's {clock.TickInterval:0.####}s. " +
+                "Re-export the scene geometry against the current tick rate; using the geometry's value.");
         }
 
         /// <summary>

@@ -139,6 +139,14 @@ namespace AlpineLib.Networking {
             if (ReleaseIfLocallyOwned(replication)) return;
             if (!replication.SampleRemote(_view.EntityId, out PawnState state)) return;
 
+            // A pawn standing on a mover drawn off the interpolation timeline (the local player is
+            // riding it, so the platform renders at the predicted tick) must be re-anchored by the same
+            // offset, or it trails across the deck by the interpolation delay's worth of travel. Only
+            // the drawn position moves; velocity, yaw and flags stay the sampled ones.
+            if (replication.TryGetMoverRenderOffset(in state, out System.Numerics.Vector3 moverOffset)) {
+                state.Position += moverOffset;
+            }
+
             Drive(in state);
         }
 

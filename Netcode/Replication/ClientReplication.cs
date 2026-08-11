@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Numerics;
 using AlpineLib.Netcode.Collision;
 using AlpineLib.Netcode.Protocol;
 using AlpineLib.Netcode.Replication.Messages;
@@ -75,12 +76,14 @@ namespace AlpineLib.Netcode.Replication {
         private readonly Dictionary<uint, RecentInputs> recentInputsByEntity = new Dictionary<uint, RecentInputs>();
         private readonly Dictionary<uint, SettledPrediction> settledByEntity = new Dictionary<uint, SettledPrediction>();
         private readonly Dictionary<uint, uint> predictionBaseTickByEntity = new Dictionary<uint, uint>();
+        private readonly Dictionary<int, Vector3> moverRenderOffsetsByIndex = new Dictionary<int, Vector3>();
 
         private readonly InterpolationTimeline timeline;
 
         private CollisionWorld collisionWorld;
         private uint nextEventSequence = 1u;
         private uint nextInputSequence = 1u;
+        private double monotonicLocalSeconds;
         private bool disposed;
 
         /// <summary>Creates a client world predicting over a flat floor at y = 0 and nothing else.</summary>
@@ -130,9 +133,24 @@ namespace AlpineLib.Netcode.Replication {
         /// Scene collision used for prediction. Must be built from the same exported geometry the server
         /// loaded, or corrections never settle. Swapped when the session changes scene.
         /// </summary>
+        /// <remarks>
+        /// The swap also re-points every pawn interpolator's carry world — an interpolator still
+        /// augmenting tangents against the previous scene's movers would carry riders along platforms
+        /// that no longer exist — and drops published mover render offsets, whose indices are only
+        /// meaningful within the world they were resolved against.
+        /// </remarks>
         public CollisionWorld CollisionWorld {
             get => collisionWorld;
-            set => collisionWorld = value ?? throw new ArgumentNullException(nameof(value));
+            set {
+                collisionWorld = value ?? throw new ArgumentNullException(nameof(value));
+                moverRenderOffsetsByIndex.Clear();
+
+                foreach (StateInterpolator interpolator in interpolators.Values) {
+                    if (interpolator.CarryWorld != null) {
+                        interpolator.CarryWorld = collisionWorld;
+                    }
+                }
+            }
         }
 
         /// <summary>Every entity this client knows about.</summary>
@@ -152,6 +170,7 @@ namespace AlpineLib.Netcode.Replication {
         /// once per frame, before remote pawns sample.
         /// </summary>
         public void Tick(float deltaSeconds) {
+            monotonicLocalSeconds += deltaSeconds;
             timeline.Update(deltaSeconds, client.Clock.PingMs);
         }
 
@@ -352,8 +371,93 @@ namespace AlpineLib.Netcode.Replication {
                 return false;
             }
 
-            double renderSeconds = client.Clock.EstimatedServerSeconds - timeline.DelaySeconds;
-            return interpolator.Sample(renderSeconds, out state);
+            return interpolator.Sample(RenderSeconds(), out state);
+        }
+
+        /// <summary>
+        /// Publishes how far the mover at a world index is currently being drawn from its
+        /// interpolation-tick pose. A near-zero offset removes the entry — the platform is back on the
+        /// interpolation timeline and riders need no re-anchoring.
+        /// </summary>
+        /// <remarks>
+        /// Published by whichever view draws the mover away from the shared timeline — in practice the
+        /// Unity mover view while the local pawn rides it, blended toward the predicted tick — and
+        /// consumed by remote-pawn drivers through <see cref="TryGetMoverRenderOffset"/>. Without it, a
+        /// remote pawn standing on that same platform is interpolated a delay behind the deck it is
+        /// drawn on and trails across it by the delay's worth of travel.
+        /// </remarks>
+        public void SetMoverRenderOffset(int moverIndex, Vector3 offset) {
+            if (moverIndex < 0) {
+                return;
+            }
+
+            if (offset.LengthSquared() < 1e-8f) {
+                moverRenderOffsetsByIndex.Remove(moverIndex);
+                return;
+            }
+
+            moverRenderOffsetsByIndex[moverIndex] = offset;
+        }
+
+        /// <summary>Withdraws a published offset, for a mover view going away.</summary>
+        public void ClearMoverRenderOffset(int moverIndex) {
+            moverRenderOffsetsByIndex.Remove(moverIndex);
+        }
+
+        /// <summary>
+        /// Answers the render offset a remote pawn's drawn position should carry because the platform it
+        /// stands on is itself being drawn off the interpolation timeline.
+        /// </summary>
+        /// <returns>True when the state stands on a mover with a published offset.</returns>
+        public bool TryGetMoverRenderOffset(in PawnState state, out Vector3 offset) {
+            return TryGetMoverRenderOffset(in state, RenderTick(), out offset);
+        }
+
+        /// <summary>
+        /// The probe behind <see cref="TryGetMoverRenderOffset(in PawnState, out Vector3)"/> with the
+        /// tick made explicit, so tests can ask about a state without steering the clock.
+        /// </summary>
+        public bool TryGetMoverRenderOffset(in PawnState state, uint probeTick, out Vector3 offset) {
+            offset = Vector3.Zero;
+
+            if (moverRenderOffsetsByIndex.Count == 0 || !state.IsGrounded) {
+                return false;
+            }
+
+            Vector3 foot = state.Position;
+            bool supported = collisionWorld.TryGetSupport(
+                foot.X,
+                foot.Z,
+                foot.Y + StateInterpolator.CarryProbeHalfHeightMetres,
+                foot.Y - StateInterpolator.CarryProbeHalfHeightMetres,
+                probeTick,
+                out SupportHit hit);
+
+            if (!supported || !hit.IsMover) {
+                return false;
+            }
+
+            return moverRenderOffsetsByIndex.TryGetValue(hit.MoverIndex, out offset);
+        }
+
+        /// <summary>
+        /// The time remote entities render at: the estimated server clock held back by the interpolation
+        /// delay. One derivation, so every consumer of "now, delayed" agrees to the frame.
+        /// </summary>
+        private double RenderSeconds() {
+            return client.Clock.EstimatedServerSeconds - timeline.DelaySeconds;
+        }
+
+        /// <summary>The whole simulation tick the render time falls in, clamped at zero.</summary>
+        private uint RenderTick() {
+            double tick = RenderSeconds() / config.ServerTickInterval;
+
+            if (tick <= 0.0) {
+                return 0u;
+            }
+
+            double floored = Math.Floor(tick);
+            return floored >= uint.MaxValue ? uint.MaxValue : (uint)floored;
         }
 
         /// <summary>Drops the whole world. Used when leaving a session or before rebuilding on rejoin.</summary>
@@ -367,6 +471,7 @@ namespace AlpineLib.Netcode.Replication {
             recentInputsByEntity.Clear();
             settledByEntity.Clear();
             predictionBaseTickByEntity.Clear();
+            moverRenderOffsetsByIndex.Clear();
         }
 
         /// <inheritdoc />
@@ -415,7 +520,13 @@ namespace AlpineLib.Netcode.Replication {
                 return;
             }
 
-            timeline.OnSnapshotArrived(client.Clock.EstimatedServerSeconds);
+            // Arrival spacing is measured on a clock only this machine advances. The server-time
+            // estimate would work most of the time, but it steps whenever the clock resyncs, and a step
+            // fed into the arrival estimator reads as a whole extra interval of jitter — inflating the
+            // render delay for the next several snapshots over an event that had nothing to do with the
+            // network. OnSnapshotArrived only ever differences consecutive values, so any monotonic
+            // local clock satisfies it.
+            timeline.OnSnapshotArrived(monotonicLocalSeconds);
 
             for (int recordIndex = 0; recordIndex < message.Records.Count; recordIndex++) {
                 EntitySnapshotRecord record = message.Records[recordIndex];
@@ -677,12 +788,22 @@ namespace AlpineLib.Netcode.Replication {
             OnEntitySpawned?.Invoke(entity);
         }
 
+        /// <remarks>
+        /// Only pawns get a carry world. A mover's own snapshots already carry its true velocity, so
+        /// carry-augmenting a mover's interpolator against itself would double its motion. Kind is fixed
+        /// for an entity's lifetime, so the decision made at creation holds.
+        /// </remarks>
         private StateInterpolator ResolveInterpolator(uint entityId) {
             if (interpolators.TryGetValue(entityId, out StateInterpolator interpolator)) {
                 return interpolator;
             }
 
             interpolator = new StateInterpolator(config);
+
+            if (GetEntity(entityId)?.Kind == EntityKind.Pawn) {
+                interpolator.CarryWorld = collisionWorld;
+            }
+
             interpolators.Add(entityId, interpolator);
             return interpolator;
         }
