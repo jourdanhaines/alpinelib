@@ -12,8 +12,9 @@ namespace AlpineLib.Netcode.Timing {
     /// (a stall, a resume from sleep, a rejoin) is snapped, because easing across a gap that size would
     /// take longer than the drift is tolerable.
     ///
-    /// <see cref="InterpolationSeconds"/> is the timeline remote pawns are actually rendered on: the
-    /// estimate held back by the configured interpolation delay.
+    /// Remote pawns are rendered on this estimate held back by an interpolation delay — but the delay
+    /// belongs to <c>InterpolationTimeline</c>, which adapts it per connection; this clock only tells
+    /// the time.
     /// </summary>
     public sealed class NetClock {
         /// <summary>Error beyond which the estimate is snapped rather than eased.</summary>
@@ -23,23 +24,17 @@ namespace AlpineLib.Netcode.Timing {
         private const double SmoothingFactor = 0.1;
 
         private readonly int serverTickRate;
-        private readonly double interpolationDelaySeconds;
         private double estimatedServerSeconds;
         private bool hasObservation;
 
-        public NetClock(NetConfig config) : this(RequireTickRate(config), config.InterpolationDelayMs) { }
+        public NetClock(NetConfig config) : this(RequireTickRate(config)) { }
 
-        public NetClock(int serverTickRate, int interpolationDelayMs) {
+        public NetClock(int serverTickRate) {
             if (serverTickRate <= 0) {
                 throw new ArgumentOutOfRangeException(nameof(serverTickRate));
             }
 
-            if (interpolationDelayMs < 0) {
-                throw new ArgumentOutOfRangeException(nameof(interpolationDelayMs));
-            }
-
             this.serverTickRate = serverTickRate;
-            interpolationDelaySeconds = interpolationDelayMs / 1000.0;
         }
 
         /// <summary>Ticks per second of the authoritative loop this clock tracks.</summary>
@@ -53,12 +48,6 @@ namespace AlpineLib.Netcode.Timing {
 
         /// <summary>Current estimate of the server's tick counter.</summary>
         public uint EstimatedServerTick => (uint)Math.Max(0.0, Math.Floor(estimatedServerSeconds * serverTickRate));
-
-        /// <summary>The delayed timeline remote pawns are rendered on.</summary>
-        public double InterpolationSeconds => estimatedServerSeconds - interpolationDelaySeconds;
-
-        /// <summary>Interpolation delay this clock was configured with.</summary>
-        public double InterpolationDelaySeconds => interpolationDelaySeconds;
 
         /// <summary>Round-trip time from the most recent observation, in milliseconds.</summary>
         public int PingMs { get; private set; }

@@ -26,10 +26,21 @@ namespace AlpineLib.Netcode.Protocol {
         public int ClientSendRate { get; set; } = 30;
 
         /// <summary>
-        /// How far behind the estimated server clock remote pawns are rendered. Buys the interpolator a
-        /// buffer of received snapshots so ordinary jitter never turns into a visible stall.
+        /// Where the adaptive interpolation delay starts, in milliseconds: how far behind the estimated
+        /// server clock remote pawns are rendered before the timeline has measured anything. The live
+        /// value then tracks latency and jitter between <see cref="InterpolationDelayMinMs"/> and
+        /// <see cref="InterpolationDelayMaxMs"/>.
         /// </summary>
         public int InterpolationDelayMs { get; set; } = 100;
+
+        /// <summary>Floor of the adaptive interpolation delay, in milliseconds.</summary>
+        public int InterpolationDelayMinMs { get; set; } = 60;
+
+        /// <summary>
+        /// Ceiling of the adaptive interpolation delay, in milliseconds. Past this, staleness costs more
+        /// than the occasional extrapolated frame it would prevent.
+        /// </summary>
+        public int InterpolationDelayMaxMs { get; set; } = 250;
 
         public int DisconnectTimeoutMs { get; set; } = 5000;
 
@@ -55,8 +66,14 @@ namespace AlpineLib.Netcode.Protocol {
         /// <summary>Seconds between client sends.</summary>
         public float ClientSendInterval => SafeInterval(ClientSendRate);
 
-        /// <summary>Interpolation delay expressed in seconds, which is what the clock works in.</summary>
+        /// <summary>Initial interpolation delay expressed in seconds, which is what the clock works in.</summary>
         public double InterpolationDelaySeconds => InterpolationDelayMs / 1000.0;
+
+        /// <summary>Adaptive delay floor in seconds.</summary>
+        public double InterpolationDelayMinSeconds => InterpolationDelayMinMs / 1000.0;
+
+        /// <summary>Adaptive delay ceiling in seconds.</summary>
+        public double InterpolationDelayMaxSeconds => InterpolationDelayMaxMs / 1000.0;
 
         /// <summary>The connect key both ends must present, derived from the one version constant.</summary>
         public string BuildConnectKey() {
