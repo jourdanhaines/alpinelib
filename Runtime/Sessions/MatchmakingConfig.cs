@@ -31,12 +31,20 @@ namespace AlpineLib.Sessions {
         public bool enableSteamInvites;
 
         /// <summary>
-        /// Builds the locator that resolves the server endpoint for this build.
+        /// Builds the locator that resolves the server endpoint for this build: an override from
+        /// <see cref="ServerAddressOverride"/> when one is set, the asset's address otherwise.
         /// </summary>
         /// <returns>A configured locator, or null when the address cannot be parsed.</returns>
         public ISessionLocator CreateLocator() {
-            if (!ConfiguredServerLocator.TryParseAddress(serverAddress, out NetEndpoint endpoint)) {
-                Debug.LogError($"MatchmakingConfig::CreateLocator->'{serverAddress}' is not a host:port address.");
+            string address = serverAddress;
+
+            if (ServerAddressOverride.TryResolve(out string overrideAddress, out string overrideSource)) {
+                address = overrideAddress;
+                Debug.Log($"MatchmakingConfig::CreateLocator->Dialing {address} from {overrideSource} instead of the configured {serverAddress}.");
+            }
+
+            if (!ConfiguredServerLocator.TryParseAddress(address, out NetEndpoint endpoint)) {
+                Debug.LogError($"MatchmakingConfig::CreateLocator->'{address}' is not a host:port address.");
                 return null;
             }
 
