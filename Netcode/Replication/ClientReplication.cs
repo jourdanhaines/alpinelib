@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using AlpineLib.Netcode.Collision;
 using AlpineLib.Netcode.Protocol;
 using AlpineLib.Netcode.Replication.Messages;
 using AlpineLib.Netcode.Transport;
@@ -24,6 +25,14 @@ namespace AlpineLib.Netcode.Replication {
     /// one connection and one session, so there is no second instance to collide with, and making the
     /// caller remember an attach step would be ceremony with no purpose.
     /// </para>
+    /// <para>
+    /// Cutting across ownership is <see cref="EntityKind"/>. A <see cref="EntityKind.Mover"/> — a moving
+    /// platform — is replicated exactly like a pawn but is never predicted, whoever the spawn happens to
+    /// name as its owner: its pose is a pure function of the server tick, so there is nothing for local
+    /// input to guess at and no correction it could meaningfully rewind to. Movers therefore get an
+    /// interpolator and nothing else — no prediction buffer, no settled memo, no base tick — and inputs
+    /// and corrections addressed to one are dropped rather than acted on.
+    /// </para>
     /// </remarks>
     public sealed class ClientReplication : IDisposable {
         /// <summary>
@@ -33,16 +42,18 @@ namespace AlpineLib.Netcode.Replication {
         /// </summary>
         public const int MaxPendingEventSequences = 64;
 
-        /// <summary>Horizontal position error below which a correction counts as agreement, in metres.</summary>
-        public const float CorrectionHorizontalEpsilon = 0.01f;
-
         /// <summary>
-        /// Vertical position error below which a correction counts as agreement, in metres. Far looser
-        /// than the horizontal bound on purpose: the visible pawn stands on real scene geometry while
-        /// both simulations stand on the ground seam, and until a real heightfield provider exists that
-        /// gap is a fact of the floor, not a prediction error worth a rewind.
+        /// Position error below which a correction counts as agreement, in metres — the same bound on all
+        /// three axes.
         /// </summary>
-        public const float CorrectionVerticalEpsilon = 0.25f;
+        /// <remarks>
+        /// Vertical error used to get a bound twenty-five times looser than the horizontal one, because
+        /// both simulations stood on a flat ground seam while the visible pawn stood on real scene
+        /// geometry and that gap was a fact of the floor rather than a mispredicted step. Both ends now
+        /// simulate against the same exported collision world, so a quarter of a metre of vertical
+        /// disagreement is exactly what it looks like: a prediction that is wrong and should be corrected.
+        /// </remarks>
+        public const float CorrectionPositionEpsilon = 0.01f;
 
         /// <summary>Per-axis velocity error below which a correction counts as agreement, in m/s.</summary>
         public const float CorrectionVelocityEpsilon = 0.1f;
@@ -63,23 +74,24 @@ namespace AlpineLib.Netcode.Replication {
         private readonly Queue<uint> pendingEventOrder = new Queue<uint>();
         private readonly Dictionary<uint, RecentInputs> recentInputsByEntity = new Dictionary<uint, RecentInputs>();
         private readonly Dictionary<uint, SettledPrediction> settledByEntity = new Dictionary<uint, SettledPrediction>();
+        private readonly Dictionary<uint, uint> predictionBaseTickByEntity = new Dictionary<uint, uint>();
 
         private readonly InterpolationTimeline timeline;
 
-        private IGroundProvider groundProvider;
+        private CollisionWorld collisionWorld;
         private uint nextEventSequence = 1u;
         private uint nextInputSequence = 1u;
         private bool disposed;
 
-        /// <summary>Creates a client world predicting over flat ground at y = 0.</summary>
+        /// <summary>Creates a client world predicting over a flat floor at y = 0 and nothing else.</summary>
         public ClientReplication(NetClient client, NetConfig config)
-            : this(client, config, new FlatGroundProvider()) { }
+            : this(client, config, CollisionWorld.Flat()) { }
 
-        /// <summary>Creates a client world with an explicit ground seam for prediction.</summary>
-        public ClientReplication(NetClient client, NetConfig config, IGroundProvider groundProvider) {
+        /// <summary>Creates a client world predicting against a scene's exported collision geometry.</summary>
+        public ClientReplication(NetClient client, NetConfig config, CollisionWorld collisionWorld) {
             this.client = client ?? throw new ArgumentNullException(nameof(client));
             this.config = config ?? throw new ArgumentNullException(nameof(config));
-            this.groundProvider = groundProvider ?? throw new ArgumentNullException(nameof(groundProvider));
+            this.collisionWorld = collisionWorld ?? throw new ArgumentNullException(nameof(collisionWorld));
             timeline = new InterpolationTimeline(config);
 
             LocalPeerId = PeerHandle.None.Id;
@@ -114,10 +126,13 @@ namespace AlpineLib.Netcode.Replication {
         /// </summary>
         public int LocalPeerId { get; set; }
 
-        /// <summary>Ground seam used for prediction. Must match the server's or corrections never settle.</summary>
-        public IGroundProvider GroundProvider {
-            get => groundProvider;
-            set => groundProvider = value ?? throw new ArgumentNullException(nameof(value));
+        /// <summary>
+        /// Scene collision used for prediction. Must be built from the same exported geometry the server
+        /// loaded, or corrections never settle. Swapped when the session changes scene.
+        /// </summary>
+        public CollisionWorld CollisionWorld {
+            get => collisionWorld;
+            set => collisionWorld = value ?? throw new ArgumentNullException(nameof(value));
         }
 
         /// <summary>Every entity this client knows about.</summary>
@@ -155,14 +170,40 @@ namespace AlpineLib.Netcode.Replication {
             return predictionBuffers.TryGetValue(entityId, out PredictionBuffer buffer) ? buffer : null;
         }
 
+        /// <summary>
+        /// The server tick prediction for an entity currently counts forward from: the tick of the last
+        /// correction it adopted, or the clock's estimate at the moment it was adopted. Diagnostic — the
+        /// prediction path reads it internally, and it exists on the surface so tests and tooling can see
+        /// that the client is predicting at the ticks the server will actually consume.
+        /// </summary>
+        /// <returns>True when the entity is one this client predicts and a base tick is held for it.</returns>
+        public bool TryGetPredictionBaseTick(uint entityId, out uint baseTick) {
+            return predictionBaseTickByEntity.TryGetValue(entityId, out baseTick);
+        }
+
         /// <summary>True when this client's player owns the entity.</summary>
         public bool IsOwned(NetEntity entity) {
             return entity != null && entity.OwnerPeerId >= 0 && entity.OwnerPeerId == LocalPeerId;
         }
 
         /// <summary>True when the entity is one this client predicts rather than interpolates.</summary>
+        /// <remarks>
+        /// The kind test is not redundant with ownership. A mover is spawned unowned in practice, but this
+        /// is the single gate every piece of prediction machinery in the class asks before allocating or
+        /// stepping anything, and a mis-authored spawn that named an owner would otherwise hand a platform
+        /// a prediction buffer it can never reconcile. Kind is fixed for an entity's lifetime, so answering
+        /// no here answers no forever.
+        /// </remarks>
         public bool IsPredicted(NetEntity entity) {
-            return IsOwned(entity) && entity.Authority == AuthorityMode.Server;
+            return IsOwned(entity) && entity.Authority == AuthorityMode.Server && IsPawn(entity);
+        }
+
+        /// <summary>
+        /// True when the entity is input-driven — the only kind this client may predict, submit input for,
+        /// or accept an authority correction on.
+        /// </summary>
+        private static bool IsPawn(NetEntity entity) {
+            return entity != null && entity.Kind == EntityKind.Pawn;
         }
 
         /// <summary>
@@ -171,9 +212,17 @@ namespace AlpineLib.Netcode.Replication {
         /// trip's time.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// The input's sequence is stamped here, from a counter this class owns, whatever the caller put
         /// in it. Sequences are the acknowledgement contract with the server and must never duplicate or
         /// regress — a clock-derived stamp does both — so no caller is trusted to provide them.
+        /// </para>
+        /// <para>
+        /// The step is stamped with a server tick as well, because the world it steps through contains
+        /// movers whose poses are a function of the tick. The server will consume this input one tick
+        /// after the last one it has told us about, plus one for every input already in flight, so that
+        /// is the tick this predicts at: <c>base + pending + 1</c>.
+        /// </para>
         /// </remarks>
         /// <returns>The predicted state, also written to the entity.</returns>
         public PawnState SubmitInput(uint entityId, in PawnInput input) {
@@ -193,9 +242,12 @@ namespace AlpineLib.Netcode.Replication {
             stamped.Sequence = nextInputSequence;
             nextInputSequence++;
 
-            PawnState predicted = PawnMotor.Step(in stamped, entity.State, profile, groundProvider, config.ServerTickInterval);
+            PredictionBuffer buffer = ResolvePredictionBuffer(entityId);
+            uint simTick = ResolvePredictionBaseTick(entityId) + (uint)buffer.Count + 1u;
+
+            PawnState predicted = PawnMotor.Step(in stamped, entity.State, profile, collisionWorld, simTick, config.ServerTickInterval);
             entity.ApplyState(predicted, stamped.Sequence);
-            ResolvePredictionBuffer(entityId).Record(in stamped, in predicted);
+            buffer.Record(in stamped, in predicted);
 
             InputCommand message = BuildInputBundle(entityId, in stamped);
             client.Send(ReplicationMessageIds.InputCommand, in message, DeliveryClass.UnreliableSequenced);
@@ -245,7 +297,7 @@ namespace AlpineLib.Netcode.Replication {
         public void SubmitOwnerPawnState(uint entityId, in PawnState state) {
             NetEntity entity = GetEntity(entityId);
 
-            if (entity == null || !IsOwned(entity) || entity.Authority != AuthorityMode.OwnerClient) {
+            if (entity == null || !IsPawn(entity) || !IsOwned(entity) || entity.Authority != AuthorityMode.OwnerClient) {
                 return;
             }
 
@@ -314,6 +366,7 @@ namespace AlpineLib.Netcode.Replication {
             pendingEventOrder.Clear();
             recentInputsByEntity.Clear();
             settledByEntity.Clear();
+            predictionBaseTickByEntity.Clear();
         }
 
         /// <inheritdoc />
@@ -334,7 +387,15 @@ namespace AlpineLib.Netcode.Replication {
         }
 
         private void HandleSpawnEntity(in SpawnEntity message, PeerHandle sender) {
-            AdoptEntity(message.EntityId, message.PrefabId, message.OwnerPeerId, message.Authority, message.State, 0u);
+            AdoptEntity(
+                message.EntityId,
+                message.PrefabId,
+                message.OwnerPeerId,
+                message.Authority,
+                message.Kind,
+                message.AuxId,
+                message.State,
+                0u);
         }
 
         private void HandleDespawnEntity(in DespawnEntity message, PeerHandle sender) {
@@ -344,6 +405,7 @@ namespace AlpineLib.Netcode.Replication {
 
             interpolators.Remove(message.EntityId);
             predictionBuffers.Remove(message.EntityId);
+            predictionBaseTickByEntity.Remove(message.EntityId);
             RemoveFromList(message.EntityId);
             OnEntityDespawned?.Invoke(message.EntityId);
         }
@@ -373,6 +435,8 @@ namespace AlpineLib.Netcode.Replication {
                     record.PrefabId,
                     record.OwnerPeerId,
                     record.Authority,
+                    record.Kind,
+                    record.AuxId,
                     record.State,
                     message.ServerTick);
             }
@@ -394,19 +458,27 @@ namespace AlpineLib.Netcode.Replication {
         /// sequence settles that sequence and does nothing else, and only a genuine disagreement rewinds,
         /// replays and tells the pawn's controller anything happened.
         /// </summary>
+        /// <remarks>
+        /// A correction naming anything but a pawn is dropped outright. Nothing predicted a mover, so there
+        /// is no pending window to acknowledge and no rewind to run; taking one would mint a prediction
+        /// buffer and a base tick for an entity that must only ever be interpolated, and the snapshot
+        /// stream would then fight the correction stream over the same platform.
+        /// </remarks>
         private void HandleAuthorityCorrection(in AuthorityCorrection message, PeerHandle sender) {
             NetEntity entity = GetEntity(message.EntityId);
 
-            if (entity == null || !IsOwned(entity)) {
+            if (entity == null || !IsPawn(entity) || !IsOwned(entity)) {
                 return;
             }
 
             if (TryAcknowledgeCleanCorrection(entity, in message)) {
                 CorrectionsSkipped++;
+                AdoptPredictionBaseTick(entity, message.ServerTick);
                 return;
             }
 
             CorrectionsApplied++;
+            AdoptPredictionBaseTick(entity, message.ServerTick);
             PawnState resolved = ResolveCorrection(entity, in message);
             settledByEntity[entity.Id] = new SettledPrediction(message.AcknowledgedInputSequence, message.State);
             entity.ApplyState(resolved, message.ServerTick);
@@ -467,15 +539,15 @@ namespace AlpineLib.Netcode.Replication {
                 return false;
             }
 
-            if (MathF.Abs(predicted.Position.X - authoritative.Position.X) > CorrectionHorizontalEpsilon) {
+            if (MathF.Abs(predicted.Position.X - authoritative.Position.X) > CorrectionPositionEpsilon) {
                 return false;
             }
 
-            if (MathF.Abs(predicted.Position.Z - authoritative.Position.Z) > CorrectionHorizontalEpsilon) {
+            if (MathF.Abs(predicted.Position.Z - authoritative.Position.Z) > CorrectionPositionEpsilon) {
                 return false;
             }
 
-            if (MathF.Abs(predicted.Position.Y - authoritative.Position.Y) > CorrectionVerticalEpsilon) {
+            if (MathF.Abs(predicted.Position.Y - authoritative.Position.Y) > CorrectionPositionEpsilon) {
                 return false;
             }
 
@@ -503,9 +575,43 @@ namespace AlpineLib.Netcode.Replication {
             return ResolvePredictionBuffer(entity.Id).Reconcile(
                 message.AcknowledgedInputSequence,
                 message.State,
+                message.ServerTick,
                 profile,
-                groundProvider,
+                collisionWorld,
                 config.ServerTickInterval);
+        }
+
+        /// <summary>
+        /// Moves an entity's prediction onto the tick a correction just settled, so the inputs still in
+        /// flight are stepped at the ticks the server will consume them on.
+        /// </summary>
+        /// <remarks>
+        /// Corrections that agreed move it too. Agreement drops the acknowledged steps from the pending
+        /// window, and leaving the base where it was while the window shrank would predict the next input
+        /// at a tick further and further in the past — the same mover error a disagreement causes, arrived
+        /// at by doing nothing.
+        /// </remarks>
+        private void AdoptPredictionBaseTick(NetEntity entity, uint serverTick) {
+            if (!IsPredicted(entity)) {
+                return;
+            }
+
+            predictionBaseTickByEntity[entity.Id] = serverTick;
+        }
+
+        /// <summary>
+        /// The tick prediction counts forward from for an entity. An entity with no base yet — one whose
+        /// first correction has not arrived — counts from the clock's current estimate of the server tick,
+        /// which is the best guess available of where the server is right now.
+        /// </summary>
+        private uint ResolvePredictionBaseTick(uint entityId) {
+            if (predictionBaseTickByEntity.TryGetValue(entityId, out uint baseTick)) {
+                return baseTick;
+            }
+
+            baseTick = client.Clock.EstimatedServerTick;
+            predictionBaseTickByEntity[entityId] = baseTick;
+            return baseTick;
         }
 
         /// <summary>
@@ -528,11 +634,20 @@ namespace AlpineLib.Netcode.Replication {
         /// updates it in place rather than announcing it twice, which is what makes the same message serve
         /// both the periodic broadcast and a rejoining client's first sight of the world.
         /// </summary>
+        /// <remarks>
+        /// The kind and the mover id are carried through onto the entity rather than dropped here, because
+        /// <see cref="OnEntitySpawned"/> is where the presentation layer decides what to build around an
+        /// entity — a possessable penguin or a platform driven from the shared path — and it reads them
+        /// off the <see cref="NetEntity"/> it is handed. They are also what keeps a mover out of the
+        /// prediction bookkeeping below.
+        /// </remarks>
         private void AdoptEntity(
             uint entityId,
             ushort prefabId,
             int ownerPeerId,
             AuthorityMode authority,
+            EntityKind kind,
+            ushort auxId,
             in PawnState state,
             uint serverTick) {
             if (entitiesById.TryGetValue(entityId, out NetEntity existing)) {
@@ -541,7 +656,7 @@ namespace AlpineLib.Netcode.Replication {
                 return;
             }
 
-            var entity = new NetEntity(entityId, prefabId, ownerPeerId, authority, in state);
+            var entity = new NetEntity(entityId, prefabId, ownerPeerId, authority, kind, auxId, in state);
             entitiesById.Add(entityId, entity);
             entities.Add(entity);
 
@@ -550,6 +665,10 @@ namespace AlpineLib.Netcode.Replication {
                 // Corrections that arrive before the first input acknowledge sequence zero; seeding the
                 // settled record with the spawn state lets them match instead of forcing a rewind.
                 settledByEntity[entityId] = new SettledPrediction(0u, state.Quantized());
+                // Nothing has been corrected yet, so prediction counts forward from where the clock
+                // thinks the server is — a spawn's own tick is already a round trip old by the time it
+                // arrives, and predicting from it would step every mover in the past.
+                predictionBaseTickByEntity[entityId] = client.Clock.EstimatedServerTick;
             }
             else {
                 ResolveInterpolator(entityId).Push(serverTick, in state);

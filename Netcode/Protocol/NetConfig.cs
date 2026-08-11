@@ -81,6 +81,47 @@ namespace AlpineLib.Netcode.Protocol {
         }
 
         /// <summary>
+        /// Checks the rates against each other and throws when the pair cannot produce a correct
+        /// simulation. Called once when a config is loaded, not per tick.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// <b>The client must send exactly once per server tick.</b> An owning client predicts one motor
+        /// step per input it sends, and the server steps that input once per tick; anything else and the
+        /// two integrate a different number of times over the same wall-clock second. Sending slower
+        /// leaves the server catching up several ticks on one input — the prediction is ahead by the
+        /// difference and every snapshot corrects it — while sending faster queues input the server never
+        /// consumes at the rate it arrives, which grows an unbounded backlog and lags the pawn behind its
+        /// own keyboard. Neither shows up as an error: both show up as a pawn that will not stop
+        /// rubber-banding, which is why the equality is asserted here rather than trusted to authoring.
+        /// </para>
+        /// <para>
+        /// The snapshot rate is deliberately <i>not</i> tied to the tick rate. Snapshots are a broadcast
+        /// budget and the interpolator is built to smooth between them at any spacing, so halving them is
+        /// a bandwidth decision rather than a simulation one.
+        /// </para>
+        /// </remarks>
+        /// <exception cref="InvalidOperationException">A rate is not positive, or the send rate and the tick rate disagree.</exception>
+        public void Validate() {
+            if (ServerTickRate <= 0 || ClientSendRate <= 0 || SnapshotRate <= 0) {
+                throw new InvalidOperationException(
+                    "NetConfig rates must be positive: serverTickRate=" + ServerTickRate.ToString()
+                    + ", clientSendRate=" + ClientSendRate.ToString()
+                    + ", snapshotRate=" + SnapshotRate.ToString() + ".");
+            }
+
+            if (ClientSendRate == ServerTickRate) {
+                return;
+            }
+
+            throw new InvalidOperationException(
+                "NetConfig clientSendRate (" + ClientSendRate.ToString() + " Hz) must equal serverTickRate ("
+                + ServerTickRate.ToString() + " Hz): an owning client predicts one motor step per input it sends "
+                + "and the server steps one input per tick, so any other pairing predicts a different distance "
+                + "than it is corrected to.");
+        }
+
+        /// <summary>
         /// Movement envelope for a prefab id, or null when the registry has no entry — callers decide
         /// whether a missing profile means "unvalidated" or "reject", so this does not invent defaults.
         /// </summary>

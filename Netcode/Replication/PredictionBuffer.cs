@@ -1,4 +1,5 @@
 using System;
+using AlpineLib.Netcode.Collision;
 using AlpineLib.Netcode.Protocol;
 
 namespace AlpineLib.Netcode.Replication {
@@ -18,6 +19,15 @@ namespace AlpineLib.Netcode.Replication {
     /// plants the authoritative state, and replays the inputs the server has not seen yet through the
     /// same motor. The player sees a snap only when the server genuinely disagreed; when it agreed, the
     /// replay lands on the same numbers and nothing visibly happens.
+    /// </para>
+    /// <para>
+    /// Replay is stamped with real server ticks, not with a counter starting at zero. The motor's world
+    /// contains movers whose poses are a function of the tick, so replaying the input the server will
+    /// consume at tick <c>T</c> against tick <c>T − 40</c> would ride a platform that is somewhere else
+    /// entirely and manufacture the very disagreement the replay exists to erase. The correction carries
+    /// the tick its state belongs to, and the pending inputs after it were sent for the ticks that follow
+    /// it one at a time — so input <c>k</c> of the replayed window is stepped at
+    /// <c>correctionServerTick + k + 1</c>.
     /// </para>
     /// <para>
     /// Storage is a fixed ring. If a client ever gets more than <see cref="Capacity"/> ticks ahead of
@@ -92,15 +102,17 @@ namespace AlpineLib.Netcode.Replication {
         /// </summary>
         /// <param name="acknowledgedSequence">The last input sequence the server had consumed when it sent this.</param>
         /// <param name="correctedState">The server's state after consuming that input.</param>
+        /// <param name="correctionServerTick">The server tick the corrected state belongs to.</param>
         /// <param name="profile">Movement envelope for this pawn — must be the same one the server used.</param>
-        /// <param name="groundProvider">Ground seam — must agree with the server's.</param>
+        /// <param name="world">Scene collision — must be built from the same geometry the server loaded.</param>
         /// <param name="deltaSeconds">The fixed step both ends simulate at.</param>
         /// <returns>The re-predicted present state, which the caller should adopt.</returns>
         public PawnState Reconcile(
             uint acknowledgedSequence,
             in PawnState correctedState,
+            uint correctionServerTick,
             MovementProfile profile,
-            IGroundProvider groundProvider,
+            CollisionWorld world,
             float deltaSeconds) {
             DropThrough(acknowledgedSequence);
 
@@ -109,7 +121,8 @@ namespace AlpineLib.Netcode.Replication {
             for (int offset = 0; offset < count; offset++) {
                 int index = IndexOf(offset);
                 PawnInput replayed = steps[index].Input;
-                current = PawnMotor.Step(in replayed, in current, profile, groundProvider, deltaSeconds);
+                uint simTick = correctionServerTick + (uint)offset + 1u;
+                current = PawnMotor.Step(in replayed, in current, profile, world, simTick, deltaSeconds);
                 steps[index] = new PendingStep(in replayed, in current);
             }
 

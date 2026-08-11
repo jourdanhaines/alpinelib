@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using AlpineLib.Netcode.Collision;
 using AlpineLib.Netcode.Protocol;
 using AlpineLib.Netcode.Replication.Messages;
 using AlpineLib.Netcode.Transport;
@@ -23,6 +24,15 @@ namespace AlpineLib.Netcode.Replication {
     /// <c>InputCommand</c>. A single-session host calls <see cref="AttachToRouter"/> and gets the wiring
     /// for free; a multi-session server leaves it alone, registers once itself, resolves which session a
     /// peer belongs to and calls <see cref="HandleInputCommand"/> and friends directly.
+    /// </para>
+    /// <para>
+    /// <b>Movers are entities here too.</b> A scene's moving platforms are not a separate broadcast
+    /// channel: <see cref="UseWorld"/> spawns one <see cref="EntityKind.Mover"/> entity per mover in the
+    /// loaded world, and <see cref="StepMovers"/> writes each one's authored pose at the top of every
+    /// tick, before any pawn is simulated. Clients therefore learn about platforms through the same
+    /// spawn, snapshot and keyframe path as everyone else, and a client that cannot resolve the mover's
+    /// path — an old build, a scene it has not loaded — still sees the platform move because the state is
+    /// on the wire regardless.
     /// </para>
     /// <para>
     /// <b>Threading.</b> Everything here runs on the thread that calls <see cref="Tick"/> — the Unity
@@ -51,17 +61,25 @@ namespace AlpineLib.Netcode.Replication {
         /// <summary>Per-tick multiplier applied to a starved pawn's move vector past the hold.</summary>
         public const float StarvationDecayFactor = 0.5f;
 
+        /// <summary>
+        /// Owner id given to entities no player owns — the movers. Matches <see cref="PeerHandle.None"/>,
+        /// so every "does anyone own this" test in this file and on the client agrees without a special
+        /// case for platforms.
+        /// </summary>
+        public const int UnownedPeerId = -1;
+
         private readonly NetServer server;
         private readonly Func<IReadOnlyList<PeerHandle>> peerSource;
         private readonly MovementValidator validator;
-        private readonly IGroundProvider groundProvider;
         private readonly NetConfig config;
         private readonly ServerEntityRegistry registry = new ServerEntityRegistry();
         private readonly Dictionary<uint, Queue<PawnInput>> inputQueues = new Dictionary<uint, Queue<PawnInput>>();
+        private readonly Dictionary<uint, int> moverIndexByEntityId = new Dictionary<uint, int>();
         private readonly List<EntitySnapshotRecord> snapshotRecords = new List<EntitySnapshotRecord>();
         private readonly List<EntityKeyframeRecord> keyframeRecords = new List<EntityKeyframeRecord>();
         private readonly List<uint> despawnScratch = new List<uint>();
 
+        private CollisionWorld world;
         private double snapshotAccumulatorSeconds;
         private double keyframeAccumulatorSeconds;
         private uint currentTick;
@@ -70,20 +88,23 @@ namespace AlpineLib.Netcode.Replication {
         private bool hasSimulated;
         private bool isAttachedToRouter;
 
-        /// <summary>Creates a replication world over flat ground at y = 0.</summary>
+        /// <summary>
+        /// Creates a replication world over an endless floor at y = 0 — what a session with no exported
+        /// geometry for its scene falls back to.
+        /// </summary>
         public ServerReplication(NetServer server, Func<IReadOnlyList<PeerHandle>> peerSource, MovementValidator validator)
-            : this(server, peerSource, validator, new FlatGroundProvider()) { }
+            : this(server, peerSource, validator, CollisionWorld.Flat()) { }
 
-        /// <summary>Creates a replication world with an explicit ground seam.</summary>
+        /// <summary>Creates a replication world simulating against a scene's exported collision geometry.</summary>
         public ServerReplication(
             NetServer server,
             Func<IReadOnlyList<PeerHandle>> peerSource,
             MovementValidator validator,
-            IGroundProvider groundProvider) {
+            CollisionWorld world) {
             this.server = server ?? throw new ArgumentNullException(nameof(server));
             this.peerSource = peerSource ?? throw new ArgumentNullException(nameof(peerSource));
             this.validator = validator ?? throw new ArgumentNullException(nameof(validator));
-            this.groundProvider = groundProvider ?? throw new ArgumentNullException(nameof(groundProvider));
+            this.world = world ?? throw new ArgumentNullException(nameof(world));
             config = validator.Config;
         }
 
@@ -102,8 +123,12 @@ namespace AlpineLib.Netcode.Replication {
         /// <summary>The live entity set.</summary>
         public ServerEntityRegistry Entities => registry;
 
-        /// <summary>Where the floor is for this session's simulation.</summary>
-        public IGroundProvider GroundProvider => groundProvider;
+        /// <summary>
+        /// The scene collision this session simulates against. Every owning client predicts through a
+        /// world built from the same exported bytes, so a mismatch here is a correction on every tick.
+        /// Swapped by <see cref="UseWorld"/> when the session changes scene.
+        /// </summary>
+        public CollisionWorld World => world;
 
         /// <summary>Who this world broadcasts to — the session's members, and nobody else.</summary>
         public IReadOnlyList<PeerHandle> Peers => peerSource() ?? Array.Empty<PeerHandle>();
@@ -141,16 +166,42 @@ namespace AlpineLib.Netcode.Replication {
             isAttachedToRouter = false;
         }
 
-        /// <summary>Creates an entity and tells the session about it.</summary>
+        /// <summary>Creates a pawn and tells the session about it.</summary>
         public NetEntity SpawnEntity(ushort prefabId, int ownerPeerId, AuthorityMode authority, in PawnState initialState) {
-            NetEntity entity = registry.Create(prefabId, ownerPeerId, authority, in initialState);
+            return SpawnEntity(prefabId, ownerPeerId, authority, EntityKind.Pawn, 0, in initialState);
+        }
 
-            // Until the owner's first input arrives the motor runs on LastInput, and a default one would
-            // quietly rewrite the spawn state's gait and crouch on the first starved tick — a flags
-            // change the owner never asked for and the first correction would have to repair.
-            entity.LastInput = new PawnInput(0u, System.Numerics.Vector2.Zero, initialState.Locomotion, false, initialState.IsCrouching);
+        /// <summary>Creates an entity of any kind and tells the session about it.</summary>
+        /// <remarks>
+        /// The kind is not cosmetic. Only a pawn is seeded with a resting input and only a pawn is ever
+        /// stepped by the motor; a mover spawned through here is posed from its path instead, and giving
+        /// it an input would put a platform on the starvation-decay path the moment its owner — nobody —
+        /// failed to send one.
+        /// </remarks>
+        public NetEntity SpawnEntity(
+            ushort prefabId,
+            int ownerPeerId,
+            AuthorityMode authority,
+            EntityKind kind,
+            ushort auxId,
+            in PawnState initialState) {
+            NetEntity entity = registry.Create(prefabId, ownerPeerId, authority, kind, auxId, in initialState);
 
-            var message = new SpawnEntity(entity.Id, entity.PrefabId, entity.OwnerPeerId, entity.Authority, in initialState);
+            if (kind == EntityKind.Pawn) {
+                // Until the owner's first input arrives the motor runs on LastInput, and a default one would
+                // quietly rewrite the spawn state's gait and crouch on the first starved tick — a flags
+                // change the owner never asked for and the first correction would have to repair.
+                entity.LastInput = new PawnInput(0u, System.Numerics.Vector2.Zero, initialState.Locomotion, false, initialState.IsCrouching);
+            }
+
+            var message = new SpawnEntity(
+                entity.Id,
+                entity.PrefabId,
+                entity.OwnerPeerId,
+                entity.Authority,
+                entity.Kind,
+                entity.AuxId,
+                in initialState);
             server.SendToMany(Peers,ReplicationMessageIds.SpawnEntity, in message, DeliveryClass.ReliableOrdered);
 
             OnEntitySpawned?.Invoke(entity);
@@ -164,7 +215,136 @@ namespace AlpineLib.Netcode.Replication {
             }
 
             inputQueues.Remove(entityId);
+            moverIndexByEntityId.Remove(entityId);
             BroadcastDespawn(entityId);
+        }
+
+        /// <summary>
+        /// Points this session at a different scene's collision, replacing whatever movers the old world
+        /// contributed with the new one's.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// This is the scene-change path: a session moving from the lobby to a match calls it once, and
+        /// everything downstream follows. Pawns are deliberately left alone — the same penguins walk into
+        /// the new scene, and their positions are the session's problem, not the geometry's — while every
+        /// mover entity is despawned and respawned, because a mover's identity is its row in a particular
+        /// scene's export and carrying one across a scene change would leave a platform following a path
+        /// that no longer exists.
+        /// </para>
+        /// <para>
+        /// The new movers are spawned already posed at the current tick rather than at their first
+        /// waypoint. A platform on a two-minute cycle would otherwise snap from wherever the phase puts it
+        /// back to the start of its route on the first tick after the swap, which every client would see as
+        /// a teleport before the interpolator had anything to smooth.
+        /// </para>
+        /// </remarks>
+        public void UseWorld(CollisionWorld nextWorld) {
+            if (nextWorld == null) {
+                throw new ArgumentNullException(nameof(nextWorld));
+            }
+
+            DespawnMovers();
+            world = nextWorld;
+            SpawnMovers();
+        }
+
+        /// <summary>
+        /// Writes every mover's authored pose for one tick. Called at the top of each simulated tick,
+        /// before the pawns are stepped.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Order matters and is the reason this is its own call rather than a branch inside the pawn loop.
+        /// A pawn standing on a platform reads that platform's travel for this tick out of the collision
+        /// world, so the platform's state must already describe the tick the pawn is about to be simulated
+        /// through. Both ends evaluate the same pure path from the same tick, so this is bookkeeping for
+        /// the wire rather than a second simulation — but bookkeeping that is one tick stale is a rider
+        /// sliding backwards on every platform in the scene.
+        /// </para>
+        /// <para>
+        /// The velocity written alongside the position is the tick's travel divided by the tick interval.
+        /// Nothing on the server integrates it; it exists so that a client interpolating a platform it
+        /// cannot resolve a path for still has a direction and a speed to extrapolate from between
+        /// snapshots.
+        /// </para>
+        /// </remarks>
+        public void StepMovers(uint tick) {
+            IReadOnlyList<NetEntity> entities = registry.Entities;
+            float interval = config.ServerTickInterval;
+
+            for (int entityIndex = 0; entityIndex < entities.Count; entityIndex++) {
+                NetEntity entity = entities[entityIndex];
+
+                if (entity.Kind != EntityKind.Mover || !moverIndexByEntityId.TryGetValue(entity.Id, out int moverIndex)) {
+                    continue;
+                }
+
+                entity.ApplyState(MoverStateAt(moverIndex, tick, interval), tick);
+            }
+        }
+
+        /// <summary>
+        /// Removes every mover entity the previous world contributed, telling the session about each.
+        /// </summary>
+        /// <remarks>
+        /// The ids are collected into a list of their own rather than the shared despawn scratch, because
+        /// each removal raises <see cref="OnEntityDespawned"/> and a handler is entitled to despawn
+        /// something else while this is still walking its own list.
+        /// </remarks>
+        private void DespawnMovers() {
+            var moverIds = new List<uint>(moverIndexByEntityId.Count);
+            IReadOnlyList<NetEntity> entities = registry.Entities;
+
+            for (int entityIndex = 0; entityIndex < entities.Count; entityIndex++) {
+                NetEntity entity = entities[entityIndex];
+
+                if (entity.Kind == EntityKind.Mover) {
+                    moverIds.Add(entity.Id);
+                }
+            }
+
+            for (int idIndex = 0; idIndex < moverIds.Count; idIndex++) {
+                DespawnEntity(moverIds[idIndex]);
+            }
+
+            moverIndexByEntityId.Clear();
+        }
+
+        /// <summary>Spawns one unowned, server-authoritative entity for each mover in the current world.</summary>
+        private void SpawnMovers() {
+            IReadOnlyList<MoverDefinition> movers = world.Movers;
+            float interval = config.ServerTickInterval;
+
+            for (int moverIndex = 0; moverIndex < movers.Count; moverIndex++) {
+                MoverDefinition mover = movers[moverIndex];
+
+                if (mover == null) {
+                    continue;
+                }
+
+                PawnState initialState = MoverStateAt(moverIndex, currentTick, interval);
+                NetEntity entity = SpawnEntity(
+                    mover.PrefabId,
+                    UnownedPeerId,
+                    AuthorityMode.Server,
+                    EntityKind.Mover,
+                    mover.MoverId,
+                    in initialState);
+                moverIndexByEntityId[entity.Id] = moverIndex;
+            }
+        }
+
+        /// <summary>
+        /// One mover's replicated state at a tick: its path position, the tick's travel expressed as a
+        /// velocity, no facing, and grounded — a platform is a floor, and a client rendering it has no use
+        /// for a falling flag.
+        /// </summary>
+        private PawnState MoverStateAt(int moverIndex, uint tick, float interval) {
+            System.Numerics.Vector3 position = world.EvaluateMoverPosition(moverIndex, tick);
+            System.Numerics.Vector3 delta = world.MoverDelta(moverIndex, tick);
+            var velocity = new System.Numerics.Vector3(delta.X / interval, delta.Y / interval, delta.Z / interval);
+            return new PawnState(position, 0f, velocity, PawnState.PackFlags(WireLocomotion.WalkSlow, false, true));
         }
 
         /// <summary>Destroys every entity a peer owns — what a player leaving for good triggers.</summary>
@@ -175,6 +355,7 @@ namespace AlpineLib.Netcode.Replication {
             for (int idIndex = 0; idIndex < despawnScratch.Count; idIndex++) {
                 uint entityId = despawnScratch[idIndex];
                 inputQueues.Remove(entityId);
+                moverIndexByEntityId.Remove(entityId);
                 BroadcastDespawn(entityId);
             }
         }
@@ -371,8 +552,19 @@ namespace AlpineLib.Netcode.Replication {
                 elapsed = MaxCatchUpSteps;
             }
 
+            // Each catch-up step is stamped with the tick it stands for, ending on the one just reached.
+            // The motor's world contains movers whose poses are a pure function of that stamp, so paying
+            // back a stall with eight steps all labelled "now" would drag a platform through eight ticks
+            // of travel in a single step and take its rider with it.
+            uint firstTick = serverTick - elapsed + 1u;
+
             for (uint step = 0; step < elapsed; step++) {
-                StepServerAuthorityEntities(serverTick);
+                uint tick = firstTick + step;
+
+                // Platforms first: a pawn stepped through this tick asks the world where its ride has got
+                // to, and the answer has to be this tick's pose rather than the previous one's.
+                StepMovers(tick);
+                StepServerAuthorityEntities(tick);
             }
 
             lastSimulatedTick = serverTick;
@@ -386,7 +578,10 @@ namespace AlpineLib.Netcode.Replication {
             for (int entityIndex = 0; entityIndex < entities.Count; entityIndex++) {
                 NetEntity entity = entities[entityIndex];
 
-                if (entity.Authority != AuthorityMode.Server) {
+                // Movers are server-authoritative too, but they are posed by StepMovers rather than
+                // simulated. Letting one through here would hand a platform a starved pawn's input and
+                // walk it off its own path.
+                if (entity.Authority != AuthorityMode.Server || entity.Kind != EntityKind.Pawn) {
                     continue;
                 }
 
@@ -397,7 +592,7 @@ namespace AlpineLib.Netcode.Replication {
                 }
 
                 PawnInput input = NextInputFor(entity);
-                PawnState next = PawnMotor.Step(in input, entity.State, profile, groundProvider, interval);
+                PawnState next = PawnMotor.Step(in input, entity.State, profile, world, tick, interval);
                 entity.ApplyState(next, tick);
             }
         }
@@ -473,6 +668,8 @@ namespace AlpineLib.Netcode.Replication {
                     entity.PrefabId,
                     entity.OwnerPeerId,
                     entity.Authority,
+                    entity.Kind,
+                    entity.AuxId,
                     entity.State));
             }
         }

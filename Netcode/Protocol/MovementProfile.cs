@@ -54,6 +54,31 @@ namespace AlpineLib.Netcode.Protocol {
         /// </summary>
         public float AirDrag { get; set; }
 
+        /// <summary>
+        /// Radius of the pawn's collision capsule, in metres. The shared motor sweeps this against the
+        /// scene's collision world, so it must match the engine-side CharacterController the player sees
+        /// themselves inside — a client whose capsule is fatter than the server's stops short of walls the
+        /// server lets it through, and every one of those disagreements is a correction.
+        /// </summary>
+        public float CapsuleRadius { get; set; } = 0.35f;
+
+        /// <summary>Total height of the pawn's collision capsule, in metres, measured from the feet.</summary>
+        public float CapsuleHeight { get; set; } = 1.1f;
+
+        /// <summary>
+        /// Tallest ledge the pawn steps onto rather than walks into, in metres. It is also the reach of
+        /// the motor's downward support probe, which is what makes stepping up and clamping down to the
+        /// floor the same query rather than two.
+        /// </summary>
+        public float StepOffset { get; set; } = 0.3f;
+
+        /// <summary>
+        /// Steepest surface the pawn stands on, in degrees from horizontal. Anything steeper is a wall it
+        /// slides down. The motor compares surface normals against the cosine of this angle rather than
+        /// taking an inverse cosine per contact, which keeps trigonometry off the position path.
+        /// </summary>
+        public float SlopeLimitDegrees { get; set; } = 50f;
+
         /// <summary>Fastest gait in the profile — the ceiling the validator uses when a gait is unknown.</summary>
         public float MaxSpeed {
             get {
