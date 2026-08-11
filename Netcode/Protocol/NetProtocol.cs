@@ -15,7 +15,7 @@ namespace AlpineLib.Netcode.Protocol {
         /// Bump this whenever the wire layout of any message changes in a way old builds cannot read.
         /// There is exactly one version number in the system; nothing else carries its own.
         /// </summary>
-        public const ushort Version = 1;
+        public const ushort Version = 2;
 
         private const uint Fnv1aOffsetBasis = 2166136261u;
         private const uint Fnv1aPrime = 16777619u;

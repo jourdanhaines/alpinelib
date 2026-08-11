@@ -41,6 +41,19 @@ namespace AlpineLib.Netcode.Protocol {
         /// <summary>Upward speed a grounded pawn is given on the tick it jumps, in metres per second.</summary>
         public float JumpVelocity { get; set; } = 6f;
 
+        /// <summary>
+        /// Horizontal steering acceleration while airborne, in metres per second squared. Airborne
+        /// velocity moves toward the commanded direction at this rate instead of snapping, mirroring the
+        /// engine-side actor's air model — the two must integrate identically or every jump diverges.
+        /// </summary>
+        public float AirAcceleration { get; set; } = 16f;
+
+        /// <summary>
+        /// Exponential decay per second applied to horizontal air velocity while no input is held. Zero
+        /// carries momentum through the whole arc.
+        /// </summary>
+        public float AirDrag { get; set; }
+
         /// <summary>Fastest gait in the profile — the ceiling the validator uses when a gait is unknown.</summary>
         public float MaxSpeed {
             get {

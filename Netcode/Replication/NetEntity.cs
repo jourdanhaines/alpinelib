@@ -26,7 +26,9 @@ namespace AlpineLib.Netcode.Replication {
             Authority = authority;
             state = initialState;
             LastDirtyTick = 0u;
-            LastAcknowledgedInputTick = 0u;
+            LastAcknowledgedInputSequence = 0u;
+            HighestReceivedInputSequence = 0u;
+            StarvedTicks = 0;
         }
 
         /// <summary>Server-assigned identity, unique within a session and never reused while it lives.</summary>
@@ -52,10 +54,25 @@ namespace AlpineLib.Netcode.Replication {
         public uint LastDirtyTick { get; private set; }
 
         /// <summary>
-        /// The owner's input tick this state accounts for. Rides on every correction so the owner's
+        /// The owner's input sequence this state accounts for. Rides on every correction so the owner's
         /// prediction buffer knows exactly how much of its guesswork the server has now settled.
         /// </summary>
-        public uint LastAcknowledgedInputTick { get; set; }
+        public uint LastAcknowledgedInputSequence { get; set; }
+
+        /// <summary>
+        /// The highest input sequence ever accepted from the owner. Redundant input bundles legitimately
+        /// re-deliver older sequences, and a sequenced-but-unreliable channel can replay a packet;
+        /// applying the same input twice would move the pawn twice, so anything at or below this is
+        /// dropped on receipt.
+        /// </summary>
+        public uint HighestReceivedInputSequence { get; set; }
+
+        /// <summary>
+        /// Consecutive ticks the server has simulated this pawn without a real input to consume. Drives
+        /// the starvation decay: a short gap keeps the pawn moving on its last intent, a long one winds
+        /// it down instead of inventing distance the owner never asked for.
+        /// </summary>
+        public int StarvedTicks { get; set; }
 
         /// <summary>The last input the server consumed for this entity, repeated when the stream stutters.</summary>
         public PawnInput LastInput { get; set; }

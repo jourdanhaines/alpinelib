@@ -3,7 +3,7 @@ using AlpineLib.Netcode.Protocol;
 
 namespace AlpineLib.Netcode.Replication {
     /// <summary>
-    /// One tick's worth of a player's intent: which way they are pushing, which gait they are in, and
+    /// One step's worth of a player's intent: which way they are pushing, which gait they are in, and
     /// whether they are asking to jump or crouch.
     /// </summary>
     /// <remarks>
@@ -13,9 +13,11 @@ namespace AlpineLib.Netcode.Replication {
     /// <see cref="PawnMotor.Step"/>, and the client runs the same step locally to predict.
     /// </para>
     /// <para>
-    /// <see cref="Tick"/> is the client's own tick counter, not the server's. It is an opaque stamp that
-    /// comes back on <c>AuthorityCorrection</c>, which is what lets
-    /// <see cref="PredictionBuffer.Reconcile"/> know exactly how far to rewind.
+    /// <see cref="Sequence"/> is a client-monotonic counter stamped by the sender, one per input, never
+    /// derived from any clock. A clock-derived stamp duplicates when the clock is nudged and regresses
+    /// when it resyncs, and either corrupts the acknowledgement contract: the stamp comes back on
+    /// <c>AuthorityCorrection</c>, which is what lets <see cref="PredictionBuffer.Reconcile"/> know
+    /// exactly how far to rewind.
     /// </para>
     /// <para>
     /// <b>Why the move direction is not quantized.</b> Every other client-to-server field on this
@@ -26,22 +28,22 @@ namespace AlpineLib.Netcode.Replication {
     /// </para>
     /// </remarks>
     public struct PawnInput : INetMessage {
-        /// <summary>Bit 0 of <see cref="Buttons"/>: jump was pressed this tick.</summary>
+        /// <summary>Bit 0 of <see cref="Buttons"/>: jump was pressed this step.</summary>
         public const byte JumpBit = 0b0000_0001;
 
-        /// <summary>Bit 1 of <see cref="Buttons"/>: crouch is held this tick.</summary>
+        /// <summary>Bit 1 of <see cref="Buttons"/>: crouch is held this step.</summary>
         public const byte CrouchBit = 0b0000_0010;
 
         /// <summary>Creates an input from unpacked intent.</summary>
-        public PawnInput(uint tick, Vector2 moveDirection, WireLocomotion gait, bool jump, bool crouch) {
-            Tick = tick;
+        public PawnInput(uint sequence, Vector2 moveDirection, WireLocomotion gait, bool jump, bool crouch) {
+            Sequence = sequence;
             MoveDirection = moveDirection;
             Gait = gait;
             Buttons = PackButtons(jump, crouch);
         }
 
-        /// <summary>The sending client's tick counter. Echoed back on a correction.</summary>
-        public uint Tick { get; set; }
+        /// <summary>The sender's monotonic input counter. Echoed back on a correction.</summary>
+        public uint Sequence { get; set; }
 
         /// <summary>
         /// Desired movement on the ground plane, X east and Y north, in the range [-1, 1] per axis. The
@@ -83,13 +85,13 @@ namespace AlpineLib.Netcode.Replication {
         /// The server repeats a pawn's last input when the owner's stream stutters, so the pawn keeps
         /// walking instead of stopping dead on every dropped packet. Repeating the jump bit with it would
         /// turn one press into a launch on every tick the gap lasted, so it is dropped and only the
-        /// continuous part of the intent is carried forward. The tick is deliberately left alone: it is
-        /// what gets acknowledged, and inventing input ticks the client never sent would make the owner's
-        /// prediction buffer discard work the server has not actually seen.
+        /// continuous part of the intent is carried forward. The sequence is deliberately left alone: it
+        /// is what gets acknowledged, and inventing sequences the client never sent would make the
+        /// owner's prediction buffer discard work the server has not actually seen.
         /// </remarks>
         public PawnInput WithoutJump() {
             return new PawnInput {
-                Tick = Tick,
+                Sequence = Sequence,
                 MoveDirection = MoveDirection,
                 Gait = Gait,
                 Buttons = (byte)(Buttons & ~JumpBit)
@@ -98,7 +100,7 @@ namespace AlpineLib.Netcode.Replication {
 
         /// <inheritdoc />
         public void Serialize(ref NetWriter writer) {
-            writer.WriteUInt(Tick);
+            writer.WriteUInt(Sequence);
             writer.WriteFloat(MoveDirection.X);
             writer.WriteFloat(MoveDirection.Y);
             writer.WriteByte((byte)Gait);
@@ -107,7 +109,7 @@ namespace AlpineLib.Netcode.Replication {
 
         /// <inheritdoc />
         public void Deserialize(ref NetReader reader) {
-            Tick = reader.ReadUInt();
+            Sequence = reader.ReadUInt();
             float moveX = reader.ReadFloat();
             float moveY = reader.ReadFloat();
             MoveDirection = new Vector2(moveX, moveY);

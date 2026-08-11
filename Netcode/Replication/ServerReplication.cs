@@ -45,6 +45,12 @@ namespace AlpineLib.Netcode.Replication {
         /// <summary>Ceiling on motor steps run in one <see cref="Tick"/>, so a stall is not paid back at once.</summary>
         public const int MaxCatchUpSteps = 8;
 
+        /// <summary>Starved ticks during which the last intent is repeated at full strength.</summary>
+        public const int StarvationHoldTicks = 2;
+
+        /// <summary>Per-tick multiplier applied to a starved pawn's move vector past the hold.</summary>
+        public const float StarvationDecayFactor = 0.5f;
+
         private readonly NetServer server;
         private readonly Func<IReadOnlyList<PeerHandle>> peerSource;
         private readonly MovementValidator validator;
@@ -138,6 +144,11 @@ namespace AlpineLib.Netcode.Replication {
         /// <summary>Creates an entity and tells the session about it.</summary>
         public NetEntity SpawnEntity(ushort prefabId, int ownerPeerId, AuthorityMode authority, in PawnState initialState) {
             NetEntity entity = registry.Create(prefabId, ownerPeerId, authority, in initialState);
+
+            // Until the owner's first input arrives the motor runs on LastInput, and a default one would
+            // quietly rewrite the spawn state's gait and crouch on the first starved tick — a flags
+            // change the owner never asked for and the first correction would have to repair.
+            entity.LastInput = new PawnInput(0u, System.Numerics.Vector2.Zero, initialState.Locomotion, false, initialState.IsCrouching);
 
             var message = new SpawnEntity(entity.Id, entity.PrefabId, entity.OwnerPeerId, entity.Authority, in initialState);
             server.SendToMany(Peers,ReplicationMessageIds.SpawnEntity, in message, DeliveryClass.ReliableOrdered);
@@ -278,13 +289,34 @@ namespace AlpineLib.Netcode.Replication {
                 return;
             }
 
+            for (int inputIndex = 0; inputIndex < message.Count; inputIndex++) {
+                EnqueueInput(entity, message.GetInput(inputIndex));
+            }
+        }
+
+        /// <summary>
+        /// Admits one input if it is new. Redundant bundles and channel replays legitimately re-deliver
+        /// sequences already consumed; applying one twice would move the pawn twice, so only a sequence
+        /// above the highest ever accepted gets through.
+        /// </summary>
+        private void EnqueueInput(NetEntity entity, in PawnInput input) {
+            if (!IsAfter(input.Sequence, entity.HighestReceivedInputSequence)) {
+                return;
+            }
+
+            entity.HighestReceivedInputSequence = input.Sequence;
             Queue<PawnInput> queue = ResolveInputQueue(entity.Id);
 
             if (queue.Count >= MaxQueuedInputsPerEntity) {
                 queue.Dequeue();
             }
 
-            queue.Enqueue(message.Input);
+            queue.Enqueue(input);
+        }
+
+        /// <summary>Sequence ordering that survives the counter wrapping past uint.MaxValue.</summary>
+        private static bool IsAfter(uint sequence, uint reference) {
+            return (int)(sequence - reference) > 0;
         }
 
         /// <summary>
@@ -300,7 +332,7 @@ namespace AlpineLib.Netcode.Replication {
             MovementVerdict verdict = validator.Validate(entity.PrefabId, entity.State, message.State, deltaSeconds);
 
             entity.ApplyState(verdict.ResolvedState, currentTick);
-            entity.LastAcknowledgedInputTick = message.ClientTick;
+            entity.LastAcknowledgedInputSequence = message.ClientTick;
 
             if (!verdict.RequiresCorrection) {
                 return;
@@ -372,18 +404,36 @@ namespace AlpineLib.Netcode.Replication {
 
         /// <summary>
         /// Pulls the next queued input, or repeats the last one without its jump when the stream has a
-        /// gap. Only a real input advances the acknowledged tick — inventing one would tell the owner's
-        /// prediction buffer to discard work the server has never seen.
+        /// gap. Only a real input advances the acknowledged sequence — inventing one would tell the
+        /// owner's prediction buffer to discard work the server has never seen.
         /// </summary>
         private PawnInput NextInputFor(NetEntity entity) {
             if (inputQueues.TryGetValue(entity.Id, out Queue<PawnInput> queue) && queue.Count > 0) {
                 PawnInput input = queue.Dequeue();
                 entity.LastInput = input;
-                entity.LastAcknowledgedInputTick = input.Tick;
+                entity.LastAcknowledgedInputSequence = input.Sequence;
+                entity.StarvedTicks = 0;
                 return input;
             }
 
+            return StarvedInputFor(entity);
+        }
+
+        /// <summary>
+        /// The input to run when the owner's stream has a gap. The last intent is held at full strength
+        /// for a couple of ticks — ordinary phase mismatch between the owner's send loop and this tick
+        /// loop must not hitch the pawn — and past that its move vector is halved each tick, so the pawn
+        /// winds down instead of free-running. Every metre simulated here is distance the owner never
+        /// predicted, comes back as a correction, and is the rubber-band; decaying bounds it.
+        /// </summary>
+        private static PawnInput StarvedInputFor(NetEntity entity) {
+            entity.StarvedTicks++;
             PawnInput repeated = entity.LastInput.WithoutJump();
+
+            if (entity.StarvedTicks > StarvationHoldTicks) {
+                repeated.MoveDirection *= StarvationDecayFactor;
+            }
+
             entity.LastInput = repeated;
             return repeated;
         }
@@ -408,7 +458,7 @@ namespace AlpineLib.Netcode.Replication {
                 return;
             }
 
-            var message = new AuthorityCorrection(entity.Id, currentTick, entity.LastAcknowledgedInputTick, entity.State);
+            var message = new AuthorityCorrection(entity.Id, currentTick, entity.LastAcknowledgedInputSequence, entity.State);
             server.Send(owner, ReplicationMessageIds.AuthorityCorrection, in message, DeliveryClass.UnreliableSequenced);
         }
 

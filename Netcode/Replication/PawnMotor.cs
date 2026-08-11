@@ -22,9 +22,11 @@ namespace AlpineLib.Netcode.Replication {
     /// it somewhere else.
     /// </para>
     /// <para>
-    /// The model is deliberately blunt: velocity snaps to the gait's top speed rather than accelerating
-    /// toward it, and there is no collision beyond the ground clamp. Both are correctable later — the
-    /// contract that matters is that whatever this does, it does identically in both processes.
+    /// The model is blunt on the ground and inertial in the air, matching the engine-side actor:
+    /// grounded velocity snaps to the gait's top speed, airborne velocity steers toward the commanded
+    /// direction at <see cref="MovementProfile.AirAcceleration"/> and keeps its momentum when input is
+    /// released. There is no collision beyond the ground clamp — correctable later; the contract that
+    /// matters is that whatever this does, it does identically in both processes.
     /// </para>
     /// </remarks>
     public static class PawnMotor {
@@ -71,8 +73,18 @@ namespace AlpineLib.Netcode.Replication {
             Vector2 moveDirection = ClampToUnit(input.MoveDirection);
             float gaitSpeed = profile.GetSpeedForGait((int)input.Gait);
 
-            float velocityX = moveDirection.X * gaitSpeed;
-            float velocityZ = moveDirection.Y * gaitSpeed;
+            float velocityX;
+            float velocityZ;
+
+            if (state.IsGrounded) {
+                velocityX = moveDirection.X * gaitSpeed;
+                velocityZ = moveDirection.Y * gaitSpeed;
+            } else {
+                velocityX = state.Velocity.X;
+                velocityZ = state.Velocity.Z;
+                StepAirVelocity(ref velocityX, ref velocityZ, moveDirection, gaitSpeed, profile, deltaSeconds);
+            }
+
             float velocityY = StepVerticalVelocity(in input, in state, profile, deltaSeconds);
 
             Vector3 nextPosition = new Vector3(
@@ -111,6 +123,49 @@ namespace AlpineLib.Netcode.Replication {
             }
 
             return current;
+        }
+
+        /// <summary>
+        /// Steers airborne horizontal velocity toward the commanded direction at the profile's air
+        /// acceleration, or decays it by the profile's air drag when there is no input — the same
+        /// two-regime model the engine-side actor integrates, at the same fixed step. Deterministic:
+        /// floats only, fixed operation order, one square root on the steering path.
+        /// </summary>
+        private static void StepAirVelocity(
+            ref float velocityX,
+            ref float velocityZ,
+            Vector2 moveDirection,
+            float gaitSpeed,
+            MovementProfile profile,
+            float deltaSeconds) {
+            bool hasIntent = moveDirection.LengthSquared() >= MoveDeadZone * MoveDeadZone;
+
+            if (!hasIntent) {
+                if (profile.AirDrag > 0f) {
+                    float decay = MathF.Exp(-profile.AirDrag * deltaSeconds);
+                    velocityX *= decay;
+                    velocityZ *= decay;
+                }
+
+                return;
+            }
+
+            float targetX = moveDirection.X * gaitSpeed;
+            float targetZ = moveDirection.Y * gaitSpeed;
+            float deltaX = targetX - velocityX;
+            float deltaZ = targetZ - velocityZ;
+            float maxStep = profile.AirAcceleration * deltaSeconds;
+            float distanceSquared = deltaX * deltaX + deltaZ * deltaZ;
+
+            if (distanceSquared <= maxStep * maxStep) {
+                velocityX = targetX;
+                velocityZ = targetZ;
+                return;
+            }
+
+            float distance = MathF.Sqrt(distanceSquared);
+            velocityX += deltaX / distance * maxStep;
+            velocityZ += deltaZ / distance * maxStep;
         }
 
         /// <summary>

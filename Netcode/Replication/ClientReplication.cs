@@ -33,6 +33,26 @@ namespace AlpineLib.Netcode.Replication {
         /// </summary>
         public const int MaxPendingEventSequences = 64;
 
+        /// <summary>Horizontal position error below which a correction counts as agreement, in metres.</summary>
+        public const float CorrectionHorizontalEpsilon = 0.01f;
+
+        /// <summary>
+        /// Vertical position error below which a correction counts as agreement, in metres. Far looser
+        /// than the horizontal bound on purpose: the visible pawn stands on real scene geometry while
+        /// both simulations stand on the ground seam, and until a real heightfield provider exists that
+        /// gap is a fact of the floor, not a prediction error worth a rewind.
+        /// </summary>
+        public const float CorrectionVerticalEpsilon = 0.25f;
+
+        /// <summary>Per-axis velocity error below which a correction counts as agreement, in m/s.</summary>
+        public const float CorrectionVelocityEpsilon = 0.1f;
+
+        /// <summary>
+        /// Flag bits a correction must agree on: gait and crouch. Grounded is excluded — it flaps across
+        /// step timing at ledges and ground tolerance, and a divergence that matters shows up in position.
+        /// </summary>
+        public const byte CorrectionFlagsMask = PawnState.LocomotionMask | PawnState.CrouchBit;
+
         private readonly NetClient client;
         private readonly NetConfig config;
         private readonly Dictionary<uint, NetEntity> entitiesById = new Dictionary<uint, NetEntity>();
@@ -41,9 +61,14 @@ namespace AlpineLib.Netcode.Replication {
         private readonly Dictionary<uint, PredictionBuffer> predictionBuffers = new Dictionary<uint, PredictionBuffer>();
         private readonly HashSet<uint> pendingEventSequences = new HashSet<uint>();
         private readonly Queue<uint> pendingEventOrder = new Queue<uint>();
+        private readonly Dictionary<uint, RecentInputs> recentInputsByEntity = new Dictionary<uint, RecentInputs>();
+        private readonly Dictionary<uint, SettledPrediction> settledByEntity = new Dictionary<uint, SettledPrediction>();
+
+        private readonly InterpolationTimeline timeline;
 
         private IGroundProvider groundProvider;
         private uint nextEventSequence = 1u;
+        private uint nextInputSequence = 1u;
         private bool disposed;
 
         /// <summary>Creates a client world predicting over flat ground at y = 0.</summary>
@@ -55,6 +80,7 @@ namespace AlpineLib.Netcode.Replication {
             this.client = client ?? throw new ArgumentNullException(nameof(client));
             this.config = config ?? throw new ArgumentNullException(nameof(config));
             this.groundProvider = groundProvider ?? throw new ArgumentNullException(nameof(groundProvider));
+            timeline = new InterpolationTimeline(config);
 
             LocalPeerId = PeerHandle.None.Id;
 
@@ -97,6 +123,23 @@ namespace AlpineLib.Netcode.Replication {
         /// <summary>Every entity this client knows about.</summary>
         public IReadOnlyList<NetEntity> Entities => entities;
 
+        /// <summary>Corrections that disagreed with prediction and forced a rewind. Diagnostic.</summary>
+        public int CorrectionsApplied { get; private set; }
+
+        /// <summary>Corrections that matched prediction and were acknowledged without a rewind. Diagnostic.</summary>
+        public int CorrectionsSkipped { get; private set; }
+
+        /// <summary>The adaptive render-delay controller for this connection.</summary>
+        public InterpolationTimeline Timeline => timeline;
+
+        /// <summary>
+        /// Advances the render-delay controller for one frame. Called by whoever pumps the client —
+        /// once per frame, before remote pawns sample.
+        /// </summary>
+        public void Tick(float deltaSeconds) {
+            timeline.Update(deltaSeconds, client.Clock.PingMs);
+        }
+
         /// <summary>Finds an entity by id, or null.</summary>
         public NetEntity GetEntity(uint entityId) {
             return entitiesById.TryGetValue(entityId, out NetEntity entity) ? entity : null;
@@ -123,10 +166,15 @@ namespace AlpineLib.Netcode.Replication {
         }
 
         /// <summary>
-        /// Sends one tick of intent for an owned, server-authoritative pawn and immediately applies what
+        /// Sends one step of intent for an owned, server-authoritative pawn and immediately applies what
         /// the shared motor says it will do, so the pawn responds on this frame rather than in a round
         /// trip's time.
         /// </summary>
+        /// <remarks>
+        /// The input's sequence is stamped here, from a counter this class owns, whatever the caller put
+        /// in it. Sequences are the acknowledgement contract with the server and must never duplicate or
+        /// regress — a clock-derived stamp does both — so no caller is trusted to provide them.
+        /// </remarks>
         /// <returns>The predicted state, also written to the entity.</returns>
         public PawnState SubmitInput(uint entityId, in PawnInput input) {
             NetEntity entity = GetEntity(entityId);
@@ -141,13 +189,53 @@ namespace AlpineLib.Netcode.Replication {
                 return entity.State;
             }
 
-            PawnState predicted = PawnMotor.Step(in input, entity.State, profile, groundProvider, config.ServerTickInterval);
-            entity.ApplyState(predicted, input.Tick);
-            ResolvePredictionBuffer(entityId).Record(in input, in predicted);
+            PawnInput stamped = input;
+            stamped.Sequence = nextInputSequence;
+            nextInputSequence++;
 
-            var message = new InputCommand(entityId, in input);
+            PawnState predicted = PawnMotor.Step(in stamped, entity.State, profile, groundProvider, config.ServerTickInterval);
+            entity.ApplyState(predicted, stamped.Sequence);
+            ResolvePredictionBuffer(entityId).Record(in stamped, in predicted);
+
+            InputCommand message = BuildInputBundle(entityId, in stamped);
             client.Send(ReplicationMessageIds.InputCommand, in message, DeliveryClass.UnreliableSequenced);
             return predicted;
+        }
+
+        /// <summary>
+        /// Wraps the newest input together with the previous two sent for the same entity, so any single
+        /// lost or reordered packet is healed by the next one that survives; the server deduplicates by
+        /// sequence.
+        /// </summary>
+        private InputCommand BuildInputBundle(uint entityId, in PawnInput newest) {
+            recentInputsByEntity.TryGetValue(entityId, out RecentInputs recent);
+            InputCommand command = InputCommand.Bundle(entityId, in recent.BeforePrevious, in recent.Previous, in newest, recent.Count);
+
+            recent.BeforePrevious = recent.Previous;
+            recent.Previous = newest;
+            recent.Count = recent.Count < 2 ? recent.Count + 1 : 2;
+            recentInputsByEntity[entityId] = recent;
+
+            return command;
+        }
+
+        /// <summary>The last two inputs sent for one entity, kept only to ride along as redundancy.</summary>
+        private struct RecentInputs {
+            public PawnInput BeforePrevious;
+            public PawnInput Previous;
+            public int Count;
+        }
+
+        /// <summary>The most recently settled acknowledgement for one entity, wire-quantized.</summary>
+        private readonly struct SettledPrediction {
+            public SettledPrediction(uint sequence, in PawnState state) {
+                Sequence = sequence;
+                State = state;
+            }
+
+            public uint Sequence { get; }
+
+            public PawnState State { get; }
         }
 
         /// <summary>
@@ -201,8 +289,8 @@ namespace AlpineLib.Netcode.Replication {
         }
 
         /// <summary>
-        /// The pose to render for a remote entity right now, taken from its interpolator at the client's
-        /// current estimate of the server clock.
+        /// The pose to render for a remote entity right now: the client's estimate of the server clock,
+        /// held back by the timeline's current interpolation delay.
         /// </summary>
         public bool SampleRemote(uint entityId, out PawnState state) {
             StateInterpolator interpolator = GetInterpolator(entityId);
@@ -212,7 +300,8 @@ namespace AlpineLib.Netcode.Replication {
                 return false;
             }
 
-            return interpolator.Sample(client.Clock.EstimatedServerSeconds, out state);
+            double renderSeconds = client.Clock.EstimatedServerSeconds - timeline.DelaySeconds;
+            return interpolator.Sample(renderSeconds, out state);
         }
 
         /// <summary>Drops the whole world. Used when leaving a session or before rebuilding on rejoin.</summary>
@@ -223,6 +312,8 @@ namespace AlpineLib.Netcode.Replication {
             predictionBuffers.Clear();
             pendingEventSequences.Clear();
             pendingEventOrder.Clear();
+            recentInputsByEntity.Clear();
+            settledByEntity.Clear();
         }
 
         /// <inheritdoc />
@@ -262,6 +353,8 @@ namespace AlpineLib.Netcode.Replication {
                 return;
             }
 
+            timeline.OnSnapshotArrived(client.Clock.EstimatedServerSeconds);
+
             for (int recordIndex = 0; recordIndex < message.Records.Count; recordIndex++) {
                 EntitySnapshotRecord record = message.Records[recordIndex];
                 ApplyReceivedState(record.EntityId, record.State, message.ServerTick);
@@ -295,6 +388,12 @@ namespace AlpineLib.Netcode.Replication {
             OnEntityEvent?.Invoke(message.EntityId, message.EventId, message.Argument);
         }
 
+        /// <summary>
+        /// A correction arrived. The server sends one on every snapshot without knowing what this client
+        /// predicted, so agreement is judged here: a state matching the prediction for the acknowledged
+        /// sequence settles that sequence and does nothing else, and only a genuine disagreement rewinds,
+        /// replays and tells the pawn's controller anything happened.
+        /// </summary>
         private void HandleAuthorityCorrection(in AuthorityCorrection message, PeerHandle sender) {
             NetEntity entity = GetEntity(message.EntityId);
 
@@ -302,9 +401,87 @@ namespace AlpineLib.Netcode.Replication {
                 return;
             }
 
+            if (TryAcknowledgeCleanCorrection(entity, in message)) {
+                CorrectionsSkipped++;
+                return;
+            }
+
+            CorrectionsApplied++;
             PawnState resolved = ResolveCorrection(entity, in message);
+            settledByEntity[entity.Id] = new SettledPrediction(message.AcknowledgedInputSequence, message.State);
             entity.ApplyState(resolved, message.ServerTick);
             OnAuthorityCorrected?.Invoke(entity, resolved);
+        }
+
+        /// <summary>
+        /// Settles a correction that agrees with what was predicted for its acknowledged sequence.
+        /// </summary>
+        /// <remarks>
+        /// An idle owner keeps receiving corrections that acknowledge the same sequence long after the
+        /// pending step for it was dropped, so the last settled sequence and its state are remembered
+        /// per entity — otherwise every correction after the first would look unmatchable and force a
+        /// pointless rewind.
+        /// </remarks>
+        /// <returns>True when the correction matched and has been fully handled.</returns>
+        private bool TryAcknowledgeCleanCorrection(NetEntity entity, in AuthorityCorrection message) {
+            if (entity.Authority != AuthorityMode.Server) {
+                return false;
+            }
+
+            PredictionBuffer buffer = GetPredictionBuffer(entity.Id);
+
+            if (buffer == null) {
+                return false;
+            }
+
+            if (buffer.TryGetPredictedState(message.AcknowledgedInputSequence, out PawnState predicted)) {
+                PawnState quantized = predicted.Quantized();
+
+                if (!CorrectionMatchesPrediction(in quantized, message.State)) {
+                    return false;
+                }
+
+                buffer.Acknowledge(message.AcknowledgedInputSequence);
+                settledByEntity[entity.Id] = new SettledPrediction(message.AcknowledgedInputSequence, in quantized);
+                return true;
+            }
+
+            if (!settledByEntity.TryGetValue(entity.Id, out SettledPrediction settled)) {
+                return false;
+            }
+
+            if (settled.Sequence != message.AcknowledgedInputSequence) {
+                return false;
+            }
+
+            return CorrectionMatchesPrediction(settled.State, message.State);
+        }
+
+        /// <summary>
+        /// Whether an authoritative state and the local prediction for the same sequence agree closely
+        /// enough that correcting would only re-derive what is already held. The prediction is compared
+        /// after wire quantization so rounding the channel itself introduced never reads as divergence.
+        /// </summary>
+        private static bool CorrectionMatchesPrediction(in PawnState predicted, in PawnState authoritative) {
+            if ((predicted.Flags & CorrectionFlagsMask) != (authoritative.Flags & CorrectionFlagsMask)) {
+                return false;
+            }
+
+            if (MathF.Abs(predicted.Position.X - authoritative.Position.X) > CorrectionHorizontalEpsilon) {
+                return false;
+            }
+
+            if (MathF.Abs(predicted.Position.Z - authoritative.Position.Z) > CorrectionHorizontalEpsilon) {
+                return false;
+            }
+
+            if (MathF.Abs(predicted.Position.Y - authoritative.Position.Y) > CorrectionVerticalEpsilon) {
+                return false;
+            }
+
+            return MathF.Abs(predicted.Velocity.X - authoritative.Velocity.X) <= CorrectionVelocityEpsilon
+                && MathF.Abs(predicted.Velocity.Y - authoritative.Velocity.Y) <= CorrectionVelocityEpsilon
+                && MathF.Abs(predicted.Velocity.Z - authoritative.Velocity.Z) <= CorrectionVelocityEpsilon;
         }
 
         /// <summary>
@@ -324,7 +501,7 @@ namespace AlpineLib.Netcode.Replication {
             }
 
             return ResolvePredictionBuffer(entity.Id).Reconcile(
-                message.AcknowledgedInputTick,
+                message.AcknowledgedInputSequence,
                 message.State,
                 profile,
                 groundProvider,
@@ -370,6 +547,9 @@ namespace AlpineLib.Netcode.Replication {
 
             if (IsPredicted(entity)) {
                 predictionBuffers[entityId] = new PredictionBuffer();
+                // Corrections that arrive before the first input acknowledge sequence zero; seeding the
+                // settled record with the spawn state lets them match instead of forcing a rewind.
+                settledByEntity[entityId] = new SettledPrediction(0u, state.Quantized());
             }
             else {
                 ResolveInterpolator(entityId).Push(serverTick, in state);
