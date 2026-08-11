@@ -136,9 +136,41 @@ namespace AlpineLib.Networking {
             ClientReplication replication = _sessionService?.Replication;
 
             if (replication == null) return;
+            if (ReleaseIfLocallyOwned(replication)) return;
             if (!replication.SampleRemote(_view.EntityId, out PawnState state)) return;
 
             Drive(in state);
+        }
+
+        /// <summary>
+        /// Refuses to drive a pawn this client owns, handing the body back and standing down.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Only the spawner decides which brain a pawn gets, and it decides from the same ownership flag
+        /// this asks about — so reaching this is a bug, and one that hides well. An owned pawn driven from
+        /// here is placed on the interpolated stream, which lags the owner's own prediction by the render
+        /// delay: the pawn still walks, still animates, and simply feels heavy, while every input the
+        /// player gives is overwritten a frame later. Reporting it as an error rather than quietly
+        /// correcting it is deliberate, because the mispossession itself is what needs fixing.
+        /// </para>
+        /// <para>
+        /// Control is released rather than merely dropped. Leaving the actor possessed by a disabled brain
+        /// would keep <see cref="DrivesPawnExternally"/> true and its own integrators stood down, which
+        /// turns a pawn that felt heavy into one that cannot move at all; releasing lets the game's
+        /// possession flow hand it to the controller it should have had.
+        /// </para>
+        /// </remarks>
+        /// <returns>True when the pawn was owned and this controller has stood down.</returns>
+        private bool ReleaseIfLocallyOwned(ClientReplication replication) {
+            if (!replication.IsOwned(_view.Entity)) return false;
+
+            Debug.LogError($"NetController::ReleaseIfLocallyOwned->{name} was possessing entity {_view.EntityId}, which this client owns; releasing it and disabling this brain.");
+
+            _character.ReleaseControl();
+            _character = null;
+            enabled = false;
+            return true;
         }
 
         /// <summary>

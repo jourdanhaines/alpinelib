@@ -129,6 +129,13 @@ namespace AlpineLib.Actors {
         private const string GroundedParameter = "Grounded";
         private const float StrafeDampTime = 0.1f;
 
+        /// <summary>
+        /// Downward speed in metres per second a grounded actor is held at, so every frame's move pushes
+        /// the <see cref="CharacterController"/> a few centimetres into the floor and it keeps reporting
+        /// contact. A true zero is what makes grounding flicker on slopes and steps.
+        /// </summary>
+        private const float GroundedVerticalVelocity = -2f;
+
         private int _speedParameterHash;
         private int _turnParameterHash;
         private int _jumpParameterHash;
@@ -283,9 +290,13 @@ namespace AlpineLib.Actors {
                 _airVelocity = _groundedVelocity;
                 _wasAirborne = true;
 
-                // A grounded stride this frame already displaced the actor before its move carried it
-                // off the edge; adding the first air step on top would double the transition frame.
-                if (_groundedMoveThisFrame) return;
+                // The frame the actor leaves the ground only seeds the carried velocity; integration
+                // starts on the next one. A grounded stride this frame has already displaced the actor
+                // before its move carried it off the edge, so an air step on top would double the
+                // transition frame — and a frame where grounding was cleared by something other than
+                // movement, such as a character controller cycled off and on to place the pawn, would
+                // otherwise pay out a full stride of displacement nobody commanded.
+                return;
             }
 
             if (_kinematicMoveThisFrame) return;
@@ -348,7 +359,7 @@ namespace AlpineLib.Actors {
             if (IsExternallyDriven) return;
 
             if (Controller.isGrounded && _verticalVelocity < 0f) {
-                _verticalVelocity = -2f;
+                _verticalVelocity = GroundedVerticalVelocity;
             } else {
                 _verticalVelocity += gravity * Time.deltaTime;
             }
@@ -505,18 +516,26 @@ namespace AlpineLib.Actors {
         /// actor keeps the vertical and air velocities of the place it was yanked away from — momentum
         /// the simulation says it does not have — and spends the next arc paying that phantom back as
         /// fresh divergence.
+        ///
+        /// A grounded sync parks the vertical at the same small negative <see cref="ApplyGravity"/> uses
+        /// rather than adopting the simulation's vertical, which is a flat zero for a pawn standing on
+        /// something. Zero is the one value that defeats the parking test — <c>0 &lt; 0</c> is false — so
+        /// gravity would integrate a fresh fraction of a frame each time instead, pressing the actor into
+        /// the floor by millimetres where the controller needs centimetres to keep reporting contact.
+        /// Grounded contact flickering is exactly what the parking exists to prevent.
         /// </remarks>
         public void SyncMotionState(Vector3 velocity, bool isGrounded) {
-            _verticalVelocity = velocity.y;
             Vector3 horizontal = new Vector3(velocity.x, 0f, velocity.z);
 
             if (isGrounded) {
                 _groundedVelocity = horizontal;
                 _airVelocity = Vector3.zero;
                 _wasAirborne = false;
+                _verticalVelocity = GroundedVerticalVelocity;
                 return;
             }
 
+            _verticalVelocity = velocity.y;
             _airVelocity = horizontal;
             _wasAirborne = true;
         }

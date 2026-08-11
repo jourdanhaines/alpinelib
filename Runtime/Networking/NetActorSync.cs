@@ -43,11 +43,11 @@ namespace AlpineLib.Networking {
         [SerializeField] private bool applyPredictedPosition = true;
         [Tooltip("Write the predicted facing back onto the actor. Off by default: the motor derives yaw from travel, which fights a first-person camera that owns the facing.")]
         [SerializeField] private bool applyPredictedYaw;
-        [Tooltip("Metres the actor may differ from the prediction before it is moved. Below this the write is skipped so the two do not fight over millimetres.")]
-        [SerializeField] private float positionTolerance = 0.05f;
+        [Tooltip("How hard the actor is pulled onto the prediction, per second. Higher closes the gap sooner; around 20 lands within a couple of frames without the actor feeling dragged.")]
+        [SerializeField] private float followSharpness = 20f;
 
         [Header("Corrections")]
-        [Tooltip("Metres the server's verdict may differ from the actor before it is placed outright. Below this the difference is paid back gradually instead of popping.")]
+        [Tooltip("Metres the actor may differ from the prediction before it is placed outright. Below this the difference is walked off by the follow, never teleported.")]
         [SerializeField] private float correctionSnapDistance = 1f;
         [Tooltip("Seconds a correction under the snap distance is spread over. Zero applies every correction the moment it lands.")]
         [SerializeField] private float correctionSmoothingSeconds = 0.12f;
@@ -60,7 +60,8 @@ namespace AlpineLib.Networking {
 
         /// <summary>
         /// Metres below which a correction residual is simply dropped, so the smoothing does not chase an
-        /// offset nobody could see for the rest of the session.
+        /// offset nobody could see for the rest of the session. Doubles as the shortest follow step worth
+        /// pushing through the character controller.
         /// </summary>
         private const float ResidualEpsilon = 0.001f;
 
@@ -75,6 +76,8 @@ namespace AlpineLib.Networking {
         private float _sendAccumulatorSeconds;
         private bool _jumpQueued;
         private Vector3 _correctionResidual;
+        private PawnState _predictedState;
+        private bool _hasPredictedState;
 
         /// <summary>
         /// True while this pawn is actually being replicated: bound to an entity this client owns inside
@@ -160,6 +163,7 @@ namespace AlpineLib.Networking {
 
             BindReplication(replication);
             AccumulateAndSend(replication);
+            FollowPrediction();
         }
 
         /// <summary>
@@ -265,31 +269,101 @@ namespace AlpineLib.Networking {
         }
 
         /// <summary>
-        /// Moves the actor onto the predicted pose, skipping writes smaller than
-        /// <see cref="positionTolerance"/>.
+        /// Adopts the pose the shared motor just predicted as the place the actor is being pulled towards.
+        /// Nothing is displaced here; <see cref="FollowPrediction"/> does the moving, every frame.
         /// </summary>
         /// <remarks>
-        /// Horizontal only. The simulation stands on the ground seam — a flat plane until a real
-        /// heightfield provider exists — while the visible actor stands on actual scene geometry, so its
-        /// own gravity and collision own the vertical axis. Writing the simulated Y here would teleport
-        /// the pawn into or above every floor the seam does not know about, thirty times a second.
+        /// <para>
+        /// All three axes, including Y. The simulation now stands on the same exported scene geometry the
+        /// visible actor does — ramps, steps, platforms and all — so there is no longer a seam whose
+        /// vertical had to be left to the actor's own gravity, and letting the prediction own the height
+        /// is what makes a pawn walk up a ramp on its owner's screen and the server's alike.
+        /// </para>
+        /// <para>
+        /// Recorded rather than applied because prediction happens on network ticks and the player watches
+        /// render frames. Writing the pose here would move the pawn in the sawtooth of the send clock;
+        /// recording it and converging continuously spreads the same displacement across every frame in
+        /// between.
+        /// </para>
         /// </remarks>
         private void ApplyPredictedState(in PawnState predicted) {
             if (applyPredictedYaw) {
                 transform.rotation = Quaternion.Euler(0f, predicted.YawDegrees, 0f);
             }
 
-            if (!applyPredictedPosition) return;
+            _predictedState = predicted;
+            _hasPredictedState = true;
+        }
+
+        /// <summary>
+        /// Closes part of the gap between the actor and where the simulation says it is, once per frame,
+        /// through the character controller.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// This replaces the old teleport-when-far-enough write, which was the source of the owner's
+        /// grounded jitter: the gap between actor and prediction is a phase term that breathes with the
+        /// send accumulator and crosses any fixed tolerance twice per second at ordinary gaits, so the
+        /// pawn spent its life alternating between drifting forward and being yanked back a frame's worth
+        /// of travel. A continuous pull has no threshold to cross and therefore nothing to oscillate
+        /// about.
+        /// </para>
+        /// <para>
+        /// The step is exponential — <c>1 - exp(-sharpness * dt)</c> — so the same fraction of the gap is
+        /// paid off per unit of time whatever the frame rate, and the displacement goes through
+        /// <c>CharacterController.Move</c> rather than the transform: a move keeps the controller's
+        /// own grounding, its collision and its step offset intact, while disabling the controller to
+        /// write a position throws all three away. Only a gap wider than
+        /// <see cref="correctionSnapDistance"/> — a rejoin, a respawn, a rejected move — is placed
+        /// outright.
+        /// </para>
+        /// <para>
+        /// Owner-simulated pawns are skipped: nothing predicts them, so the recorded state is only ever
+        /// the last correction and following it would drag the actor back to where it stood packets ago.
+        /// </para>
+        /// </remarks>
+        private void FollowPrediction() {
+            if (!applyPredictedPosition || !_hasPredictedState) return;
+            if (_view.Authority != AuthorityMode.Server) return;
 
             // The residual is what is left of a correction the pawn has not visually paid back yet, so the
-            // prediction is drawn offset by it and the debt shrinks to nothing over the smoothing window.
-            Vector3 predictedPosition = predicted.Position.ToUnity() + _correctionResidual;
-            predictedPosition.y = transform.position.y;
+            // target is drawn offset by it and the debt shrinks to nothing over the smoothing window.
+            Vector3 target = _predictedState.Position.ToUnity() + _correctionResidual;
+            Vector3 gap = target - transform.position;
 
-            if ((predictedPosition - transform.position).sqrMagnitude < positionTolerance * positionTolerance) return;
+            if (gap.sqrMagnitude > correctionSnapDistance * correctionSnapDistance) {
+                _correctionResidual = Vector3.zero;
+                Teleport(_predictedState.Position.ToUnity());
+                SyncActorMotion(in _predictedState);
+                return;
+            }
 
-            Teleport(predictedPosition);
-            SyncActorMotion(in predicted);
+            if (gap.sqrMagnitude < ResidualEpsilon * ResidualEpsilon) return;
+
+            MoveBy(gap * ResolveFollowFraction());
+        }
+
+        /// <summary>
+        /// The share of the outstanding gap to pay off this frame, from an exponential decay at
+        /// <see cref="followSharpness"/> per second. A non-positive sharpness closes the gap whole.
+        /// </summary>
+        private float ResolveFollowFraction() {
+            if (followSharpness <= 0f) return 1f;
+
+            return 1f - Mathf.Exp(-followSharpness * Time.deltaTime);
+        }
+
+        /// <summary>
+        /// Displaces the actor by a delta the simulation asked for, through the character controller so
+        /// collision and grounding survive the write.
+        /// </summary>
+        private void MoveBy(Vector3 delta) {
+            if (_characterController == null || !_characterController.enabled) {
+                transform.position += delta;
+                return;
+            }
+
+            _characterController.Move(delta);
         }
 
         /// <summary>
@@ -298,8 +372,11 @@ namespace AlpineLib.Networking {
         /// </summary>
         /// <remarks>
         /// A <see cref="CharacterController"/> caches its own position and overwrites a bare transform
-        /// write on its next move, so a correction applied without this dance is undone within the
-        /// frame.
+        /// write on its next move, so a placement applied without this dance is undone within the frame.
+        /// The dance is not free — cycling <c>enabled</c> clears the controller's grounding, which the
+        /// actor's air model then has to be told to ignore — so it is reserved for genuine placements
+        /// beyond <see cref="correctionSnapDistance"/>. Everything smaller goes through
+        /// <see cref="MoveBy"/>.
         /// </remarks>
         private void Teleport(Vector3 position) {
             if (_characterController == null) {
@@ -324,6 +401,11 @@ namespace AlpineLib.Networking {
         /// <see cref="correctionSnapDistance" /> is therefore taken on as a residual and walked off over
         /// the smoothing window instead — a rejoin, a teleport or a rejected move is far enough out that
         /// walking it back would look worse than the jump.
+        ///
+        /// The resolved state also becomes what <see cref="FollowPrediction"/> aims at until the next
+        /// send, all three axes of it: it is the client world's best account of where the pawn now is,
+        /// and seeding the residual with the whole error means the target starts exactly where the actor
+        /// already stands, so nothing moves on the frame the packet lands.
         /// </remarks>
         private void HandleAuthorityCorrected(NetEntity entity, PawnState state) {
             if (entity == null || !_view.IsBound || entity.Id != _view.EntityId) return;
@@ -332,8 +414,10 @@ namespace AlpineLib.Networking {
                 transform.rotation = Quaternion.Euler(0f, state.YawDegrees, 0f);
             }
 
+            _predictedState = state;
+            _hasPredictedState = true;
+
             Vector3 corrected = state.Position.ToUnity();
-            corrected.y = transform.position.y;
             Vector3 error = transform.position - corrected;
 
             if (!CanSmoothCorrection(error)) {
@@ -361,9 +445,9 @@ namespace AlpineLib.Networking {
         /// Whether a correction of this size may be paid back gradually rather than placed.
         /// </summary>
         /// <remarks>
-        /// Smoothing needs somewhere to apply the residual, and the predicted write is the only place it
-        /// exists — with <see cref="applyPredictedPosition"/> off nothing here ever moves the actor except
-        /// this correction, so the correction has to land whole.
+        /// Smoothing needs somewhere to apply the residual, and <see cref="FollowPrediction"/> is the only
+        /// place it exists — with <see cref="applyPredictedPosition"/> off nothing here ever moves the
+        /// actor except this correction, so the correction has to land whole.
         /// </remarks>
         private bool CanSmoothCorrection(Vector3 error) {
             if (!applyPredictedPosition) return false;
@@ -417,11 +501,18 @@ namespace AlpineLib.Networking {
             _boundReplication.OnAuthorityCorrected += HandleAuthorityCorrected;
         }
 
+        /// <remarks>
+        /// The recorded prediction goes with the world that produced it: a pawn rebound to a fresh client
+        /// world would otherwise spend its first frames being pulled towards a position from the previous
+        /// session.
+        /// </remarks>
         private void UnbindReplication() {
             if (_boundReplication == null) return;
 
             _boundReplication.OnAuthorityCorrected -= HandleAuthorityCorrected;
             _boundReplication = null;
+            _hasPredictedState = false;
+            _correctionResidual = Vector3.zero;
         }
     }
 }
