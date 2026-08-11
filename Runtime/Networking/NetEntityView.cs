@@ -28,6 +28,27 @@ namespace AlpineLib.Networking {
         /// <summary>Who simulates the bound entity.</summary>
         public AuthorityMode Authority => Entity?.Authority ?? AuthorityMode.Server;
 
+        /// <summary>
+        /// What sort of thing the bound entity is, or <see cref="EntityKind.Pawn"/> while unbound.
+        /// </summary>
+        /// <remarks>
+        /// Read by whoever builds the scene object around a spawn: a moving platform gets no possession
+        /// and no controller, because it is placed from the shared path rather than driven. Pawn is the
+        /// answer while unbound because it is the answer for every entity that existed before kinds did,
+        /// and an unbound view drives nothing either way.
+        /// </remarks>
+        public EntityKind Kind => Entity?.Kind ?? EntityKind.Pawn;
+
+        /// <summary>
+        /// Kind-specific identity of the bound entity — a mover's scene-authored mover id — or zero.
+        /// </summary>
+        /// <remarks>
+        /// This is the seam that lets a client match a replicated platform back to the path in its own
+        /// copy of the exported geometry: the entity id is assigned at run time and means nothing to a
+        /// scene file, while the mover id was authored next to the waypoints.
+        /// </remarks>
+        public ushort AuxId => Entity?.AuxId ?? (ushort)0;
+
         /// <summary>True when the local player owns this entity.</summary>
         public bool IsOwned { get; private set; }
 

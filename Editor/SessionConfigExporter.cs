@@ -139,7 +139,11 @@ namespace AlpineLib.Editor {
             AppendNumber(builder, "gravity", resolved.Gravity, 8);
             AppendNumber(builder, "jumpVelocity", resolved.JumpVelocity, 8);
             AppendNumber(builder, "airAcceleration", resolved.AirAcceleration, 8);
-            AppendLastNumber(builder, "airDrag", resolved.AirDrag, 8);
+            AppendNumber(builder, "airDrag", resolved.AirDrag, 8);
+            AppendNumber(builder, "capsuleRadius", resolved.CapsuleRadius, 8);
+            AppendNumber(builder, "capsuleHeight", resolved.CapsuleHeight, 8);
+            AppendNumber(builder, "stepOffset", resolved.StepOffset, 8);
+            AppendLastNumber(builder, "slopeLimitDegrees", resolved.SlopeLimitDegrees, 8);
             AppendIndent(builder, 6);
             builder.Append('}');
         }

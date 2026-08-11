@@ -51,6 +51,16 @@ namespace AlpineLib.Networking {
         [Tooltip("Exponential decay per second applied to horizontal air velocity while no input is held. Must match the actor's air drag.")]
         public float airDrag;
 
+        [Header("Collision Capsule")]
+        [Tooltip("Radius of the capsule the shared motor collides with. Must match this prefab's CharacterController radius.")]
+        public float capsuleRadius = 0.35f;
+        [Tooltip("Total capsule height in metres measured from the feet. Must match this prefab's CharacterController height.")]
+        public float capsuleHeight = 1.1f;
+        [Tooltip("Tallest ledge the pawn steps onto instead of walking into, in metres. Also the reach of the motor's downward support probe.")]
+        public float stepOffset = 0.3f;
+        [Tooltip("Steepest surface the pawn stands on, in degrees from horizontal. Anything steeper is a wall it slides down.")]
+        public float slopeLimitDegrees = 50f;
+
         /// <summary>Builds the shared movement profile this row describes.</summary>
         public MovementProfile ToProfile() {
             return new MovementProfile {
@@ -64,7 +74,11 @@ namespace AlpineLib.Networking {
                 Gravity = gravity,
                 JumpVelocity = jumpVelocity,
                 AirAcceleration = airAcceleration,
-                AirDrag = airDrag
+                AirDrag = airDrag,
+                CapsuleRadius = capsuleRadius,
+                CapsuleHeight = capsuleHeight,
+                StepOffset = stepOffset,
+                SlopeLimitDegrees = slopeLimitDegrees
             };
         }
     }

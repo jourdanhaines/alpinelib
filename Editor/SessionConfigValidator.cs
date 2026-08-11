@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using AlpineLib.Actors;
 using AlpineLib.Actors.Locomotion;
+using AlpineLib.Collision;
 using AlpineLib.Networking;
 using AlpineLib.Sessions;
 using AlpineLib.Stats;
@@ -11,7 +12,9 @@ namespace AlpineLib.Editor {
     /// <summary>
     /// Networking-specific asset checks that no single asset can make about itself: match ids that
     /// collide inside one session config, a lobby that seats more players than the session profile
-    /// admits, and movement profiles that have drifted away from the stats the game actually moves with.
+    /// admits, movement profiles that have drifted away from the stats the game actually moves with,
+    /// collision capsules that describe a shape the shared motor cannot step with, and scenes a session
+    /// can load but no exported geometry covers.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -71,12 +74,15 @@ namespace AlpineLib.Editor {
         }
 
         private static void ValidateSessionConfigs(List<string> failures) {
+            List<SceneGeometryRegistry> geometryRegistries = LoadGeometryRegistries();
+
             foreach (string assetPath in FindAssetPaths("t:SessionConfig")) {
                 var config = AssetDatabase.LoadAssetAtPath<SessionConfig>(assetPath);
                 if (config == null) continue;
 
                 ValidateMatchIds(config, assetPath, failures);
                 ValidateCapacity(config, assetPath, failures);
+                WarnOnMissingGeometry(config, assetPath, geometryRegistries);
             }
         }
 
@@ -136,6 +142,73 @@ namespace AlpineLib.Editor {
                 $"SessionProfile '{config.profile.name}' admits {config.profile.maxPlayers}.");
         }
 
+        /// <summary>
+        /// Warns about every scene a session can be in that no exported geometry covers.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// A scene with no geometry is not broken — both ends fall back to a flat plane at y=0 and agree
+        /// with each other about it, which is exactly right for a lobby that is a floor and a skybox. It
+        /// is nonetheless the single easiest mistake to make once geometry exists: a level gains a ramp,
+        /// nobody re-runs the exporter, and the server keeps simulating the plane while the client walks
+        /// up the ramp it can see.
+        /// </para>
+        /// <para>
+        /// So it is a warning, never a failure, and it is silent in a project that has no geometry
+        /// registry at all — a game that has not adopted the feature should not have its build gate
+        /// complain about it.
+        /// </para>
+        /// </remarks>
+        private static void WarnOnMissingGeometry(
+            SessionConfig config, string assetPath, List<SceneGeometryRegistry> geometryRegistries) {
+            if (geometryRegistries.Count == 0) return;
+
+            if (config.lobby != null) {
+                WarnWhenSceneUnresolved(
+                    config.lobby.lobbySceneName,
+                    $"{assetPath}: LobbyConfig '{config.lobby.name}'",
+                    geometryRegistries);
+            }
+
+            if (config.matches == null) return;
+
+            foreach (MatchDefinition match in config.matches) {
+                if (match == null) continue;
+
+                WarnWhenSceneUnresolved(
+                    match.sceneName,
+                    $"{assetPath}: MatchDefinition '{match.name}'",
+                    geometryRegistries);
+            }
+        }
+
+        private static void WarnWhenSceneUnresolved(
+            string sceneName, string context, List<SceneGeometryRegistry> geometryRegistries) {
+            if (string.IsNullOrWhiteSpace(sceneName)) return;
+
+            for (int registryIndex = 0; registryIndex < geometryRegistries.Count; registryIndex++) {
+                if (geometryRegistries[registryIndex].FindAsset(sceneName) != null) return;
+            }
+
+            Debug.LogWarning(
+                $"{logPrefix}: {context} plays in scene '{sceneName}', which no SceneGeometryRegistry has geometry " +
+                "for; both ends will simulate flat ground there. Run AlpineLib/Editor/Export Scene Geometry on it " +
+                "and add the generated asset to the registry.");
+        }
+
+        private static List<SceneGeometryRegistry> LoadGeometryRegistries() {
+            var registries = new List<SceneGeometryRegistry>();
+
+            foreach (string assetPath in FindAssetPaths("t:SceneGeometryRegistry")) {
+                var registry = AssetDatabase.LoadAssetAtPath<SceneGeometryRegistry>(assetPath);
+                if (registry == null) continue;
+
+                registries.Add(registry);
+            }
+
+            return registries;
+        }
+
         private static void ValidatePrefabRegistries(List<string> failures) {
             foreach (string assetPath in FindAssetPaths("t:NetPrefabRegistry")) {
                 var registry = AssetDatabase.LoadAssetAtPath<NetPrefabRegistry>(assetPath);
@@ -159,10 +232,62 @@ namespace AlpineLib.Editor {
                     continue;
                 }
 
+                string context = $"{assetPath}: entries[{entryIndex}] ('{entry.displayName}')";
+                ValidateCapsule(entry, context, failures);
+
                 if (entry.prefab == null) continue;
 
-                ValidateMovementParity(entry, $"{assetPath}: entries[{entryIndex}] ('{entry.displayName}')", failures);
+                ValidateMovementParity(entry, context, failures);
             }
+        }
+
+        /// <summary>
+        /// Checks that a row describes a capsule the shared motor can actually collide and step with.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// These are checked on every authored row, prefab or not, because the profile table the server
+        /// binds is indexed by prefab id and carries a profile for every row — a retired row with a
+        /// zeroed capsule would still be exported, and a zero-radius capsule degenerates to a line
+        /// segment that slips between shapes rather than pushing out of them.
+        /// </para>
+        /// <para>
+        /// The step offset is the interesting one. It is both the height of the ledge the motor lifts
+        /// over and the reach of the support probe below the feet, so a step offset at or past half the
+        /// capsule's height lets the pawn snap onto surfaces level with its own middle — it climbs walls
+        /// by walking at them. Half the height is a generous ceiling, not a tuning suggestion.
+        /// </para>
+        /// </remarks>
+        private static void ValidateCapsule(NetPrefabEntry entry, string context, List<string> failures) {
+            if (entry.capsuleRadius <= 0f) {
+                failures.Add($"{context} capsuleRadius is {entry.capsuleRadius:0.###}; the collision capsule needs a positive radius.");
+            }
+
+            if (entry.capsuleHeight <= 0f) {
+                failures.Add($"{context} capsuleHeight is {entry.capsuleHeight:0.###}; the collision capsule needs a positive height.");
+            }
+
+            if (entry.stepOffset < 0f) {
+                failures.Add($"{context} stepOffset is {entry.stepOffset:0.###}; a negative step offset would probe above the pawn's feet.");
+            }
+
+            ValidateCapsuleProportions(entry, context, failures);
+        }
+
+        private static void ValidateCapsuleProportions(NetPrefabEntry entry, string context, List<string> failures) {
+            if (entry.capsuleHeight <= 0f || entry.capsuleRadius <= 0f) return;
+
+            if (entry.capsuleHeight < entry.capsuleRadius * 2f) {
+                failures.Add(
+                    $"{context} capsuleHeight {entry.capsuleHeight:0.###} is shorter than its own diameter " +
+                    $"({entry.capsuleRadius * 2f:0.###}); the capsule's segment would run backwards.");
+            }
+
+            if (entry.stepOffset < entry.capsuleHeight * 0.5f) return;
+
+            failures.Add(
+                $"{context} stepOffset {entry.stepOffset:0.###} is at least half the capsule height " +
+                $"({entry.capsuleHeight:0.###}); the pawn would step onto surfaces level with its own middle.");
         }
 
         /// <summary>
