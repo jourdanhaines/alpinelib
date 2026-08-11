@@ -1,7 +1,10 @@
+using AlpineLib.DI;
 using AlpineLib.Netcode;
 using AlpineLib.Netcode.Protocol;
+using AlpineLib.Netcode.Replication;
 using AlpineLib.Netcode.Timing;
 using AlpineLib.Networking;
+using AlpineLib.Sessions;
 using UnityEditor;
 using UnityEngine;
 
@@ -65,7 +68,32 @@ namespace AlpineLib.Editor {
 
             EditorGUILayout.LabelField("Clock", clock.IsSynchronized ? "Synchronized" : "Waiting for first sync");
             EditorGUILayout.LabelField("Server Tick", clock.EstimatedServerTick.ToString());
-            EditorGUILayout.LabelField("Interp Delay", $"{clock.InterpolationDelaySeconds * 1000.0:0} ms");
+            DrawInterpolationTimeline();
+        }
+
+        /// <remarks>
+        /// The delay is no longer a configured constant on the clock — it lives on the session's
+        /// <see cref="InterpolationTimeline"/> and follows latency and jitter, which is exactly why it
+        /// is worth watching live here.
+        /// </remarks>
+        private static void DrawInterpolationTimeline() {
+            InterpolationTimeline timeline = ResolveTimeline();
+
+            if (timeline == null) {
+                EditorGUILayout.LabelField("Interp Delay", missingValue);
+                return;
+            }
+
+            EditorGUILayout.LabelField(
+                "Interp Delay",
+                $"{timeline.DelaySeconds * 1000.0:0} ms (target {timeline.TargetDelaySeconds * 1000.0:0} ms, jitter {timeline.JitterSeconds * 1000.0:0.0} ms)");
+        }
+
+        private static InterpolationTimeline ResolveTimeline() {
+            if (!Injector.HasInstance) return null;
+            if (!Injector.Instance.TryResolve(out ISessionService sessionService)) return null;
+
+            return sessionService.Replication?.Timeline;
         }
 
         private static void DrawServer(NetServer server) {
