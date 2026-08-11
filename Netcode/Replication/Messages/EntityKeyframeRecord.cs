@@ -8,16 +8,30 @@ namespace AlpineLib.Netcode.Replication.Messages {
     /// <remarks>
     /// This is what makes a keyframe self-sufficient. A rejoining client missed every spawn broadcast
     /// that happened while it was away, so a keyframe of bare id-and-state would describe entities it has
-    /// no way to instantiate. Carrying the prefab, the owner and the authority mode means one reliable
-    /// message can rebuild the world from nothing.
+    /// no way to instantiate. Carrying the prefab, the owner, the authority mode and the kind means one
+    /// reliable message can rebuild the world from nothing — including the movers, which a rejoining
+    /// client must be able to tell apart from pawns before it wires anything to them.
     /// </remarks>
     public struct EntityKeyframeRecord : INetMessage {
-        /// <summary>Creates a record describing one entity in full.</summary>
-        public EntityKeyframeRecord(uint entityId, ushort prefabId, int ownerPeerId, AuthorityMode authority, in PawnState state) {
+        /// <summary>Creates a record describing one pawn in full.</summary>
+        public EntityKeyframeRecord(uint entityId, ushort prefabId, int ownerPeerId, AuthorityMode authority, in PawnState state)
+            : this(entityId, prefabId, ownerPeerId, authority, EntityKind.Pawn, 0, in state) { }
+
+        /// <summary>Creates a record describing one entity of any kind in full.</summary>
+        public EntityKeyframeRecord(
+            uint entityId,
+            ushort prefabId,
+            int ownerPeerId,
+            AuthorityMode authority,
+            EntityKind kind,
+            ushort auxId,
+            in PawnState state) {
             EntityId = entityId;
             PrefabId = prefabId;
             OwnerPeerId = ownerPeerId;
             Authority = authority;
+            Kind = kind;
+            AuxId = auxId;
             State = state;
         }
 
@@ -33,6 +47,12 @@ namespace AlpineLib.Netcode.Replication.Messages {
         /// <summary>Who simulates it.</summary>
         public AuthorityMode Authority { get; set; }
 
+        /// <summary>What sort of thing it is, and therefore what the spawner builds around it.</summary>
+        public EntityKind Kind { get; set; }
+
+        /// <summary>Kind-specific identity: a mover's scene-authored mover id, zero for a pawn.</summary>
+        public ushort AuxId { get; set; }
+
         /// <summary>Its state as of the keyframe's tick.</summary>
         public PawnState State { get; set; }
 
@@ -42,6 +62,8 @@ namespace AlpineLib.Netcode.Replication.Messages {
             writer.WriteUShort(PrefabId);
             writer.WriteInt(OwnerPeerId);
             writer.WriteByte((byte)Authority);
+            writer.WriteByte((byte)Kind);
+            writer.WriteUShort(AuxId);
             writer.WriteMessage(State);
         }
 
@@ -51,6 +73,8 @@ namespace AlpineLib.Netcode.Replication.Messages {
             PrefabId = reader.ReadUShort();
             OwnerPeerId = reader.ReadInt();
             Authority = (AuthorityMode)reader.ReadByte();
+            Kind = (EntityKind)reader.ReadByte();
+            AuxId = reader.ReadUShort();
             State = reader.ReadMessage<PawnState>();
         }
     }

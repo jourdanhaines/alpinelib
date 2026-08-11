@@ -28,9 +28,20 @@ namespace AlpineLib.Netcode.Replication {
         /// <summary>How many entities are live.</summary>
         public int Count => entities.Count;
 
-        /// <summary>Mints an id and registers a new entity in its spawn state.</summary>
+        /// <summary>Mints an id and registers a new pawn in its spawn state.</summary>
         public NetEntity Create(ushort prefabId, int ownerPeerId, AuthorityMode authority, in PawnState initialState) {
-            var entity = new NetEntity(nextEntityId, prefabId, ownerPeerId, authority, in initialState);
+            return Create(prefabId, ownerPeerId, authority, EntityKind.Pawn, 0, in initialState);
+        }
+
+        /// <summary>Mints an id and registers a new entity of any kind in its spawn state.</summary>
+        public NetEntity Create(
+            ushort prefabId,
+            int ownerPeerId,
+            AuthorityMode authority,
+            EntityKind kind,
+            ushort auxId,
+            in PawnState initialState) {
+            var entity = new NetEntity(nextEntityId, prefabId, ownerPeerId, authority, kind, auxId, in initialState);
             nextEntityId++;
 
             entitiesById.Add(entity.Id, entity);

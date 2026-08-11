@@ -18,12 +18,25 @@ namespace AlpineLib.Netcode.Replication {
     public sealed class NetEntity {
         private PawnState state;
 
-        /// <summary>Creates an entity in its spawn state.</summary>
-        public NetEntity(uint id, ushort prefabId, int ownerPeerId, AuthorityMode authority, in PawnState initialState) {
+        /// <summary>Creates a pawn in its spawn state.</summary>
+        public NetEntity(uint id, ushort prefabId, int ownerPeerId, AuthorityMode authority, in PawnState initialState)
+            : this(id, prefabId, ownerPeerId, authority, EntityKind.Pawn, 0, in initialState) { }
+
+        /// <summary>Creates an entity of any kind in its spawn state.</summary>
+        public NetEntity(
+            uint id,
+            ushort prefabId,
+            int ownerPeerId,
+            AuthorityMode authority,
+            EntityKind kind,
+            ushort auxId,
+            in PawnState initialState) {
             Id = id;
             PrefabId = prefabId;
             OwnerPeerId = ownerPeerId;
             Authority = authority;
+            Kind = kind;
+            AuxId = auxId;
             state = initialState;
             LastDirtyTick = 0u;
             LastAcknowledgedInputSequence = 0u;
@@ -46,6 +59,19 @@ namespace AlpineLib.Netcode.Replication {
 
         /// <summary>Who simulates this entity. Fixed for the entity's lifetime; it rides on the spawn.</summary>
         public AuthorityMode Authority { get; }
+
+        /// <summary>
+        /// What sort of thing this is. Fixed for the entity's lifetime and carried on the spawn and every
+        /// keyframe, because it decides what the client builds around the entity rather than merely how
+        /// it looks.
+        /// </summary>
+        public EntityKind Kind { get; }
+
+        /// <summary>
+        /// Kind-specific identity: a mover's scene-authored mover id, zero for a pawn. It is how a client
+        /// matches a replicated platform back to the path in its own copy of the scene geometry.
+        /// </summary>
+        public ushort AuxId { get; }
 
         /// <summary>The current state. Assign through <see cref="ApplyState"/> so dirt is tracked.</summary>
         public PawnState State => state;
