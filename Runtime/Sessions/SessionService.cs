@@ -143,10 +143,6 @@ namespace AlpineLib.Sessions {
         [Tooltip("Host the session in this process instead of asking the configured server for one. Local development convenience; shipped builds host on the dedicated server.")]
         [SerializeField] private bool listenHost;
 
-        [Header("Listen Host Simulation")]
-        [Tooltip("Layers a listen host raycasts to find the floor under the pawns it simulates. Must exclude pawn colliders.")]
-        [SerializeField] private LayerMask groundMask = Physics.DefaultRaycastLayers;
-
         [Header("Diagnostics")]
         [Tooltip("Read-only. Round trip to the server in milliseconds, mirrored every frame so it can be watched in the inspector during play. Editing it does nothing.")]
         [SerializeField] private int pingMs;
@@ -400,6 +396,7 @@ namespace AlpineLib.Sessions {
 
             _frontDesk?.Tick(deltaSeconds);
             _sessionClient?.Tick(deltaSeconds);
+            _replication?.Tick(deltaSeconds);
 
             pingMs = _networkService?.PingMs ?? 0;
         }
@@ -422,7 +419,7 @@ namespace AlpineLib.Sessions {
                 _config.ToData(),
                 _netConfig,
                 new AnonymousAuthValidator(_config.defaultDisplayName),
-                new RaycastGroundProvider(groundMask));
+                new FlatGroundProvider());
 
             return LoopbackEndpoint();
         }
@@ -492,13 +489,13 @@ namespace AlpineLib.Sessions {
         /// </summary>
         /// <remarks>
         /// A listen host must predict against the same collision world its server half simulates with,
-        /// or the host's own pawn would be corrected every tick. A pure client predicts against the flat
-        /// plane the dedicated server uses, which is the shared default.
+        /// or the host's own pawn would be corrected every tick. Every topology therefore stands on the
+        /// same <see cref="FlatGroundProvider"/> — dedicated server, pure client and listen host alike —
+        /// until a real heightfield provider exists; a listen host on raycast ground while its guests
+        /// predict on the plane would put every guest pawn on a different floor than its owner sees.
         /// </remarks>
         private IGroundProvider ResolveClientGroundProvider() {
-            if (!listenHost) return new FlatGroundProvider();
-
-            return new RaycastGroundProvider(groundMask);
+            return new FlatGroundProvider();
         }
 
         private void SubscribeToSessionClient() {

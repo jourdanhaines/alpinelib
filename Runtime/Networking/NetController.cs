@@ -9,33 +9,32 @@ using UnityEngine;
 
 namespace AlpineLib.Networking {
     /// <summary>
-    /// The brain that drives somebody else's pawn: samples the interpolator every frame and steers the
-    /// possessed actor towards the pose the authority reported, through the same locomotion calls a
-    /// player controller uses.
+    /// The brain that drives somebody else's pawn: samples the interpolator every frame and places the
+    /// possessed actor exactly on the pose the authority reported.
     /// </summary>
     /// <remarks>
     /// <para>
     /// This is what makes a single prefab enough for both a local and a remote player. A remote pawn is
     /// not a stripped-down copy with its movement disabled — it is the same actor, possessed by this
-    /// controller instead of the game's player controller, and it walks, crouches and turns through
-    /// <see cref="Actor.Move"/>, <see cref="LocomotionSystem.SetState"/> and
-    /// <see cref="CrouchSystem.SetCrouching"/> exactly as a local one does. Animation, footsteps, noise
-    /// and every other system that watches locomotion therefore work on remote pawns for free.
+    /// controller instead of the game's player controller. Gait and crouch still flow through
+    /// <see cref="LocomotionSystem.SetState"/> and <see cref="CrouchSystem.SetCrouching"/>, and the
+    /// animator still reads locomotion intent, so footsteps, noise and every system that watches
+    /// locomotion works on remote pawns for free.
     /// </para>
     /// <para>
-    /// Movement is expressed as a direction whose magnitude closes the gap in one frame at the actor's
-    /// current speed, rather than by writing the transform: writing it would bypass collision and the
-    /// animator both. A pawn that is further out than <see cref="snapDistance"/> — a rejoin, a
-    /// teleport, a long stall — is placed outright instead, because walking it back would take longer
-    /// than the divergence it is fixing.
+    /// Position, though, is written to the transform outright. The interpolated stream is already
+    /// smooth, already collision-resolved by the authority, and already the truth; walking the actor
+    /// toward it through its own motor re-integrates that truth through a second movement model — one
+    /// whose grounded flag flickers, whose gravity writes the same controller, and whose closing speed
+    /// caps into a deadband — and every one of those seams is visible as vibration. The actor's own
+    /// integrators stand down while this brain possesses it (see
+    /// <see cref="Controller.DrivesPawnExternally"/>); the animator is fed from the wire state instead
+    /// of from displacement.
     /// </para>
     /// </remarks>
+    [DefaultExecutionOrder(NetExecutionOrder.PawnDrivers)]
     public class NetController : Controller {
         [Header("Following")]
-        [Tooltip("Metres of error beyond which the pawn is placed rather than walked to its reported pose.")]
-        [SerializeField] private float snapDistance = 2f;
-        [Tooltip("Metres of error below which no movement is requested at all, so a standing pawn does not jitter.")]
-        [SerializeField] private float arrivalTolerance = 0.01f;
         [Tooltip("Degrees per second the pawn may turn towards its reported facing.")]
         [SerializeField] private float turnSpeed = 720f;
 
@@ -53,14 +52,20 @@ namespace AlpineLib.Networking {
         /// <summary>Event id the actor's own jump is reported under.</summary>
         public const byte JumpEventId = 1;
 
+        /// <summary>Speed below which a pawn is animated as standing rather than travelling, in m/s.</summary>
+        public const float RestSpeedThreshold = 0.05f;
+
         /// <summary>Actor this controller is currently driving, or null while unpossessed.</summary>
         public Actor Character => _character;
+
+        /// <inheritdoc />
+        /// <remarks>The whole point of this brain: the interpolator owns the transform.</remarks>
+        public override bool DrivesPawnExternally => true;
 
         private Actor _character;
         private NetEntityView _view;
         private LocomotionSystem _locomotion;
         private CrouchSystem _crouch;
-        private CharacterController _characterController;
         private ISessionService _sessionService;
         private INetworkService _networkService;
 
@@ -81,13 +86,17 @@ namespace AlpineLib.Networking {
             _view = character.GetComponent<NetEntityView>();
             _locomotion = character.GetComponent<LocomotionSystem>();
             _crouch = character.GetComponent<CrouchSystem>();
-            _characterController = character.GetComponent<CharacterController>();
         }
 
         /// <summary>
         /// Plays a discrete event the authority reported: jumps are applied to the actor, everything
         /// else is handed to whoever is listening.
         /// </summary>
+        /// <remarks>
+        /// The jump here is animation only — an externally driven actor integrates no vertical velocity,
+        /// so <see cref="Actor.Jump"/> reduces to its animator trigger while the arc itself arrives
+        /// through the replicated positions.
+        /// </remarks>
         public void PlayEntityEvent(byte eventId, byte argument) {
             if (eventId == JumpEventId && _character != null) {
                 _character.Jump();
@@ -97,13 +106,13 @@ namespace AlpineLib.Networking {
         }
 
         /// <summary>
-        /// Places the pawn at a reported pose outright, without walking it there. Used for corrections
-        /// too large to absorb and for the keyframe that follows a rejoin.
+        /// Places the pawn at a reported pose outright. Used for the keyframe that follows a rejoin and
+        /// for any caller holding an authoritative pose outside the interpolated stream.
         /// </summary>
         public void SnapTo(in PawnState state) {
             if (_character == null) return;
 
-            Teleport(state.Position.ToUnity());
+            _character.transform.position = state.Position.ToUnity();
             _character.transform.rotation = Quaternion.Euler(0f, state.YawDegrees, 0f);
         }
 
@@ -129,25 +138,20 @@ namespace AlpineLib.Networking {
             if (replication == null) return;
             if (!replication.SampleRemote(_view.EntityId, out PawnState state)) return;
 
-            DriveTowards(in state);
+            Drive(in state);
         }
 
         /// <summary>
-        /// Applies one sampled pose: gait and crouch first, because they decide how fast the actor may
-        /// travel, then the movement that closes the gap, then the facing.
+        /// Applies one sampled pose: gait and crouch first, then the transform, then grounding and the
+        /// animator's view of the motion.
         /// </summary>
-        private void DriveTowards(in PawnState state) {
+        private void Drive(in PawnState state) {
             ApplyLocomotionState(in state);
 
-            Vector3 targetPosition = state.Position.ToUnity();
-            Vector3 offset = targetPosition - _character.transform.position;
+            _character.transform.position = state.Position.ToUnity();
+            _character.SetExternalGrounded(state.IsGrounded);
 
-            if (offset.sqrMagnitude > snapDistance * snapDistance) {
-                Teleport(targetPosition);
-            } else {
-                ApplyMovement(offset);
-            }
-
+            AnimateFromState(in state);
             ApplyFacing(state.YawDegrees);
         }
 
@@ -163,27 +167,24 @@ namespace AlpineLib.Networking {
         }
 
         /// <summary>
-        /// Asks the actor to move along the gap, at a fraction of its current speed chosen so this
-        /// frame's stride lands on the target instead of overshooting it.
+        /// Feeds the animator the motion the wire reports — direction of travel and speed as a fraction
+        /// of the current gait — rather than any locally measured displacement. Measured displacement of
+        /// an externally placed pawn is the chase error of whatever wrote the transform last, and legs
+        /// driven by it flicker between idle and locomotion.
         /// </summary>
-        /// <remarks>
-        /// Vertical error is left out: the actor's own gravity owns the vertical axis, and driving it
-        /// from here would fight every landing. A pawn whose height is genuinely wrong is beyond
-        /// <see cref="snapDistance"/> soon enough to be placed.
-        /// </remarks>
-        private void ApplyMovement(Vector3 offset) {
-            offset.y = 0f;
+        private void AnimateFromState(in PawnState state) {
+            Vector3 horizontalVelocity = state.HorizontalVelocity.ToUnity();
+            float speed = horizontalVelocity.magnitude;
 
-            float distance = offset.magnitude;
+            if (speed < RestSpeedThreshold) {
+                _character.AnimateLocomotion(Vector3.zero, 0f);
+                return;
+            }
 
-            if (distance < arrivalTolerance) return;
+            float gaitSpeed = ResolveGaitSpeed(in state);
+            float speedRatio = gaitSpeed > 0f ? Mathf.Clamp01(speed / gaitSpeed) : 1f;
 
-            float reachableDistance = ResolveSpeed() * Time.deltaTime;
-
-            if (reachableDistance <= 0f) return;
-
-            float stride = Mathf.Min(distance / reachableDistance, 1f);
-            _character.Move(offset / distance * stride);
+            _character.AnimateLocomotion(horizontalVelocity / speed * speedRatio, 1f);
         }
 
         private void ApplyFacing(float yawDegrees) {
@@ -192,56 +193,21 @@ namespace AlpineLib.Networking {
         }
 
         /// <summary>
-        /// Speed the pawn is allowed to close the gap at this frame: the authored top speed of the gait
-        /// it is currently in.
+        /// Top speed of the gait the sampled state is in, from the movement profile; falls back to the
+        /// sampled speed itself — ratio one — when no profile is configured for this prefab.
         /// </summary>
-        /// <remarks>
-        /// Taken from the movement profile rather than from the actor's measured velocity because the
-        /// measurement lags a frame behind every gait change, and a pawn that has just started
-        /// sprinting would be held to its walking speed for that frame. Falls back to the actor's own
-        /// measured speed when no profile is configured — an offline scene, or a prefab id with no row.
-        /// </remarks>
-        private float ResolveSpeed() {
-            if (_character == null) return 0f;
-
+        private float ResolveGaitSpeed(in PawnState state) {
             MovementProfile profile = ResolveMovementProfile();
 
-            if (profile != null) {
-                return Mathf.Max(profile.GetSpeedForGait(ResolveGaitIndex()), 0.01f);
-            }
+            if (profile == null) return 0f;
 
-            Vector3 velocity = _character.Velocity;
-            velocity.y = 0f;
-
-            return Mathf.Max(velocity.magnitude, 1f);
-        }
-
-        private int ResolveGaitIndex() {
-            if (_locomotion == null) return (int)LocomotionState.Walk;
-
-            return (int)_locomotion.CurrentState;
+            return profile.GetSpeedForGait((int)state.Locomotion);
         }
 
         private MovementProfile ResolveMovementProfile() {
             if (_view == null || !_view.IsBound) return null;
 
             return _networkService?.Config?.GetMovementProfile(_view.PrefabId);
-        }
-
-        /// <remarks>
-        /// A <see cref="CharacterController"/> caches its own position and would overwrite a bare
-        /// transform write on its next move, so it is taken out of the way for the placement.
-        /// </remarks>
-        private void Teleport(Vector3 position) {
-            if (_characterController == null) {
-                _character.transform.position = position;
-                return;
-            }
-
-            bool wasEnabled = _characterController.enabled;
-            _characterController.enabled = false;
-            _character.transform.position = position;
-            _characterController.enabled = wasEnabled;
         }
     }
 }

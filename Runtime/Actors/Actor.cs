@@ -62,13 +62,38 @@ namespace AlpineLib.Actors {
         public Vector3 Velocity { get; private set; }
 
         /// <summary>
-        /// True while the <see cref="CharacterController"/> reports ground contact from its last move.
+        /// The world-space direction the possessing brain asked for this frame through <see cref="Move"/>
+        /// or <see cref="MoveKinematic"/>, before any of it was executed. Zero on frames nothing drove
+        /// the actor. Cleared every <c>LateUpdate</c>.
+        /// </summary>
+        /// <remarks>
+        /// This is the commanded intent, not the achieved motion — the two differ whenever a wall, a
+        /// slope or a correction interferes — and it exists because anything replicating intent must
+        /// read it from here. Deriving intent from measured velocity feeds every disturbance of the
+        /// transform back into the wire as if the player had asked for it.
+        /// </remarks>
+        public Vector3 CommandedMoveDirection { get; private set; }
+
+        /// <summary>
+        /// True while the <see cref="CharacterController"/> reports ground contact from its last move —
+        /// or, on an externally driven actor, whatever the driver last declared through
+        /// <see cref="SetExternalGrounded"/>, since a pawn whose transform is placed from replicated
+        /// state never moves its controller into the floor.
         /// </summary>
         /// <remarks>
         /// False for every frame before <c>Start</c> has resolved the controller, so callers polling this
         /// from their own <c>Awake</c> see "airborne" rather than a null reference.
         /// </remarks>
-        public bool IsGrounded => Controller != null && Controller.isGrounded;
+        public bool IsGrounded => IsExternallyDriven
+            ? _externalGrounded
+            : Controller != null && Controller.isGrounded;
+
+        /// <summary>
+        /// True while the possessing brain declares that it places the transform itself. The actor's own
+        /// integrators — gravity, air locomotion — stand down for such a pawn; see
+        /// <see cref="Actors.Controller.DrivesPawnExternally"/>.
+        /// </summary>
+        public bool IsExternallyDriven => Brain != null && Brain.DrivesPawnExternally;
 
         [SerializeField] private bool useRootMotion;
 
@@ -126,6 +151,7 @@ namespace AlpineLib.Actors {
         private Vector3 _previousPosition;
         private bool _isLocomotionSuppressed;
         private bool _isRotationLocked;
+        private bool _externalGrounded;
 
         /// <remarks>
         /// Component references are resolved here rather than in <c>Start</c> so systems configuring a
@@ -220,6 +246,7 @@ namespace AlpineLib.Actors {
             _groundedMoveThisFrame = false;
             _hasAirIntentThisFrame = false;
             _kinematicMoveThisFrame = false;
+            CommandedMoveDirection = Vector3.zero;
         }
 
         /// <summary>
@@ -240,6 +267,7 @@ namespace AlpineLib.Actors {
         /// </remarks>
         private void UpdateAirLocomotion() {
             if (!IsAlive || Controller == null || useRootMotion) return;
+            if (IsExternallyDriven) return;
 
             if (IsGrounded) {
                 if (!_groundedMoveThisFrame) {
@@ -317,6 +345,7 @@ namespace AlpineLib.Actors {
         private void ApplyGravity() {
             if (!IsAlive) return;
             if (Controller == null) return;
+            if (IsExternallyDriven) return;
 
             if (Controller.isGrounded && _verticalVelocity < 0f) {
                 _verticalVelocity = -2f;
@@ -372,6 +401,8 @@ namespace AlpineLib.Actors {
         public virtual void Move(Vector3 direction) {
             if (!IsAlive) return;
 
+            CommandedMoveDirection = direction;
+
             float baseSpeed = Stats.GetBase(moveSpeedStat);
             float effectiveSpeed = Stats.Get(moveSpeedStat);
 
@@ -410,6 +441,8 @@ namespace AlpineLib.Actors {
             if (!IsAlive) return;
             if (Controller == null) return;
 
+            CommandedMoveDirection = direction;
+
             float baseSpeed = Stats.GetBase(moveSpeedStat);
             float effectiveSpeed = Stats.Get(moveSpeedStat);
 
@@ -442,6 +475,50 @@ namespace AlpineLib.Actors {
 
             Vector3 localDirection = Quaternion.Inverse(transform.rotation) * direction;
             _currentStrafe = new Vector2(localDirection.x, localDirection.z) * speedRatio;
+        }
+
+        /// <summary>
+        /// Declares whether an externally driven actor is standing on ground. Read back through
+        /// <see cref="IsGrounded"/> instead of the character controller, which never learns anything
+        /// from a bare transform write.
+        /// </summary>
+        public void SetExternalGrounded(bool isGrounded) {
+            _externalGrounded = isGrounded;
+        }
+
+        /// <summary>
+        /// Publishes locomotion intent to the animator without displacing anything: the external
+        /// driver's way of making the legs match motion it has already applied to the transform.
+        /// </summary>
+        /// <param name="worldDirection">Unit direction of travel in world space, or zero at rest.</param>
+        /// <param name="speedRatio">Travel speed as a fraction of the current gait's full speed.</param>
+        public void AnimateLocomotion(Vector3 worldDirection, float speedRatio) {
+            RecordLocomotionIntent(worldDirection, speedRatio);
+        }
+
+        /// <summary>
+        /// Overwrites the actor's internal motion state with an authoritative one, so the integrators
+        /// resume from where the simulation put the pawn instead of where its own bookkeeping left off.
+        /// </summary>
+        /// <remarks>
+        /// Called after a correction or prediction write moves the transform. Without it a teleported
+        /// actor keeps the vertical and air velocities of the place it was yanked away from — momentum
+        /// the simulation says it does not have — and spends the next arc paying that phantom back as
+        /// fresh divergence.
+        /// </remarks>
+        public void SyncMotionState(Vector3 velocity, bool isGrounded) {
+            _verticalVelocity = velocity.y;
+            Vector3 horizontal = new Vector3(velocity.x, 0f, velocity.z);
+
+            if (isGrounded) {
+                _groundedVelocity = horizontal;
+                _airVelocity = Vector3.zero;
+                _wasAirborne = false;
+                return;
+            }
+
+            _airVelocity = horizontal;
+            _wasAirborne = true;
         }
 
         /// <summary>

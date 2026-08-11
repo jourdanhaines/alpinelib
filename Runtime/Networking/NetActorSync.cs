@@ -35,6 +35,7 @@ namespace AlpineLib.Networking {
     /// through <see cref="QueueJump"/>.
     /// </para>
     /// </remarks>
+    [DefaultExecutionOrder(NetExecutionOrder.PawnDrivers)]
     [RequireComponent(typeof(NetEntityView))]
     public class NetActorSync : MonoBehaviour {
         [Header("Prediction")]
@@ -76,12 +77,24 @@ namespace AlpineLib.Networking {
         private Vector3 _correctionResidual;
 
         /// <summary>
-        /// Flags a jump on the next input sent to the authority.
+        /// True while this pawn is actually being replicated: bound to an entity this client owns inside
+        /// a live session. Controllers use it to decide whether a jump goes through
+        /// <see cref="QueueJump"/> or straight to the actor.
+        /// </summary>
+        public bool IsNetworked =>
+            _view != null && _view.IsBound && _view.IsOwned && ResolveReplication() != null;
+
+        /// <summary>
+        /// Flags a jump on the next input sent to the authority. The visible impulse is applied on that
+        /// same send, not on the frame of the press.
         /// </summary>
         /// <remarks>
         /// Latched rather than sampled: a jump is pressed on a render frame and sent on a network tick,
         /// and those rarely coincide. The latch clears when the input carrying it goes out, so a jump is
-        /// never sent twice.
+        /// never sent twice. Deferring the local <see cref="Actor.Jump"/> to the same send keeps the
+        /// visible arc, the predicted arc and the authoritative arc all starting on the same step — a
+        /// jump applied on the press frame starts up to a full send interval before the wire's, and that
+        /// head start comes back as a correction at the top of every arc.
         /// </remarks>
         public void QueueJump() {
             _jumpQueued = true;
@@ -170,15 +183,27 @@ namespace AlpineLib.Networking {
 
         private void SendSample(ClientReplication replication) {
             if (_view.Authority == AuthorityMode.OwnerClient) {
+                ApplyDeferredJump();
                 replication.SubmitOwnerPawnState(_view.EntityId, CaptureState());
                 FlushQueuedJump(replication);
                 return;
             }
 
             PawnInput input = BuildInput();
+            ApplyDeferredJump();
             PawnState predicted = replication.SubmitInput(_view.EntityId, in input);
             FlushQueuedJump(replication);
             ApplyPredictedState(in predicted);
+        }
+
+        /// <summary>
+        /// Plays the latched jump's local impulse on the tick its input leaves, so the visible arc and
+        /// the simulated arcs share a start step; see <see cref="QueueJump"/>.
+        /// </summary>
+        private void ApplyDeferredJump() {
+            if (!_jumpQueued || _actor == null) return;
+
+            _actor.Jump();
         }
 
         /// <summary>
@@ -200,36 +225,30 @@ namespace AlpineLib.Networking {
         }
 
         /// <summary>
-        /// Turns this frame's actor state into one tick of intent: where it is trying to go, at which
-        /// gait, and whether it is crouching or jumping.
+        /// Turns this frame's intent into one step of input: where the player is asking to go, at which
+        /// gait, and whether they are crouching or jumping. The sequence field is left zero — the client
+        /// world stamps it from its own monotonic counter on submit.
         /// </summary>
         /// <remarks>
-        /// The move direction is the actor's measured horizontal velocity scaled back into the unit
-        /// range by the gait's own top speed, so the authority reproduces the same stride from the same
-        /// numbers rather than trusting a speed the client claims.
+        /// The move direction is the direction the possessing controller <em>commanded</em> this frame,
+        /// never the velocity the transform was measured to have. Measured velocity contains everything
+        /// that ever moves the transform — including this component's own correction writes — and
+        /// sending it back as intent turns every correction into new input, a loop that feeds itself.
         /// </remarks>
         private PawnInput BuildInput() {
             WireLocomotion gait = ResolveGait();
             bool isCrouching = _crouch != null && _crouch.IsCrouching;
 
-            return new PawnInput(ResolveInputTick(), ResolveMoveDirection(gait), gait, _jumpQueued, isCrouching);
+            return new PawnInput(0u, ResolveMoveDirection(), gait, _jumpQueued, isCrouching);
         }
 
-        private Numerics.Vector2 ResolveMoveDirection(WireLocomotion gait) {
+        private Numerics.Vector2 ResolveMoveDirection() {
             if (_actor == null) return Numerics.Vector2.Zero;
 
-            MovementProfile profile = ResolveMovementProfile();
+            Vector3 commanded = _actor.CommandedMoveDirection;
+            commanded.y = 0f;
 
-            if (profile == null) return Numerics.Vector2.Zero;
-
-            float gaitSpeed = profile.GetSpeedForGait((int)gait);
-
-            if (gaitSpeed <= 0f) return Numerics.Vector2.Zero;
-
-            Vector3 horizontalVelocity = _actor.Velocity;
-            horizontalVelocity.y = 0f;
-
-            return Vector3.ClampMagnitude(horizontalVelocity / gaitSpeed, 1f).ToPlanarNumerics();
+            return Vector3.ClampMagnitude(commanded, 1f).ToPlanarNumerics();
         }
 
         /// <summary>Reads the actor's current pose as an authoritative state, for owner-simulated pawns.</summary>
@@ -249,6 +268,12 @@ namespace AlpineLib.Networking {
         /// Moves the actor onto the predicted pose, skipping writes smaller than
         /// <see cref="positionTolerance"/>.
         /// </summary>
+        /// <remarks>
+        /// Horizontal only. The simulation stands on the ground seam — a flat plane until a real
+        /// heightfield provider exists — while the visible actor stands on actual scene geometry, so its
+        /// own gravity and collision own the vertical axis. Writing the simulated Y here would teleport
+        /// the pawn into or above every floor the seam does not know about, thirty times a second.
+        /// </remarks>
         private void ApplyPredictedState(in PawnState predicted) {
             if (applyPredictedYaw) {
                 transform.rotation = Quaternion.Euler(0f, predicted.YawDegrees, 0f);
@@ -259,10 +284,12 @@ namespace AlpineLib.Networking {
             // The residual is what is left of a correction the pawn has not visually paid back yet, so the
             // prediction is drawn offset by it and the debt shrinks to nothing over the smoothing window.
             Vector3 predictedPosition = predicted.Position.ToUnity() + _correctionResidual;
+            predictedPosition.y = transform.position.y;
 
             if ((predictedPosition - transform.position).sqrMagnitude < positionTolerance * positionTolerance) return;
 
             Teleport(predictedPosition);
+            SyncActorMotion(in predicted);
         }
 
         /// <summary>
@@ -306,15 +333,28 @@ namespace AlpineLib.Networking {
             }
 
             Vector3 corrected = state.Position.ToUnity();
+            corrected.y = transform.position.y;
             Vector3 error = transform.position - corrected;
 
             if (!CanSmoothCorrection(error)) {
                 _correctionResidual = Vector3.zero;
                 Teleport(corrected);
+                SyncActorMotion(in state);
                 return;
             }
 
             _correctionResidual = error;
+            SyncActorMotion(in state);
+        }
+
+        /// <summary>
+        /// Hands the simulation's velocity and grounding to the actor's own integrators, so they carry
+        /// on from the state the pawn was just placed in rather than the one it was yanked out of.
+        /// </summary>
+        private void SyncActorMotion(in PawnState state) {
+            if (_actor == null) return;
+
+            _actor.SyncMotionState(state.Velocity.ToUnity(), state.IsGrounded);
         }
 
         /// <summary>
@@ -357,18 +397,6 @@ namespace AlpineLib.Networking {
             // The two enumerations are declared in the same order on purpose; the wire one is the
             // engine one's mirror, so the cast is the mapping.
             return (WireLocomotion)(byte)_locomotion.CurrentState;
-        }
-
-        private MovementProfile ResolveMovementProfile() {
-            NetConfig config = _networkService?.Config;
-
-            return config?.GetMovementProfile(_view.PrefabId);
-        }
-
-        private uint ResolveInputTick() {
-            NetClient client = _networkService?.Client;
-
-            return client?.Clock.EstimatedServerTick ?? 0u;
         }
 
         private float ResolveSendInterval() {

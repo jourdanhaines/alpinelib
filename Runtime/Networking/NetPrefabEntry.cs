@@ -45,6 +45,12 @@ namespace AlpineLib.Networking {
         [Tooltip("Upward speed in metres per second applied on the tick a jump starts.")]
         public float jumpVelocity = 6f;
 
+        [Header("Air")]
+        [Tooltip("Horizontal steering acceleration while airborne, in metres per second squared. Must match the actor's air acceleration or every jump diverges.")]
+        public float airAcceleration = 16f;
+        [Tooltip("Exponential decay per second applied to horizontal air velocity while no input is held. Must match the actor's air drag.")]
+        public float airDrag;
+
         /// <summary>Builds the shared movement profile this row describes.</summary>
         public MovementProfile ToProfile() {
             return new MovementProfile {
@@ -56,7 +62,9 @@ namespace AlpineLib.Networking {
                 CrouchSpeed = crouchSpeed,
                 CrouchFastSpeed = crouchFastSpeed,
                 Gravity = gravity,
-                JumpVelocity = jumpVelocity
+                JumpVelocity = jumpVelocity,
+                AirAcceleration = airAcceleration,
+                AirDrag = airDrag
             };
         }
     }

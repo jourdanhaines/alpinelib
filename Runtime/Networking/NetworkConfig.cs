@@ -33,8 +33,12 @@ namespace AlpineLib.Networking {
         public int snapshotRate = 15;
         [Tooltip("Input commands an owning client sends per second.")]
         public int clientSendRate = 30;
-        [Tooltip("Milliseconds remote pawns are rendered in the past, buying the interpolator two samples to blend between.")]
+        [Tooltip("Milliseconds remote pawns start out rendered in the past. The live delay then adapts to measured latency and jitter between the min and max below.")]
         public int interpolationDelayMs = 100;
+        [Tooltip("Floor of the adaptive interpolation delay, in milliseconds.")]
+        public int interpolationDelayMinMs = 60;
+        [Tooltip("Ceiling of the adaptive interpolation delay, in milliseconds. Past this, staleness costs more than the occasional extrapolated frame.")]
+        public int interpolationDelayMaxMs = 250;
 
         [Header("Validation")]
         [Tooltip("How far past a gait's top speed a reported movement may run before the server calls it a violation. Owner-authoritative pawns only.")]
@@ -58,6 +62,8 @@ namespace AlpineLib.Networking {
                 SnapshotRate = snapshotRate,
                 ClientSendRate = clientSendRate,
                 InterpolationDelayMs = interpolationDelayMs,
+                InterpolationDelayMinMs = interpolationDelayMinMs,
+                InterpolationDelayMaxMs = interpolationDelayMaxMs,
                 MovementToleranceMultiplier = movementToleranceMultiplier
             };
 

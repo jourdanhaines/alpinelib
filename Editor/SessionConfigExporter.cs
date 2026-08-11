@@ -97,6 +97,8 @@ namespace AlpineLib.Editor {
             AppendNumber(builder, "snapshotRate", netConfig.SnapshotRate, 4);
             AppendNumber(builder, "clientSendRate", netConfig.ClientSendRate, 4);
             AppendNumber(builder, "interpolationDelayMs", netConfig.InterpolationDelayMs, 4);
+            AppendNumber(builder, "interpolationDelayMinMs", netConfig.InterpolationDelayMinMs, 4);
+            AppendNumber(builder, "interpolationDelayMaxMs", netConfig.InterpolationDelayMaxMs, 4);
             AppendNumber(builder, "disconnectTimeoutMs", netConfig.DisconnectTimeoutMs, 4);
             AppendNumber(builder, "movementToleranceMultiplier", netConfig.MovementToleranceMultiplier, 4);
             AppendIndent(builder, 4);
@@ -135,7 +137,9 @@ namespace AlpineLib.Editor {
             AppendNumber(builder, "crouchSpeed", resolved.CrouchSpeed, 8);
             AppendNumber(builder, "crouchFastSpeed", resolved.CrouchFastSpeed, 8);
             AppendNumber(builder, "gravity", resolved.Gravity, 8);
-            AppendLastNumber(builder, "jumpVelocity", resolved.JumpVelocity, 8);
+            AppendNumber(builder, "jumpVelocity", resolved.JumpVelocity, 8);
+            AppendNumber(builder, "airAcceleration", resolved.AirAcceleration, 8);
+            AppendLastNumber(builder, "airDrag", resolved.AirDrag, 8);
             AppendIndent(builder, 6);
             builder.Append('}');
         }

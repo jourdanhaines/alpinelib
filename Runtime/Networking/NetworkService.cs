@@ -91,6 +91,7 @@ namespace AlpineLib.Networking {
     /// they were answering, adding a frame of latency to every local round trip.
     /// </para>
     /// </remarks>
+    [DefaultExecutionOrder(NetExecutionOrder.NetworkService)]
     public class NetworkService : MonoBehaviour, INetworkService {
         /// <inheritdoc />
         public NetworkMode Mode { get; private set; } = NetworkMode.Offline;
