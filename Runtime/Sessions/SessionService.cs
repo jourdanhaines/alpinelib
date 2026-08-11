@@ -506,14 +506,18 @@ namespace AlpineLib.Sessions {
         /// </summary>
         /// <remarks>
         /// Both register handlers on the client's router, so building a second pair over the same
-        /// connection would either throw or silently steal the first pair's messages.
+        /// connection would either throw or silently steal the first pair's messages. The session client
+        /// is told not to pump the connection: NetworkService already does that at execution order -100,
+        /// so by the time this service's Update runs the inbox is drained and the clock has advanced —
+        /// a second pump here would run the clock at twice wall speed and rubber-band everything drawn
+        /// from it.
         /// </remarks>
         private void BuildSessionClient(NetClient client) {
             if (_sessionClient != null) return;
 
             _identity ??= ResolveIdentityStore().Load(_config.defaultDisplayName);
 
-            _sessionClient = new SessionClient(client, new AnonymousAuthProvider(), _identity);
+            _sessionClient = new SessionClient(client, new AnonymousAuthProvider(), _identity, pumpsClient: false);
             SubscribeToSessionClient();
 
             _replication = new ClientReplication(client, _netConfig, CurrentCollisionWorld());

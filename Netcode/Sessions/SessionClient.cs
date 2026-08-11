@@ -56,11 +56,23 @@ namespace AlpineLib.Netcode.Sessions {
         private string _joinCode = string.Empty;
         private float _leaveGraceLeftSeconds;
         private bool _isLeavePending;
+        private readonly bool _pumpsClient;
 
-        public SessionClient(NetClient client, IAuthProvider authProvider, PlayerIdentity identity) {
+        /// <param name="pumpsClient">
+        /// Whether <see cref="Tick"/> pumps the underlying <see cref="NetClient"/>. Exactly one caller may
+        /// pump a client each frame: the pump advances <see cref="Timing.NetClock"/> by the frame's delta,
+        /// and a second pump makes the clock free-run at twice wall speed. The server only corrects the
+        /// estimate once a second, by which point the error is far past the resync threshold — so the
+        /// clock hard-snaps backwards at 1&#160;Hz, and anything rendered as a pure function of it (a mover
+        /// evaluated from its path, most visibly) rubber-bands. A host that pumps the client itself
+        /// (Unity's NetworkService does, early in the frame) passes <c>false</c>; a headless caller with
+        /// no other pump keeps the default.
+        /// </param>
+        public SessionClient(NetClient client, IAuthProvider authProvider, PlayerIdentity identity, bool pumpsClient = true) {
             _client = client ?? throw new ArgumentNullException(nameof(client));
             _authProvider = authProvider ?? throw new ArgumentNullException(nameof(authProvider));
             _identity = identity ?? throw new ArgumentNullException(nameof(identity));
+            _pumpsClient = pumpsClient;
 
             _client.OnConnected += HandleTransportConnected;
             _client.OnDisconnected += HandleTransportDisconnected;
@@ -193,9 +205,16 @@ namespace AlpineLib.Netcode.Sessions {
             return _attachCompletion.Task;
         }
 
-        /// <summary>One pump of the connection, plus the leave grace. Call once per frame.</summary>
+        /// <summary>
+        /// One pump of the connection, plus the leave grace. Call once per frame. When the client was
+        /// constructed with <c>pumpsClient: false</c> the connection pump is someone else's job and only
+        /// the leave grace advances here — see the constructor for why double-pumping is never harmless.
+        /// </summary>
         public void Tick(float deltaSeconds) {
-            _client.Update(deltaSeconds);
+            if (_pumpsClient) {
+                _client.Update(deltaSeconds);
+            }
+
             TickLeaveGrace(deltaSeconds);
         }
 
