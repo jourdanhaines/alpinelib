@@ -21,8 +21,19 @@ namespace AlpineLib.UI {
     /// </remarks>
     [RequireComponent(typeof(CanvasGroup))]
     public class UIScreen : MonoBehaviour {
-        [Tooltip("Seconds a full fade between hidden and visible takes. Zero makes every show and hide instant.")]
-        [SerializeField] private float fadeDuration = 0.15f;
+        /// <summary>
+        /// Seconds a full fade between hidden and visible takes. Zero makes every show and hide
+        /// instant. Deliberately not serialized: fade timing is a menu-wide style concern owned by
+        /// whatever coordinates this screen (see <see cref="UIScreenCoordinator"/>), not something
+        /// each screen decides for itself. A screen with no coordinator keeps the default.
+        /// </summary>
+        public float FadeDuration {
+            get => _fadeDuration;
+            set => _fadeDuration = Mathf.Max(0f, value);
+        }
+
+        /// <summary>True while an animated fade is stepping towards its target in either direction.</summary>
+        public bool IsFading => _isFading;
 
         /// <summary>
         /// True from the moment <see cref="Show"/> is called until <see cref="Hide"/> is called,
@@ -35,6 +46,7 @@ namespace AlpineLib.UI {
         public bool IsVisible { get; private set; }
 
         private CanvasGroup _canvasGroup;
+        private float _fadeDuration = 0.15f;
         private float _targetAlpha;
         private bool _isFading;
 
@@ -64,7 +76,7 @@ namespace AlpineLib.UI {
         }
 
         /// <summary>
-        /// Brings the screen up, fading in over <c>fadeDuration</c> unless <paramref name="instant"/> is
+        /// Brings the screen up, fading in over <see cref="FadeDuration"/> unless <paramref name="instant"/> is
         /// set. Does nothing when the screen is already fully shown.
         /// </summary>
         /// <remarks>
@@ -82,7 +94,7 @@ namespace AlpineLib.UI {
             _canvasGroup.interactable = true;
             _canvasGroup.blocksRaycasts = true;
 
-            if (!instant && fadeDuration > 0f) {
+            if (!instant && _fadeDuration > 0f) {
                 _isFading = true;
                 return;
             }
@@ -91,7 +103,7 @@ namespace AlpineLib.UI {
         }
 
         /// <summary>
-        /// Takes the screen down, fading out over <c>fadeDuration</c> unless <paramref name="instant"/>
+        /// Takes the screen down, fading out over <see cref="FadeDuration"/> unless <paramref name="instant"/>
         /// is set. Does nothing when the screen is already fully hidden.
         /// </summary>
         /// <remarks>
@@ -109,7 +121,7 @@ namespace AlpineLib.UI {
             _canvasGroup.interactable = false;
             _canvasGroup.blocksRaycasts = false;
 
-            if (!instant && fadeDuration > 0f) {
+            if (!instant && _fadeDuration > 0f) {
                 _isFading = true;
                 return;
             }
@@ -127,12 +139,12 @@ namespace AlpineLib.UI {
         /// Advances the alpha towards its target for one frame and settles the fade once it arrives.
         /// </summary>
         /// <remarks>
-        /// <see cref="Mathf.MoveTowards"/> is used instead of an eased lerp so <c>fadeDuration</c> means
+        /// <see cref="Mathf.MoveTowards"/> is used instead of an eased lerp so <see cref="FadeDuration"/> means
         /// what it says: a full zero-to-one fade takes exactly that many seconds, and a fade reversed
         /// part way through finishes proportionally sooner rather than dragging a decaying tail.
         /// </remarks>
         private void StepFade() {
-            float alphaStep = Time.unscaledDeltaTime / fadeDuration;
+            float alphaStep = Time.unscaledDeltaTime / _fadeDuration;
             _canvasGroup.alpha = Mathf.MoveTowards(_canvasGroup.alpha, _targetAlpha, alphaStep);
 
             if (!Mathf.Approximately(_canvasGroup.alpha, _targetAlpha)) return;
