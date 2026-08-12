@@ -50,7 +50,11 @@ namespace AlpineLib.UI {
         private float _targetAlpha;
         private bool _isFading;
 
-        private void Awake() {
+        /// <remarks>
+        /// Virtual so a derived screen can add its own wake-up work; overrides must call
+        /// <c>base.Awake()</c> so the authored alpha still seeds the visibility state.
+        /// </remarks>
+        protected virtual void Awake() {
             ResolveCanvasGroup();
         }
 
@@ -129,7 +133,11 @@ namespace AlpineLib.UI {
             CompleteFadeImmediately();
         }
 
-        private void Update() {
+        /// <remarks>
+        /// Virtual for the same reason as <see cref="Awake"/>: a derived screen that polls per frame
+        /// must call <c>base.Update()</c> or its fades never step.
+        /// </remarks>
+        protected virtual void Update() {
             if (!_isFading) return;
 
             StepFade();
