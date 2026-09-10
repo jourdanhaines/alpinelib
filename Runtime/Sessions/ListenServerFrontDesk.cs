@@ -251,15 +251,18 @@ namespace AlpineLib.Sessions {
             _host.OnMemberNeedsKeyframe += HandleMemberNeedsKeyframe;
         }
 
+        /// <summary>
+        /// Seats a peer, or turns it away. An accepted attach sends the world itself: the session raises
+        /// OnMemberNeedsKeyframe from inside it and the spawner answers that with the keyframe, ordered
+        /// against the pawn spawn, so a second keyframe from here would only repeat the largest message of
+        /// a join.
+        /// </summary>
         private void AttachPeer(PeerHandle peer, PlayerIdentity identity) {
             SessionAttachResult result = _host.AttachPeer(peer, identity);
 
             if (!result.IsAccepted) {
                 Deny(peer, result.DenialReason);
-                return;
             }
-
-            _replication?.OnPeerJoined(peer);
         }
 
         private void Deny(PeerHandle peer, SessionEndReason reason) {

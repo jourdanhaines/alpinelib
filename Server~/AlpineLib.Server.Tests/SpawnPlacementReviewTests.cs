@@ -12,17 +12,17 @@ namespace AlpineLib.Server.Tests {
     /// The spawn layouts the overflow scheme has to survive, and the moving floor a probe answers for.
     /// </summary>
     /// <remarks>
-    /// Kept separate from <c>SpawnPlacementTests</c> because each fact here names a way a lap-seeded
-    /// overflow offset put two pawns on the same spot, which is what the ordinal-seeded ring exists for.
+    /// Kept separate from <c>SpawnPlacementTests</c> because each fact here names an authored layout the
+    /// overflow ring has to keep arrivals apart on, rather than a property of the placement in isolation.
     /// </remarks>
     public sealed class SpawnPlacementReviewTests {
         private const uint AnyTick = 7u;
 
         /// <summary>
         /// Authored points exactly one overflow radius apart along +X — the spacing a hand-authored row of
-        /// platform markers has. A lap-seeded offset shifted every point by the same vector and put the
-        /// third arrival inside the second; seeding from the arrival ordinal and turning the ring half a
-        /// seat off the axes keeps them apart.
+        /// platform markers has, and the one an offset shared by every point would fold onto itself.
+        /// Seeding the seat from the arrival ordinal and turning the ring half a seat off the axes keeps
+        /// the overflow arrival clear of both authored points.
         /// </summary>
         [Fact]
         public void OverflowNeverLandsOnAnAlreadyOccupiedAuthoredPoint() {
@@ -64,8 +64,8 @@ namespace AlpineLib.Server.Tests {
         }
 
         /// <summary>
-        /// One authored point and a raised lobby cap. The overflow ring widens by a radius every
-        /// revolution instead of repeating after eight seats, so arrivals never share a place.
+        /// One authored point and a raised lobby cap. The overflow ring widens by a radius after a full
+        /// revolution, so a lobby twice the size of one ring still gives every arrival a place of its own.
         /// </summary>
         [Fact]
         public void AListOfOnePlacesTenArrivalsInTenPlaces() {

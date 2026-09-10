@@ -16,11 +16,15 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
     /// <para>
     /// Seats are handed out, never returned: the count is of arrivals ever, not of members present, so a
     /// lobby with churn puts arrival nine on top of whoever is standing at seat zero. A scene that cares
-    /// authors markers and uses <see cref="ListSpawnPlacement"/>, whose overflow widens instead.
+    /// authors markers and uses <see cref="ListSpawnPlacement"/>, which widens once before it starts over
+    /// and so holds twice as many arrivals per marker.
     /// </para>
     /// </remarks>
     public sealed class RingSpawnPlacement : ISpawnPlacement {
-        /// <summary>Radius of the ring arrivals are placed on, so two pawns never spawn inside each other.</summary>
+        /// <summary>
+        /// Radius of the ring arrivals are placed on. Wide enough that neighbouring seats of a default
+        /// ring stand clear of one another; arrivals past a full lap share a seat outright.
+        /// </summary>
         public const float DefaultRadiusMetres = 2f;
 
         /// <summary>Seats on the ring before positions repeat. Matches the usual lobby cap.</summary>

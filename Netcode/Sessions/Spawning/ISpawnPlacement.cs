@@ -13,8 +13,12 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
     /// <see cref="SessionPawnSpawner"/>.
     /// </para>
     /// <para>
-    /// Implementations are stateful by design: consecutive calls are expected to hand out different
-    /// places, so two players joining in the same tick never stand inside each other.
+    /// Implementations are stateful by design: consecutive calls hand out different places rather than
+    /// stacking a whole lobby on one spot. How far apart those places are is the implementation's own
+    /// business, and a bounded one may still seat two pawns close enough to overlap, so this is not a
+    /// separation guarantee. The state belongs to one session and nothing resets it, so a factory handing
+    /// back a cached instance carries the last session's arrival count into the next and opens it already
+    /// in overflow. Build one per session, as <c>SessionEntry</c> and <c>ListenServerFrontDesk</c> do.
     /// </para>
     /// <para>
     /// <b>Answer in world space under server authority.</b> A carrier-relative state is only meaningful for

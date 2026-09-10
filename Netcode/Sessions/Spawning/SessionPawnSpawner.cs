@@ -65,6 +65,15 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
         /// <summary>Who simulates the pawns this spawner creates.</summary>
         public AuthorityMode Authority => _authority;
 
+        /// <summary>
+        /// How many spawns have had a carrier-relative answer pinned to world space. Non-zero means a
+        /// placement is answering in a frame a server-simulated pawn cannot have and its numbers are being
+        /// read as world coordinates — the pawn is somewhere, but not where the placement meant. It is a
+        /// programming error in game code, and this counter is the only trace of it: the join is kept
+        /// alive rather than failed, and this assembly has no logger to say so through.
+        /// </summary>
+        public int CoercedCarrierFrames { get; private set; }
+
         /// <summary>The pawn a player currently has, if they have one.</summary>
         public bool TryGetPawn(PlayerId player, out uint entityId) {
             return _pawnByPlayer.TryGetValue(player, out entityId);
@@ -107,6 +116,9 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
                 return;
             }
 
+            // Only reached when the player already has a pawn, which needs a second join for somebody who
+            // never left — the session denies that before it gets here — so the despawn's own event cannot
+            // dispose us mid-flight in practice, and the flag is not re-checked until after the spawn.
             DespawnPawnFor(member.PlayerId);
 
             PawnState spawnState = ResolveSpawnState(member, isRejoin);
@@ -132,7 +144,8 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
         /// server-simulated entity in a carrier's frame, and letting that throw would unwind out of
         /// <see cref="SessionHost.AnnounceArrival"/> with the member already seated and announced — a
         /// player holding an empty world forever because nobody ever sent it one. Coercing costs a
-        /// misplaced pawn at worst; throwing costs the join.
+        /// misplaced pawn at worst; throwing costs the join. Every coercion is counted in
+        /// <see cref="CoercedCarrierFrames"/>, which is where a game finds out its placement is wrong.
         /// </remarks>
         private PawnState ResolveSpawnState(SessionMember member, bool isRejoin) {
             PawnState spawnState = _placement.NextSpawnState(
@@ -141,6 +154,8 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
             if (_authority != AuthorityMode.Server || !spawnState.IsCarrierRelative) {
                 return spawnState;
             }
+
+            CoercedCarrierFrames++;
 
             return spawnState.WithCarrier(PawnState.WorldCarrierId);
         }

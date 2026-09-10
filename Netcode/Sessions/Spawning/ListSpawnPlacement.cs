@@ -19,13 +19,24 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
     /// </para>
     /// <para>
     /// <b>How the overflow spreads out.</b> Arrival <i>n</i> beyond the authored list takes overflow seat
-    /// <i>n</i>, and the seat alone fixes both the direction and the distance: the angle is seat
-    /// <c>n % OverflowSeats</c> of an eight-seat ring turned half a seat off the axes, and the radius grows
-    /// by <see cref="OverflowRadiusMetres"/> every revolution. Seeding from the arrival rather than the lap
-    /// matters because a lap-only offset shifted every authored point by the same vector, so a row of
-    /// markers a lap-radius apart overlapped itself; the half-seat turn keeps the ring off +X and +Z, which
-    /// is where hand-authored rows live. Because the radius grows, positions never repeat — no arrival
-    /// count puts two pawns on the same spot.
+    /// <i>n</i>, and the seat fixes both the direction and the distance: the angle is one of
+    /// <see cref="OverflowSeats"/> directions on a ring turned half a seat off +X and +Z, where
+    /// hand-authored rows live, and each full revolution steps the radius out by
+    /// <see cref="OverflowRadiusMetres"/>. The widening stops after <see cref="OverflowRevolutions"/>, so a
+    /// marker holds <c>OverflowSeats * OverflowRevolutions</c> overflow places and then starts over — the
+    /// seventeenth arrival at a marker stands where its first overflow arrival did. It repeats on purpose:
+    /// the probe answers about the plane the marker was authored on, so a seat widened past the edge of
+    /// that platform is dropped onto whatever is twenty metres below, which is worse than a shared spot.
+    /// A marker therefore wants <c>OverflowRadiusMetres * OverflowRevolutions</c> of surface around it.
+    /// </para>
+    /// <para>
+    /// <b>Distinct seats, not spaced ones.</b> Each marker turns its ring one seat further round than the
+    /// marker before it, so two arrivals in a row land a quarter turn apart instead of an eighth and a row
+    /// of markers fans its overflow out rather than leaning it all the same way. Nothing here reads the
+    /// authored spacing, though, so this is not a promise that two pawns never overlap: overflow arrivals
+    /// belonging to different markers can still stand closer together than a pawn is wide. A game that
+    /// needs a guaranteed gap authors more points — the list is handed out in order and does not overflow
+    /// at all while there are unused points left.
     /// </para>
     /// <para>
     /// The authored height is a nominal plane, not the answer: every point is probed against the scene's
@@ -39,8 +50,14 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
         /// <summary>How far from its point the first revolution of overflow arrivals stands, in metres.</summary>
         public const float OverflowRadiusMetres = 1.5f;
 
-        /// <summary>Seats on one revolution of the overflow ring, after which it widens rather than repeats.</summary>
+        /// <summary>Seats on one revolution of the overflow ring, after which it widens by a radius.</summary>
         public const int OverflowSeats = 8;
+
+        /// <summary>
+        /// How far the ring widens before its seats repeat. Two revolutions reach three metres, which is
+        /// as far as a seat can go and still be on the platform a marker was authored on.
+        /// </summary>
+        public const int OverflowRevolutions = 2;
 
         private readonly SpawnPoint[] _points;
         private readonly SpawnGroundProbe _probe;
@@ -74,28 +91,35 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
             long arrival = _nextArrival;
             _nextArrival++;
 
-            SpawnPoint point = _points[(int)(arrival % _points.Length)];
+            int pointIndex = (int)(arrival % _points.Length);
+            SpawnPoint point = _points[pointIndex];
 
             // The first pass over the list takes the points verbatim, so the overflow seat only starts
             // counting once every authored point has been handed out.
-            Vector3 nominal = point.Position + ResolveOverflowOffset(arrival - _points.Length);
+            Vector3 nominal = point.Position + ResolveOverflowOffset(arrival - _points.Length, pointIndex);
 
             return _probe.BuildStandingState(world, nominal, point.YawDegrees, serverTick);
         }
 
         /// <summary>
-        /// Where an overflow arrival stands relative to its point: a seat on a ring that turns half a seat
-        /// off the axes and widens by <see cref="OverflowRadiusMetres"/> each revolution, so no two
-        /// arrivals ever share a place however long the session runs.
+        /// Where an overflow arrival stands relative to its point: a seat on a ring turned half a seat off
+        /// the axes, widening by <see cref="OverflowRadiusMetres"/> each revolution and starting over after
+        /// <see cref="OverflowRevolutions"/> of them.
         /// </summary>
         /// <param name="overflowSeat">The arrival's ordinal past the authored list. Negative on the first pass.</param>
-        private static Vector3 ResolveOverflowOffset(long overflowSeat) {
+        /// <param name="pointIndex">Which marker the arrival is ringing. It turns the ring off its neighbours'.</param>
+        private static Vector3 ResolveOverflowOffset(long overflowSeat, int pointIndex) {
             if (overflowSeat < 0L) {
                 return Vector3.Zero;
             }
 
-            long revolution = overflowSeat / OverflowSeats;
-            long seatOnRing = overflowSeat % OverflowSeats;
+            // The revolution wraps rather than growing without end: a seat further out than the surface the
+            // marker was authored on is worse than a shared one.
+            long revolution = overflowSeat / OverflowSeats % OverflowRevolutions;
+
+            // Turned by the marker's own index as well as the seat, so neighbouring markers in a row send
+            // their overflow arrivals different ways instead of leaning them all the same way.
+            long seatOnRing = (overflowSeat + pointIndex) % OverflowSeats;
 
             float angleRadians = (seatOnRing + 0.5f) * (2f * MathF.PI / OverflowSeats);
             float radiusMetres = OverflowRadiusMetres * (1f + revolution);

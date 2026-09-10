@@ -76,7 +76,11 @@ namespace AlpineLib.Server.Tests {
             Assert.NotNull(fixture.Host.FindMemberByPeer(new PeerHandle(1)));
         }
 
-        /// <summary>The pinning is a relabelling: the pawn spawns in world space, at the numbers given.</summary>
+        /// <summary>
+        /// The pinning is a relabelling: the pawn spawns in world space, at the numbers given. The spawner
+        /// counts it, because nothing else can tell that answer apart from one meant in world space and a
+        /// game whose train-car spawn silently became a spawn beside the track deserves the trace.
+        /// </summary>
         [Fact]
         public void AServerSimulatedPawnIsPinnedToWorldSpace() {
             using var fixture = new SpawnFixture(new CarrierFramePlacement());
@@ -86,6 +90,7 @@ namespace AlpineLib.Server.Tests {
             NetEntity pawn = Assert.Single(fixture.Replication.Entities.Entities);
             Assert.Equal(PawnState.WorldCarrierId, pawn.State.CarrierId);
             Assert.Equal(CarrierFramePlacement.Place, pawn.State.Position);
+            Assert.Equal(1, fixture.Spawner.CoercedCarrierFrames);
         }
 
         /// <summary>
@@ -101,6 +106,7 @@ namespace AlpineLib.Server.Tests {
 
             NetEntity pawn = Assert.Single(fixture.Replication.Entities.Entities);
             Assert.Equal(CarrierFramePlacement.CarrierId, pawn.State.CarrierId);
+            Assert.Equal(0, fixture.Spawner.CoercedCarrierFrames);
         }
 
         /// <summary>
