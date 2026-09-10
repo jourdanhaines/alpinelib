@@ -112,6 +112,20 @@ namespace AlpineLib.Sessions {
         /// <summary>Raised when the session ends, for any reason including a lost connection.</summary>
         event Action<SessionEndReason, string> OnSessionEnded;
 
+        /// <summary>
+        /// Raised whenever the objects a session owns — <see cref="Replication"/>, <see cref="Claims"/>
+        /// and the network service's client — have been built or torn down.
+        /// </summary>
+        /// <remarks>
+        /// The three are created together over one connection and dropped together, and they are
+        /// exposed as properties rather than announced, so every consumer that needed to know had to
+        /// reference-compare them in its own <c>Update</c>. This is that comparison, done once. It
+        /// carries no payload on purpose: whichever of the three a listener cares about, it re-reads it
+        /// from the service inside the handler, and any of them may be null (a teardown raises this
+        /// too).
+        /// </remarks>
+        event Action OnSessionResourcesChanged;
+
         /// <summary>Installs the configuration every later call reads. Null leaves the service offline.</summary>
         void Configure(SessionConfig config);
 
@@ -316,6 +330,9 @@ namespace AlpineLib.Sessions {
         /// <inheritdoc />
         public event Action<SessionEndReason, string> OnSessionEnded;
 
+        /// <inheritdoc />
+        public event Action OnSessionResourcesChanged;
+
         private INetworkService _networkService;
         private IIdentityStore _identityStore;
         private SessionConfig _config;
@@ -456,14 +473,14 @@ namespace AlpineLib.Sessions {
 
         /// <inheritdoc />
         public async Task<SessionJoinResult> HostSessionAsync() {
-            if (!IsConfigured()) return SessionJoinResult.Denied(SessionEndReason.HostClosed, "No session config.");
+            if (!IsConfigured()) return DeniedLocally(SessionEndReason.HostClosed, SessionDenial.NoSessionConfig, "No session config.");
 
             _hostEndpoint = NetEndpoint.None;
 
             NetEndpoint endpoint = await ResolveHostEndpointAsync();
 
             if (!endpoint.IsValid) {
-                return SessionJoinResult.Denied(SessionEndReason.TransportLost, ResolveHostFailureMessage());
+                return DeniedLocally(SessionEndReason.TransportLost, ResolveHostFailureDenial(), ResolveHostFailureMessage());
             }
 
             SessionJoinResult connectResult = await ConnectAsync(endpoint);
@@ -485,16 +502,16 @@ namespace AlpineLib.Sessions {
 
         /// <inheritdoc />
         public async Task<SessionJoinResult> JoinSessionAsync(string joinCode) {
-            if (!IsConfigured()) return SessionJoinResult.Denied(SessionEndReason.HostClosed, "No session config.");
+            if (!IsConfigured()) return DeniedLocally(SessionEndReason.HostClosed, SessionDenial.NoSessionConfig, "No session config.");
 
             if (!JoinCodeGenerator.TryNormalize(joinCode, out string normalizedCode)) {
-                return SessionJoinResult.Denied(SessionEndReason.SessionNotFound, "That is not a join code.");
+                return DeniedLocally(SessionEndReason.SessionNotFound, SessionDenial.BadJoinCode, "That is not a join code.");
             }
 
             NetEndpoint endpoint = await ResolveServerEndpointAsync();
 
             if (!endpoint.IsValid) {
-                return SessionJoinResult.Denied(SessionEndReason.TransportLost, "No server endpoint.");
+                return DeniedLocally(SessionEndReason.TransportLost, SessionDenial.NoServerEndpoint, "No server endpoint.");
             }
 
             return await JoinResolvedAsync(endpoint, normalizedCode);
@@ -502,14 +519,14 @@ namespace AlpineLib.Sessions {
 
         /// <inheritdoc />
         public async Task<SessionJoinResult> JoinSessionAsync(string joinCode, string serverAddress) {
-            if (!IsConfigured()) return SessionJoinResult.Denied(SessionEndReason.HostClosed, "No session config.");
+            if (!IsConfigured()) return DeniedLocally(SessionEndReason.HostClosed, SessionDenial.NoSessionConfig, "No session config.");
 
             if (!JoinCodeGenerator.TryNormalize(joinCode, out string normalizedCode)) {
-                return SessionJoinResult.Denied(SessionEndReason.SessionNotFound, "That is not a join code.");
+                return DeniedLocally(SessionEndReason.SessionNotFound, SessionDenial.BadJoinCode, "That is not a join code.");
             }
 
             if (!ConfiguredServerLocator.TryParseAddress(serverAddress, out NetEndpoint endpoint)) {
-                return SessionJoinResult.Denied(SessionEndReason.SessionNotFound, "That is not a server address.");
+                return DeniedLocally(SessionEndReason.SessionNotFound, SessionDenial.BadServerAddress, "That is not a server address.");
             }
 
             return await JoinResolvedAsync(endpoint, normalizedCode);
@@ -761,6 +778,38 @@ namespace AlpineLib.Sessions {
             Debug.LogWarning($"SessionService::WarnIfServerAddressOverrideIgnored->Hosting a local server process, so '{address}' from {source} is ignored.");
         }
 
+        /// <summary>
+        /// A refusal this client decided, tagged so the caller does not have to read the message.
+        /// </summary>
+        /// <remarks>
+        /// The message is kept for the log and for a caller with nothing better to show, but it is a
+        /// developer string: the player-facing sentence belongs to whoever is drawing the screen, and it
+        /// picks that sentence off <see cref="SessionJoinResult.Denial"/>.
+        /// </remarks>
+        private static SessionJoinResult DeniedLocally(SessionEndReason reason, SessionDenial denial, string message) {
+            return SessionJoinResult.Denied(reason, denial, message);
+        }
+
+        /// <summary>
+        /// Which of this client's own host steps gave up, worked out from what is configured rather than
+        /// from the text of the failure.
+        /// </summary>
+        /// <remarks>
+        /// Coarser than the recorded message on purpose: a launcher that was cancelled and one that
+        /// could not start both read as <see cref="SessionDenial.HostStartFailed"/> here, because the
+        /// two are only told apart inside the launcher and that distinction is not worth a field the
+        /// launch path has to remember to set.
+        /// </remarks>
+        private SessionDenial ResolveHostFailureDenial() {
+            if (hostingMode == SessionHostingMode.LocalServerProcess && localServer == null) {
+                return SessionDenial.NoLocalServerConfig;
+            }
+
+            if (string.IsNullOrEmpty(_hostEndpointFailure)) return SessionDenial.NoServerEndpoint;
+
+            return SessionDenial.HostStartFailed;
+        }
+
         private string ResolveHostFailureMessage() {
             return string.IsNullOrEmpty(_hostEndpointFailure) ? "No server endpoint." : _hostEndpointFailure;
         }
@@ -798,7 +847,7 @@ namespace AlpineLib.Sessions {
             NetClient client = networkService.StartClient();
 
             if (client == null) {
-                return SessionJoinResult.Denied(SessionEndReason.TransportLost, "No client facade.");
+                return DeniedLocally(SessionEndReason.TransportLost, SessionDenial.NoClientFacade, "No client facade.");
             }
 
             BuildSessionClient(client);
@@ -834,6 +883,34 @@ namespace AlpineLib.Sessions {
 
             _replication = new ClientReplication(client, _netConfig, CurrentCollisionWorld());
             _claims = new ClientClaims(client);
+
+            RaiseSessionResourcesChanged();
+        }
+
+        /// <summary>
+        /// Says the session's objects have moved, without letting one bad listener take the rest down.
+        /// </summary>
+        /// <remarks>
+        /// Raised from a build and from a teardown alike, and a teardown is already the unhappy path —
+        /// a listener throwing here would leave the service half torn down with no way to finish. The
+        /// throw is logged and the remaining listeners still hear it.
+        /// </remarks>
+        private void RaiseSessionResourcesChanged() {
+            Action listeners = OnSessionResourcesChanged;
+
+            if (listeners == null) return;
+
+            foreach (Delegate listener in listeners.GetInvocationList()) {
+                InvokeResourcesListener((Action)listener);
+            }
+        }
+
+        private void InvokeResourcesListener(Action listener) {
+            try {
+                listener();
+            } catch (Exception exception) {
+                Debug.LogError($"SessionService::RaiseSessionResourcesChanged->{exception}");
+            }
         }
 
         /// <summary>
@@ -1073,8 +1150,14 @@ namespace AlpineLib.Sessions {
             // Read before the session client goes: the member list is the only thing that knows whether
             // anyone is left behind, and it is the first casualty of the teardown below.
             bool detachLocalServer = ShouldDetachLocalServer();
+            bool hadResources = _sessionClient != null || _replication != null || _claims != null;
 
             if (_sessionClient != null) {
+                // Before the client is dropped, not after: a leave still waiting out its grace is only
+                // ever resolved by the client's own pump, and nothing pumps it once this field is null —
+                // NetClient.Dispose unsubscribes the transport without raising a disconnect. A caller
+                // awaiting LeaveSessionAsync would otherwise wait for the rest of the run.
+                _sessionClient.AbandonPendingLeave();
                 UnsubscribeFromSessionClient();
                 _sessionClient = null;
             }
@@ -1106,6 +1189,10 @@ namespace AlpineLib.Sessions {
             // After the shutdown, not before: the client's disconnect should reach a server that is
             // still listening, so it can retire the session rather than notice a socket going quiet.
             ReleaseLocalServer(detachLocalServer);
+
+            if (!hadResources) return;
+
+            RaiseSessionResourcesChanged();
         }
 
         /// <summary>

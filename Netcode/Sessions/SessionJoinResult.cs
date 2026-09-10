@@ -11,6 +11,7 @@ namespace AlpineLib.Netcode.Sessions {
     public readonly struct SessionJoinResult {
         private readonly bool _isSuccess;
         private readonly SessionEndReason _reason;
+        private readonly SessionDenial _denial;
         private readonly string _message;
         private readonly string _sessionId;
         private readonly string _joinCode;
@@ -20,6 +21,7 @@ namespace AlpineLib.Netcode.Sessions {
         private SessionJoinResult(
             bool isSuccess,
             SessionEndReason reason,
+            SessionDenial denial,
             string message,
             string sessionId,
             string joinCode,
@@ -27,6 +29,7 @@ namespace AlpineLib.Netcode.Sessions {
             bool isRejoin) {
             _isSuccess = isSuccess;
             _reason = reason;
+            _denial = denial;
             _message = message;
             _sessionId = sessionId;
             _joinCode = joinCode;
@@ -39,6 +42,17 @@ namespace AlpineLib.Netcode.Sessions {
 
         /// <summary>Why the request failed. Meaningless when <see cref="IsSuccess"/> is true.</summary>
         public SessionEndReason Reason => _reason;
+
+        /// <summary>
+        /// Which step refused, for the failures this client's own plumbing decided.
+        /// </summary>
+        /// <remarks>
+        /// <see cref="SessionDenial.ServerRefused"/> — the default — means the server said no and
+        /// <see cref="Message"/> is its copy. Any other value means the request never reached a server,
+        /// and the caller should write the player-facing sentence itself rather than show
+        /// <see cref="Message"/>, which is a developer string in that case.
+        /// </remarks>
+        public SessionDenial Denial => _denial;
 
         /// <summary>Human-readable detail from the server, when it sent any.</summary>
         public string Message => _message ?? string.Empty;
@@ -57,17 +71,28 @@ namespace AlpineLib.Netcode.Sessions {
 
         /// <summary>Connected and authenticated, but attached to no session yet.</summary>
         public static SessionJoinResult Connected() {
-            return new SessionJoinResult(true, SessionEndReason.HostClosed, string.Empty, string.Empty, string.Empty, SessionPhase.Lobby, false);
+            return new SessionJoinResult(true, SessionEndReason.HostClosed, SessionDenial.ServerRefused, string.Empty, string.Empty, string.Empty, SessionPhase.Lobby, false);
         }
 
         /// <summary>Attached to a session, whether freshly or by reclaiming a reservation.</summary>
         public static SessionJoinResult Joined(string sessionId, string joinCode, SessionPhase phase, bool isRejoin) {
-            return new SessionJoinResult(true, SessionEndReason.HostClosed, string.Empty, sessionId, joinCode, phase, isRejoin);
+            return new SessionJoinResult(true, SessionEndReason.HostClosed, SessionDenial.ServerRefused, string.Empty, sessionId, joinCode, phase, isRejoin);
         }
 
-        /// <summary>The server said no.</summary>
+        /// <summary>The server said no, and the message is the server's own.</summary>
         public static SessionJoinResult Denied(SessionEndReason reason, string message) {
-            return new SessionJoinResult(false, reason, message, string.Empty, string.Empty, SessionPhase.Lobby, false);
+            return Denied(reason, SessionDenial.ServerRefused, message);
+        }
+
+        /// <summary>
+        /// The request was refused before it reached a server, or by a step this client owns.
+        /// </summary>
+        /// <remarks>
+        /// The message stays for the log and for a caller that has nothing better; the point of the
+        /// <paramref name="denial"/> is that the caller no longer has to read it to know what happened.
+        /// </remarks>
+        public static SessionJoinResult Denied(SessionEndReason reason, SessionDenial denial, string message) {
+            return new SessionJoinResult(false, reason, denial, message, string.Empty, string.Empty, SessionPhase.Lobby, false);
         }
     }
 }

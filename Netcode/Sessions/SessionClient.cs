@@ -237,6 +237,23 @@ namespace AlpineLib.Netcode.Sessions {
             return _leaveCompletion.Task;
         }
 
+        /// <summary>
+        /// Resolves a leave that is still waiting out its grace, because nothing will pump this client
+        /// again.
+        /// </summary>
+        /// <remarks>
+        /// <see cref="LeaveAsync"/>'s task is completed either by the transport dropping or by the grace
+        /// running out inside <see cref="Tick"/>, and both need somebody to keep calling that. An owner
+        /// tearing the session down stops calling it, and disposing the connection underneath does not
+        /// raise a disconnect — so without this the awaiting caller waits forever, its <c>finally</c>
+        /// never runs, and whatever it latched stays latched. The leave is reported as finished rather
+        /// than cancelled: from the caller's side the session really is over.
+        /// </remarks>
+        public void AbandonPendingLeave() {
+            _isLeavePending = false;
+            CompleteLeave();
+        }
+
         /// <summary>Asks the owner's privilege of launching a match. Refusals arrive as OnLaunchDenied.</summary>
         public void RequestLaunchMatch(string matchId) {
             if (_state != ClientSessionState.InSession) {

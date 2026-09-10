@@ -156,16 +156,19 @@ namespace AlpineLib.Networking {
                 return null;
             }
 
-            if (Client != null) return Client;
+            // The mode is re-asserted even when the facade is reused: a client that dropped between two
+            // attempts has already returned the process to offline, and asking for one again is asking
+            // to be in client mode.
+            if (Client != null) {
+                EnterClientMode();
+                return Client;
+            }
 
             _clientTransport = new LiteNetTransport(Config.DisconnectTimeoutMs);
             Client = new NetClient(_clientTransport, Config);
             Client.OnConnected += HandleClientConnected;
             Client.OnDisconnected += HandleClientDisconnected;
-
-            if (Mode != NetworkMode.ListenServer) {
-                SetMode(NetworkMode.Client);
-            }
+            EnterClientMode();
 
             return Client;
         }
@@ -246,7 +249,20 @@ namespace AlpineLib.Networking {
             OnConnected?.Invoke();
         }
 
+        /// <remarks>
+        /// A dropped client returns the process to <see cref="NetworkMode.Offline"/> unless a listen
+        /// server is running under it. <see cref="Mode"/> is what a game reads to decide whether a scene
+        /// spawns its own player or waits for the session to send one, and a handshake that threw after
+        /// <see cref="StartClient"/> used to leave it saying <c>Client</c> for the rest of the run with
+        /// no session behind it — a scene that then spawned nothing and a player with nothing to drive.
+        /// The facade itself is left standing: disposing a connection from inside its own disconnect
+        /// callback is not something this class gets to do, and <see cref="Shutdown"/> is right behind.
+        /// </remarks>
         private void HandleClientDisconnected(DisconnectReason reason) {
+            if (Mode == NetworkMode.Client) {
+                SetMode(NetworkMode.Offline);
+            }
+
             OnDisconnected?.Invoke(reason);
         }
 
@@ -270,6 +286,13 @@ namespace AlpineLib.Networking {
 
             _serverTransport?.Dispose();
             _serverTransport = null;
+        }
+
+        /// <summary>Moves to client mode unless a listen server is already running in this process.</summary>
+        private void EnterClientMode() {
+            if (Mode == NetworkMode.ListenServer) return;
+
+            SetMode(NetworkMode.Client);
         }
 
         private void SetMode(NetworkMode mode) {
