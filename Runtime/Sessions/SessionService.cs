@@ -9,6 +9,7 @@ using AlpineLib.Netcode.Collision;
 using AlpineLib.Netcode.Protocol;
 using AlpineLib.Netcode.Replication;
 using AlpineLib.Netcode.Sessions;
+using AlpineLib.Netcode.Sessions.Claims;
 using AlpineLib.Netcode.Transport;
 using AlpineLib.Networking;
 using UnityEngine;
@@ -60,6 +61,9 @@ namespace AlpineLib.Sessions {
 
         /// <summary>The replicated client world, or null outside a session.</summary>
         ClientReplication Replication { get; }
+
+        /// <summary>The session's claim slots as this client sees them, or null outside a session.</summary>
+        ClientClaims Claims { get; }
 
         /// <summary>The match currently loading or running, or null in a lobby.</summary>
         MatchContextData CurrentMatch { get; }
@@ -191,6 +195,9 @@ namespace AlpineLib.Sessions {
         public ClientReplication Replication => _replication;
 
         /// <inheritdoc />
+        public ClientClaims Claims => _claims;
+
+        /// <inheritdoc />
         public MatchContextData CurrentMatch => _sessionClient?.CurrentMatch;
 
         /// <summary>
@@ -262,6 +269,7 @@ namespace AlpineLib.Sessions {
         private PlayerIdentity _identity;
         private SessionClient _sessionClient;
         private ClientReplication _replication;
+        private ClientClaims _claims;
         private ListenServerFrontDesk _frontDesk;
         private CollisionWorld _collisionWorld;
         private string _currentSceneName = string.Empty;
@@ -502,11 +510,12 @@ namespace AlpineLib.Sessions {
         }
 
         /// <summary>
-        /// Creates the session client and the client world over a connection, once per connection.
+        /// Creates the session client, the client world and the claim view over a connection, once per
+        /// connection.
         /// </summary>
         /// <remarks>
-        /// Both register handlers on the client's router, so building a second pair over the same
-        /// connection would either throw or silently steal the first pair's messages. The session client
+        /// All three register handlers on the client's router, so building a second set over the same
+        /// connection would either throw or silently steal the first set's messages. The session client
         /// is told not to pump the connection: NetworkService already does that at execution order -100,
         /// so by the time this service's Update runs the inbox is drained and the clock has advanced —
         /// a second pump here would run the clock at twice wall speed and rubber-band everything drawn
@@ -521,6 +530,7 @@ namespace AlpineLib.Sessions {
             SubscribeToSessionClient();
 
             _replication = new ClientReplication(client, _netConfig, CurrentCollisionWorld());
+            _claims = new ClientClaims(client);
         }
 
         /// <summary>
@@ -719,25 +729,33 @@ namespace AlpineLib.Sessions {
         }
 
         /// <summary>
-        /// Tells the client world which peer we are, so it can tell our pawn from everybody else's.
+        /// Tells the client world and the claim view which peer we are, so they can tell our pawn and
+        /// our slots from everybody else's.
         /// </summary>
         /// <remarks>
         /// The peer id is only known once the server has answered the auth request and put us on a
         /// roster, which is why this is re-checked on every state change rather than done once.
         /// </remarks>
         private void AdoptLocalPeerId() {
-            if (_replication == null || _sessionClient == null) return;
+            if (_sessionClient == null) return;
 
             SessionMember localMember = _sessionClient.LocalMember;
 
             if (localMember == null) return;
 
-            _replication.LocalPeerId = localMember.PeerId;
+            if (_replication != null) {
+                _replication.LocalPeerId = localMember.PeerId;
+            }
+
+            if (_claims != null) {
+                _claims.LocalPeerId = localMember.PeerId;
+            }
         }
 
         /// <summary>
-        /// Drops everything a session owns — the client world, the session client, the in-process
-        /// server — and returns the process to offline. Safe to call when there is nothing to drop.
+        /// Drops everything a session owns — the client world, the claim view, the session client, the
+        /// in-process server — and returns the process to offline. Safe to call when there is nothing
+        /// to drop.
         /// </summary>
         private void TearDownSession(SessionEndReason reason) {
             _isTearDownPending = false;
@@ -749,6 +767,9 @@ namespace AlpineLib.Sessions {
 
             _replication?.Dispose();
             _replication = null;
+
+            _claims?.Dispose();
+            _claims = null;
 
             _frontDesk?.Close(reason);
             _frontDesk = null;

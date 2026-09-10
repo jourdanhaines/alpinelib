@@ -5,6 +5,7 @@ using AlpineLib.Netcode.Collision;
 using AlpineLib.Netcode.Protocol;
 using AlpineLib.Netcode.Replication;
 using AlpineLib.Netcode.Sessions;
+using AlpineLib.Netcode.Sessions.Claims;
 using AlpineLib.Netcode.Sessions.Messages;
 using AlpineLib.Netcode.Transport;
 using UnityEngine;
@@ -26,7 +27,9 @@ namespace AlpineLib.Sessions {
     /// It also owns the session's <see cref="ServerReplication"/>, because on a listen host the pawn
     /// simulation is server work like any other and has to be ticked from the same pump. The collision
     /// world it steps against is the scene's exported geometry — the same bytes a dedicated server
-    /// loads, so a listen host and a dedicated one simulate the same lobby rather than two of them.
+    /// loads, so a listen host and a dedicated one simulate the same lobby rather than two of them. Its
+    /// <see cref="ServerClaimRegistry"/> is here for the same reason: the host arbitrates who holds a
+    /// slot even when the holder is the player sitting at this machine.
     /// </para>
     /// </remarks>
     public class ListenServerFrontDesk : ISessionFrontDesk {
@@ -42,6 +45,7 @@ namespace AlpineLib.Sessions {
         private CollisionWorld _collisionWorld;
         private SessionHost _host;
         private ServerReplication _replication;
+        private ServerClaimRegistry _claims;
         private bool _isClosed;
 
         /// <summary>
@@ -78,6 +82,9 @@ namespace AlpineLib.Sessions {
 
         /// <summary>The session's replicated world, or null before the session exists.</summary>
         public ServerReplication Replication => _replication;
+
+        /// <summary>The session's claim slots, or null before the session exists.</summary>
+        public ServerClaimRegistry Claims => _claims;
 
         /// <summary>Code a second player types to reach this session, or empty before it exists.</summary>
         public string JoinCode => _host != null ? _host.JoinCode : string.Empty;
@@ -178,6 +185,9 @@ namespace AlpineLib.Sessions {
             _replication?.DetachFromRouter();
             _replication = null;
 
+            _claims?.DetachFromRouter();
+            _claims = null;
+
             UnregisterHandlers();
             _authDesk.Clear();
         }
@@ -199,6 +209,9 @@ namespace AlpineLib.Sessions {
                 _server, ResolveSessionPeers, new MovementValidator(_netConfig), _collisionWorld
             );
             _replication.AttachToRouter();
+
+            _claims = new ServerClaimRegistry(_server, ResolveSessionPeers);
+            _claims.AttachToRouter();
 
             // The constructor installs the world but spawns nothing: entities for the scene's movers are
             // UseWorld's doing, and without this call a listen host would simulate platforms nobody was
@@ -276,29 +289,35 @@ namespace AlpineLib.Sessions {
         private void HandlePeerDisconnected(PeerHandle peer, DisconnectReason reason) {
             _authDesk.Forget(peer);
             _replication?.OnPeerLeft(peer);
+            _claims?.ReleaseAllHeldBy(peer);
             _host?.DetachPeer(peer, LeaveReason.TransportLost);
         }
 
         /// <summary>
-        /// Drops the pawns of a member the session has finished with, so a leave does not leave a body
-        /// standing in the lobby.
+        /// Drops the pawns and the claim slots of a member the session has finished with, so a leave
+        /// does not leave a body standing in the lobby or a lever nobody can take.
         /// </summary>
         private void HandleMemberLeft(SessionMember member, LeaveReason reason) {
-            if (_replication == null || member == null) return;
-            if (member.PeerId == SessionMember.NoPeerId) return;
+            if (member == null || member.PeerId == SessionMember.NoPeerId) return;
 
-            _replication.DespawnOwnedBy(member.PeerId);
+            _replication?.DespawnOwnedBy(member.PeerId);
+
+            // A graceful leave never touches the transport, so the disconnect path above may not run for
+            // this member at all. A slot left held by somebody who has gone is unrecoverable.
+            _claims?.ReleaseAllHeldBy(new PeerHandle(member.PeerId));
         }
 
         /// <summary>
-        /// Sends a whole-world keyframe to a member the session says needs one — a newcomer, or somebody
-        /// who has just rejoined mid-match.
+        /// Sends the world and the held claim slots in full to a member the session says needs them — a
+        /// newcomer, or somebody who has just rejoined mid-match.
         /// </summary>
         private void HandleMemberNeedsKeyframe(SessionMember member) {
-            if (_replication == null || member == null) return;
-            if (member.PeerId == SessionMember.NoPeerId) return;
+            if (member == null || member.PeerId == SessionMember.NoPeerId) return;
 
-            _replication.SendKeyframeTo(new PeerHandle(member.PeerId));
+            var peer = new PeerHandle(member.PeerId);
+
+            _replication?.SendKeyframeTo(peer);
+            _claims?.SendKeyframeTo(peer);
         }
 
         private IReadOnlyList<PeerHandle> ResolveSessionPeers() {
