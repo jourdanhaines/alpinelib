@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Compiles alpinelib/Chat/ as a standalone .NET assembly, mirroring the Unity
+    FluxInteractive.AlpineLib.Chat assembly definition (same sources, same Netcode dependency).
+  -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>9</LangVersion>
+    <AssemblyName>AlpineLib.Chat</AssemblyName>
+    <RootNamespace>AlpineLib.Chat</RootNamespace>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <NoWarn>$(NoWarn);1701;1702;1705;1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="$(AlpineLibRoot)/Chat/**/*.cs" LinkBase="Chat" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../AlpineLib.Netcode/AlpineLib.Netcode.csproj" />
+  </ItemGroup>
+
+</Project>

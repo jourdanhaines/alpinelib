@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Compiles alpinelib/Netcode/ (including the vendored LiteNetLib) as a standalone .NET assembly.
+    netstandard2.1 + C# 9 is the Unity ceiling: if it builds here it builds in the editor, which is the
+    whole point of keeping the sources shared instead of duplicated.
+  -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>9</LangVersion>
+    <AssemblyName>AlpineLib.Netcode</AssemblyName>
+    <RootNamespace>AlpineLib.Netcode</RootNamespace>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <!-- Required by the vendored LiteNetLib only; alpinelib's own netcode sources stay safe code. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <NoWarn>$(NoWarn);1701;1702;1705;1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="$(AlpineLibRoot)/Netcode/**/*.cs" LinkBase="Netcode" />
+  </ItemGroup>
+
+</Project>

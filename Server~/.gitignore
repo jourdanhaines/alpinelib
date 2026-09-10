@@ -1,0 +1,9 @@
+# .NET build output. The package root .gitignore only covers the Unity side.
+bin/
+obj/
+.vs/
+
+# That same root .gitignore blanket-ignores the project files Unity generates. These are written by
+# hand, so they have to be pulled back in or a fresh clone cannot build the server.
+!*.csproj
+!*.sln

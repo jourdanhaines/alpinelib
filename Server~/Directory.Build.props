@@ -1,0 +1,27 @@
+<Project>
+
+  <!--
+    Shared build settings for every project in the AlpineLib server solution.
+
+    This folder lives inside the alpinelib package (Unity skips folders ending in `~`, so nothing here
+    needs a .meta), which makes AlpineLibRoot the package directory one level up. The shared assemblies
+    (Netcode, Chat) are compiled from those sources rather than copied, so the .NET server and the Unity
+    client always run byte-identical protocol code.
+  -->
+  <PropertyGroup>
+    <AlpineLibRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..'))</AlpineLibRoot>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+
+  <Target Name="VerifyAlpineLibRoot" BeforeTargets="BeforeBuild">
+    <Error Condition="!Exists('$(AlpineLibRoot)/Netcode')"
+           Text="AlpineLibRoot '$(AlpineLibRoot)' does not resolve to the alpinelib package. Server~ must stay inside it." />
+  </Target>
+
+</Project>
