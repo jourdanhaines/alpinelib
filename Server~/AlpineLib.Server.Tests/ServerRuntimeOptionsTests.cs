@@ -65,6 +65,27 @@ namespace AlpineLib.Server.Tests {
             Assert.Equal(string.Empty, options.ResolveSessionConfigPath("/opt/server"));
         }
 
+        /// <summary>
+        /// A path that walks out of the content root and back in again resolves to where it actually
+        /// points, so the log line an operator reads names a real place.
+        /// </summary>
+        [Fact]
+        public void ATraversingPathIsCollapsedRatherThanPassedOnAsWritten() {
+            ServerRuntimeOptions options = new ServerRuntimeOptions { GeometryDirectory = Path.Combine("..", "shared", "geometry") };
+
+            Assert.Equal(
+                Path.Combine("/opt", "shared", "geometry"),
+                options.ResolveGeometryDirectory("/opt/server"));
+        }
+
+        /// <summary>A rooted path is normalised too — it is still the thing that goes in the log line.</summary>
+        [Fact]
+        public void ARootedPathIsNormalisedEvenThoughTheContentRootIsIgnored() {
+            ServerRuntimeOptions options = new ServerRuntimeOptions { GeometryDirectory = "/var/lib/alpine/./cfg/../geometry" };
+
+            Assert.Equal("/var/lib/alpine/geometry", options.ResolveGeometryDirectory("/opt/server"));
+        }
+
         [Fact]
         public void TheShippedDefaultsAreADedicatedServerThatNeverStopsItself() {
             ServerRuntimeOptions options = new ServerRuntimeOptions();
