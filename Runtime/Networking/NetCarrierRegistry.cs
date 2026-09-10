@@ -22,6 +22,13 @@ namespace AlpineLib.Networking {
     /// while it is unregistered and picks the id up if the holder is destroyed — but until then its
     /// riders replicate in world space rather than under an id that names somebody else's deck.
     /// </para>
+    /// <para>
+    /// That heal is per-peer and unsynchronised. Each client runs its own registry and picks the freed id
+    /// up on its own frame, so for the length of the skew the same id on the wire names a different object
+    /// on different machines and one rider is drawn on two different decks. It is still the better trade
+    /// than leaving the loser unresolvable forever, and it is only reachable from a duplicate-id authoring
+    /// mistake that every peer has already reported as an error.
+    /// </para>
     /// </remarks>
     public static class NetCarrierRegistry {
         private static readonly Dictionary<ushort, NetCarrier> CarriersById = new Dictionary<ushort, NetCarrier>();

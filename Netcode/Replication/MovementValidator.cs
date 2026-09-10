@@ -91,9 +91,12 @@ namespace AlpineLib.Netcode.Replication {
         /// <see cref="CarrierSwitchCooldownSeconds"/> window before the rest are rejected.
         /// </summary>
         /// <remarks>
-        /// Three, because the honest bursts have two changes in them — off a deck and back, or one car to
-        /// the next — and one spare keeps a rider who does both in the same breath out of the correction
-        /// path. Anything above that inside a quarter of a second is not a player walking.
+        /// Two of the three are the honest bursts — off a deck and back, or one car to the next — which is
+        /// also exactly what a source honouring <c>NetCarrier.SourceHysteresisSeconds</c> can fit into a
+        /// window this long. The third is headroom for a source that does not honour it, which is every
+        /// source the library cannot see: a game whose dwell is short or missing would otherwise spend
+        /// this budget on honest play, and the cost of being one too tight is a correction storm on a
+        /// player who is only walking. Anything past three inside a quarter of a second is not walking.
         /// </remarks>
         public const int MaxCarrierSwitchesPerWindow = 3;
 

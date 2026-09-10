@@ -165,6 +165,10 @@ namespace AlpineLib.Networking {
         /// A pose whose carrier is not loaded is not a pose, so nothing is placed and the pawn keeps
         /// what it had. The interpolated stream will place it the moment the carrier registers.
         ///
+        /// Resolved without the stream's clock: <see cref="IsCarrierUnresolved"/> answers "is the
+        /// replicated stream stuck", and one scripted call with an unresolvable frame is not evidence
+        /// that it is. The warning is still throttled the same way.
+        ///
         /// Nothing in the library calls this — a remote pawn is placed by <c>Update</c> every frame, and
         /// an owned one is placed by <see cref="NetActorSync"/>, which possesses it instead. It is here
         /// for a game holding an authoritative pose of its own: a scripted teleport, a cutscene start.
@@ -172,7 +176,10 @@ namespace AlpineLib.Networking {
         public void SnapTo(in PawnState state) {
             if (_character == null) return;
 
-            if (!TryResolveWorldFrame(in state, out PawnState world)) return;
+            if (!NetCarrierFrame.TryToWorld(in state, out PawnState world)) {
+                WarnOnceForCarrier(state.CarrierId);
+                return;
+            }
 
             _character.transform.position = world.Position.ToUnity();
             _character.transform.rotation = Quaternion.Euler(0f, world.YawDegrees, 0f);
@@ -207,15 +214,19 @@ namespace AlpineLib.Networking {
         /// Timed rather than flagged on the first failure because the first failures are all honest: a
         /// join whose snapshot beats the consist, a car streamed out for a moment. What the grace
         /// separates out is a hold that is not going to end.
+        ///
+        /// On unscaled time, because what is being measured is how long the network has been naming
+        /// something this client cannot resolve: packets keep arriving through a game paused with a
+        /// <c>timeScale</c> write, and a clock that stopped with them would never raise the flag.
         /// </remarks>
         private void NoteHeldOnUnresolvedCarrier() {
             if (!_isHeld) {
                 _isHeld = true;
-                _heldSinceTime = Time.time;
+                _heldSinceTime = Time.unscaledTime;
                 return;
             }
 
-            IsCarrierUnresolved = Time.time - _heldSinceTime >= UnresolvedCarrierGraceSeconds;
+            IsCarrierUnresolved = Time.unscaledTime - _heldSinceTime >= UnresolvedCarrierGraceSeconds;
         }
 
         private void WarnOnceForCarrier(ushort carrierId) {
@@ -291,6 +302,11 @@ namespace AlpineLib.Networking {
             _character.ReleaseControl();
             _character = null;
             enabled = false;
+
+            // The hold belongs to the pawn that was being driven, not to this brain: a pooled controller
+            // that kept the flag would report a stream stuck on a pawn it no longer touches.
+            _isHeld = false;
+            IsCarrierUnresolved = false;
             return true;
         }
 

@@ -100,8 +100,10 @@ namespace AlpineLib.Netcode.Replication {
         /// <remarks>
         /// Refused attempts are counted too: a client that keeps claiming a new frame after spending its
         /// budget must not be able to hold the window open by making the counter stop moving, and a
-        /// counter that only rose on success would say nothing about how hard the pawn is trying.
-        /// Saturating rather than wrapping, because past the budget the exact number stops mattering.
+        /// counter that only rose on success would say nothing about how hard the pawn is trying. It
+        /// saturates rather than wrapping — past the budget the exact number stops mattering — but the
+        /// clamp lives in <c>ServerReplication.IsCarrierChangeAllowed</c>, the only thing that increments
+        /// it, not in this setter: the entity is a state bag and the policy is the caller's.
         /// </remarks>
         public byte CarrierSwitchesInWindow { get; set; }
 

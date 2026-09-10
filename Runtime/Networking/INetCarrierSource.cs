@@ -22,8 +22,19 @@ namespace AlpineLib.Networking {
     /// the deck. Each of those alternations is a frame change on the wire, every one of which the server
     /// must accept unmeasured — see <c>MovementValidator</c>'s trust-boundary note — so a source with no
     /// dwell timer spends a budget that exists to bound a cheat, and spends it while the player is doing
-    /// nothing but walking. Settling first costs a rider at most a third of a second of replicating in
-    /// the frame it is leaving, which is a fraction of a metre of deck.
+    /// nothing but walking.
+    /// </para>
+    /// <para>
+    /// <b>What the dwell costs.</b> A rider settling spends it replicating in the frame it is leaving, and
+    /// the price of that is the dwell multiplied by the <em>relative</em> speed of the two frames. Between
+    /// two coupled cars — the case this rule is written for — the relative speed is zero and the dwell is
+    /// free. Joining or leaving a moving consist it is the consist's whole speed, and the server measures
+    /// that against a walking gait: every tick of the dwell is a rejection, a correction and a movement
+    /// violation, three at the constant's current length. That is the reason
+    /// <see cref="NetCarrier.SourceHysteresisSeconds"/> is set as short as the server's budget allows
+    /// rather than generously, and the reason a source that can tell the two frames are moving apart is
+    /// entitled to settle sooner than this — the flicker the dwell guards against only ever happens
+    /// between frames that move together.
     /// </para>
     /// </remarks>
     public interface INetCarrierSource {

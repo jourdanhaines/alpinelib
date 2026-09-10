@@ -34,6 +34,14 @@ namespace AlpineLib.Networking {
     /// stranding this carrier's riders for the session.
     /// </para>
     /// <para>
+    /// <b>A game must stop carrying a rider it may not report.</b> The library owns the reporting and not
+    /// the carry, so it cannot enforce this: a game that goes on physically moving a body with a carrier
+    /// that never registers moves it at the deck's speed while its owner has nothing truthful left to
+    /// send, and the pawn freezes for every observer where the server last saw it — see
+    /// <see cref="NetActorSync"/>'s withheld-update note. Treat <see cref="IsRegistered"/> as part of the
+    /// question "is this a platform", not only as part of "what do I call it".
+    /// </para>
+    /// <para>
     /// The velocity published here is measured, not authored: one frame's world-space position delta
     /// divided by the frame time, taken at <see cref="NetExecutionOrder.Carriers"/> so it is already this
     /// frame's value by the time a rider's sync reads it. Measuring rather than asking the carrier's own
@@ -55,11 +63,21 @@ namespace AlpineLib.Networking {
         /// the change. The hysteresis every source owes the replication side; see that interface.
         /// </summary>
         /// <remarks>
-        /// Longer than the server's own <c>MovementValidator.CarrierSwitchCooldownSeconds</c> on purpose:
-        /// a source that settles inside its own dwell window never presents the server with the rapid
-        /// alternation the cooldown exists to bound, so honest play never meets the budget at all.
+        /// <para>
+        /// Three ticks of a thirty-hertz server, and deliberately not one tick more. What a dwell has to
+        /// clear is the server's <em>sustained</em> rate of unmeasured frame changes —
+        /// <c>MovementValidator.CarrierSwitchCooldownSeconds / MaxCarrierSwitchesPerWindow</c>, 0.083 s —
+        /// so a source that settles for this long can never spend the budget on honest play. It cannot go
+        /// to zero either: a hop or a step over a rail breaks ground contact for a handful of frames
+        /// without the rider leaving the deck, and this outlasts that at sixty frames a second.
+        /// </para>
+        /// <para>
+        /// Every tick of dwell is paid for by a rider whose two frames are not moving together — see
+        /// <see cref="INetCarrierSource"/> — which is why the constant sits at the bottom of the range
+        /// rather than in the middle of it.
+        /// </para>
         /// </remarks>
-        public const float SourceHysteresisSeconds = 0.3f;
+        public const float SourceHysteresisSeconds = 0.1f;
 
         [Tooltip("Session-wide id riders name in their replicated state. Must match on every peer; leave at zero for a carrier whose id is assigned at runtime.")]
         [SerializeField] private ushort carrierId;
