@@ -45,6 +45,7 @@ namespace AlpineLib.Networking {
         private ISessionService _sessionService;
         private ClientReplication _boundReplication;
         private Actor _announcedPlayer;
+        private bool _isQuitting;
 
         /// <summary>
         /// Adds whatever the game knows about an entity to the object standing in for it — an
@@ -146,8 +147,18 @@ namespace AlpineLib.Networking {
             SceneManager.sceneLoaded -= HandleSceneLoaded;
 
             if (_boundReplication == null) return;
+            if (_isQuitting) return;
 
             Debug.LogWarning("NetEntitySpawner::OnDisable->Disabled while a session is bound; the roster will not survive the next scene load.");
+        }
+
+        /// <remarks>
+        /// Raised by leaving play mode as well as by quitting a build, which is what makes it the right
+        /// flag for the warning above: <c>OnDisable</c> runs before <c>OnDestroy</c>, so ending any
+        /// playtest inside a session used to warn about a scene load that was never going to happen.
+        /// </remarks>
+        private void OnApplicationQuit() {
+            _isQuitting = true;
         }
 
         /// <remarks>Overrides must call <c>base.OnDestroy()</c> or the client world keeps this object's subscriptions.</remarks>
@@ -202,18 +213,34 @@ namespace AlpineLib.Networking {
         /// Tells the player service the actor it was handed here is going away.
         /// </summary>
         /// <remarks>
-        /// Only on the unbind path: a session ending destroys the pawn the player was driving, and a
-        /// service left holding a destroyed actor cannot be told apart from one that never had a player.
-        /// A scene-load rebuild deliberately says nothing, because it re-instantiates the same roster and
-        /// hands the player straight back in the same frame.
+        /// <para>
+        /// Reached when the session ends and when the pawn this spawner announced is despawned on its
+        /// own: either way the service is left holding an actor that is about to be destroyed, and one
+        /// it cannot tell apart from a player it never had. A scene-load rebuild deliberately says
+        /// nothing, because it re-instantiates the same roster and hands the player straight back in
+        /// the same frame.
+        /// </para>
+        /// <para>
+        /// The service is only cleared when it is still holding the actor this spawner announced.
+        /// <c>ClearPlayer</c> takes no argument, so without the check a game that also seats a player by
+        /// its own route — a spectator body, a cutscene double — would have that player taken away by a
+        /// spawner that never owned it.
+        /// </para>
         /// </remarks>
         private void ClearAnnouncedPlayer() {
             // Reference comparison: a pawn destroyed earlier in the session still leaves the service
             // holding it, so the announcement is owed either way.
             if (ReferenceEquals(_announcedPlayer, null)) return;
 
+            Actor announced = _announcedPlayer;
             _announcedPlayer = null;
-            ResolvePlayerService()?.ClearPlayer();
+
+            IPlayerService playerService = ResolvePlayerService();
+
+            if (playerService == null) return;
+            if (!ReferenceEquals(playerService.Player, announced)) return;
+
+            playerService.ClearPlayer();
         }
 
         /// <summary>
@@ -246,6 +273,11 @@ namespace AlpineLib.Networking {
             List<NetEntity> roster = new List<NetEntity>(_boundReplication.Entities);
 
             foreach (NetEntity entity in roster) {
+                // Decorating an entity runs the game's code, and a prefab that ends the session from its
+                // own Awake unbinds this spawner mid-walk. Re-read rather than trusted, so the next
+                // iteration does not reach through a replication that is already gone.
+                if (_boundReplication == null) return;
+
                 SpawnEntityView(entity);
             }
         }
@@ -254,12 +286,35 @@ namespace AlpineLib.Networking {
             SpawnEntityView(entity);
         }
 
+        /// <remarks>
+        /// A despawn that takes the pawn this client was driving — a kick, a timeout, a rejoin that
+        /// replaces the body — tells the player service before the object goes, so nothing downstream is
+        /// left reading a destroyed transform. A respawn in the same pump hands the player straight
+        /// back, so the announcement costs a frame of null at worst.
+        /// </remarks>
         private void HandleEntityDespawned(uint entityId) {
+            RemoveView(entityId, announcesPlayerCleared: true);
+        }
+
+        /// <summary>
+        /// Destroys whatever is standing in for an entity, optionally telling the player service that
+        /// the pawn it was handed is going.
+        /// </summary>
+        /// <remarks>
+        /// The replace-before-respawn inside <see cref="SpawnEntityView"/> owes no announcement: the
+        /// same entity is given a new body in the same call, and a cleared-then-set player reaches a
+        /// listener as a blink it would have to know to ignore.
+        /// </remarks>
+        private void RemoveView(uint entityId, bool announcesPlayerCleared) {
             if (!_viewsByEntityId.TryGetValue(entityId, out NetEntityView view)) return;
 
             _viewsByEntityId.Remove(entityId);
 
             if (view == null) return;
+
+            if (announcesPlayerCleared && ReferenceEquals(view.GetComponent<Actor>(), _announcedPlayer)) {
+                ClearAnnouncedPlayer();
+            }
 
             view.Unbind();
             Destroy(view.gameObject);
@@ -299,7 +354,7 @@ namespace AlpineLib.Networking {
 
             if (prefab == null) return;
 
-            HandleEntityDespawned(entity.Id);
+            RemoveView(entity.Id, announcesPlayerCleared: false);
 
             bool isOwned = _boundReplication.IsOwned(entity);
             GameObject instance = InstantiateAtReportedPose(prefab, entity);

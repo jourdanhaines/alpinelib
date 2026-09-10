@@ -43,7 +43,8 @@ namespace AlpineLib.Editor {
             { "NetworkConfig", "gameProtocolName" },
             { "MatchDefinition", "matchId" },
             { "SessionConfig", "profile" },
-            { "LobbyConfig", "lobbySceneName" }
+            { "LobbyConfig", "lobbySceneName" },
+            { "PossessionGate", "localOnly" }
         };
 
         /// <summary>
@@ -164,9 +165,11 @@ namespace AlpineLib.Editor {
         /// True when a critical field carries a usable value.
         /// </summary>
         /// <remarks>
-        /// Only object references and strings are judged. Any other property type means the field has
-        /// not been migrated to its final form yet, and is treated as filled so a table entry written
-        /// ahead of a refactor cannot fail the gate on shape alone.
+        /// Only object references, strings and arrays are judged. Any other property type means the
+        /// field has not been migrated to its final form yet, and is treated as filled so a table entry
+        /// written ahead of a refactor cannot fail the gate on shape alone. An empty array counts as
+        /// unassigned: a gate that lists nothing gates nothing, which is the same silent no-op an
+        /// unassigned reference is.
         /// </remarks>
         private static bool IsCriticalFieldFilled(SerializedProperty property) {
             if (property.propertyType == SerializedPropertyType.ObjectReference) {
@@ -175,6 +178,10 @@ namespace AlpineLib.Editor {
 
             if (property.propertyType == SerializedPropertyType.String) {
                 return !string.IsNullOrWhiteSpace(property.stringValue);
+            }
+
+            if (property.isArray) {
+                return property.arraySize > 0;
             }
 
             return true;

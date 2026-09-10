@@ -24,8 +24,10 @@ namespace AlpineLib.Networking {
     /// <para>
     /// Possession is polled rather than announced because <see cref="Actor"/> exposes the brain that holds
     /// it as plain state; the check is a single reference comparison and the work behind it runs only on
-    /// the frame the answer — local or not — actually changes. Left at Unity's default execution order on
-    /// purpose: the gate belongs ahead of the pawn drivers, which are pinned behind it at
+    /// the frame the answer — local or not — actually changes. It is polled in <c>Start</c> as well as
+    /// <c>Update</c>, because a pawn possessed as it is spawned would otherwise miss the first physics
+    /// step, which sits between the two. Left at Unity's default execution order on purpose: the gate
+    /// belongs ahead of the pawn drivers, which are pinned behind it at
     /// <see cref="NetExecutionOrder.PawnDrivers"/>.
     /// </para>
     /// </remarks>
@@ -60,8 +62,27 @@ namespace AlpineLib.Networking {
             Debug.LogWarning($"PossessionGate::Awake->{name} gates nothing; author the local-only components onto the prefab.");
         }
 
+        /// <summary>
+        /// Evaluates possession once before the first physics step.
+        /// </summary>
+        /// <remarks>
+        /// Unity's spawn frame runs <c>Awake</c>, <c>Start</c>, then physics, then <c>Update</c>. A pawn
+        /// possessed while it is being built would therefore spend that first physics step with its
+        /// gated components still off — and Unity neither delivers <c>OnTriggerEnter</c> to a disabled
+        /// behaviour nor resends it on enable, so an overlap the pawn spawned inside is lost for good.
+        /// Overrides must call <c>base.Start()</c>.
+        /// </remarks>
+        protected virtual void Start() {
+            ApplyPossession();
+        }
+
         /// <remarks>Overrides must call <c>base.Update()</c> or possession stops switching anything.</remarks>
         protected virtual void Update() {
+            ApplyPossession();
+        }
+
+        /// <summary>Switches the gate over when, and only when, the brain holding the actor has changed.</summary>
+        private void ApplyPossession() {
             Controller brain = _actor.Brain;
 
             if (ReferenceEquals(brain, _lastBrain)) return;
