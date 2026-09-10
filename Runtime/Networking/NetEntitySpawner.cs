@@ -33,7 +33,10 @@ namespace AlpineLib.Networking {
     /// Games extend it rather than fork it: <see cref="DecorateEntity"/> dresses a fresh instance in
     /// whatever the game knows about the entity, and the three possession hooks re-route who takes the
     /// body. Services are resolved by hand rather than through <see cref="InjectAttribute"/> so the
-    /// component is inert — not broken — in a build with no networking configured.
+    /// component is inert — not broken — in a build with no networking configured. Every Unity message
+    /// here is virtual as well, and an override must call its <c>base</c>: a subclass declaring its own
+    /// <c>Update</c> would otherwise hide this one with no compiler diagnostic at all, and the binding
+    /// to the client world — which is driven from there — would never happen.
     /// </para>
     /// </remarks>
     public class NetEntitySpawner : MonoBehaviour {
@@ -41,6 +44,7 @@ namespace AlpineLib.Networking {
 
         private ISessionService _sessionService;
         private ClientReplication _boundReplication;
+        private Actor _announcedPlayer;
 
         /// <summary>
         /// Adds whatever the game knows about an entity to the object standing in for it — an
@@ -57,10 +61,10 @@ namespace AlpineLib.Networking {
         /// the actor that steers it through movement intents rather than placing it outright.
         /// </summary>
         /// <remarks>
-        /// Externally driven controllers are skipped by their own declaration rather than by type, so a
+        /// Externally driven controllers are skipped by their own declaration as well as by type, so a
         /// game's cutscene or spectator brain is excluded on the same terms as
-        /// <see cref="NetController"/> without this method knowing either type. A game whose prefab
-        /// carries several player brains overrides this rather than reordering its components.
+        /// <see cref="NetController"/>, which declares itself external too. A game whose prefab carries
+        /// several player brains overrides this rather than reordering its components.
         /// </remarks>
         protected virtual Controller ResolveLocalController(Actor actor) {
             Controller[] controllers = actor.GetComponents<Controller>();
@@ -80,7 +84,7 @@ namespace AlpineLib.Networking {
         /// Hands the pawn this client owns to its brain.
         /// </summary>
         /// <remarks>
-        /// Routed through <see cref="PlayerService"/> when one is installed, so the camera, the escape
+        /// Routed through <see cref="IPlayerService"/> when one is installed, so the camera, the escape
         /// menu and everything else that watches <see cref="IPlayerService.OnPlayerSpawned"/> meets a
         /// networked pawn exactly as it meets an offline one. The service is missing only where none was
         /// composed at all, and there the controller still takes the body so the pawn is at least
@@ -91,7 +95,7 @@ namespace AlpineLib.Networking {
 
             if (controller == null) return;
 
-            PlayerService playerService = ResolvePlayerService();
+            IPlayerService playerService = ResolvePlayerService();
 
             if (playerService == null) {
                 controller.Possess(actor);
@@ -99,9 +103,15 @@ namespace AlpineLib.Networking {
             }
 
             playerService.SetPlayer(actor, controller);
+            _announcedPlayer = actor;
         }
 
         /// <summary>Hands somebody else's pawn to the controller that follows their reported pose.</summary>
+        /// <remarks>
+        /// The network controller is the only brain that may hold a remote pawn: it places the body from
+        /// the poses its owner reports, so anything else driving it would fight those poses for the
+        /// transform. A prefab without one is a composition error rather than a case to fall back from.
+        /// </remarks>
         protected virtual void PossessAsRemotePlayer(Actor actor) {
             var controller = actor.GetComponent<NetController>();
 
@@ -113,7 +123,8 @@ namespace AlpineLib.Networking {
             controller.Possess(actor);
         }
 
-        private void Start() {
+        /// <remarks>Overrides must call <c>base.Start()</c> or the session is never resolved.</remarks>
+        protected virtual void Start() {
             if (!Injector.HasInstance) return;
 
             if (Injector.Instance.TryResolve(out _sessionService)) return;
@@ -121,24 +132,36 @@ namespace AlpineLib.Networking {
             Debug.LogWarning("NetEntitySpawner::Start->No session service; networked spawns are inert.");
         }
 
-        private void OnEnable() {
+        /// <remarks>Overrides must call <c>base.OnEnable()</c> or scene loads stop rebuilding the roster.</remarks>
+        protected virtual void OnEnable() {
             SceneManager.sceneLoaded += HandleSceneLoaded;
         }
 
-        private void OnDisable() {
+        /// <remarks>
+        /// Overrides must call <c>base.OnDisable()</c>. Standing the spawner down mid-session is warned
+        /// about rather than handled: the session stays bound but stops following scene loads, so the
+        /// next one destroys the roster with nothing left to re-create it.
+        /// </remarks>
+        protected virtual void OnDisable() {
             SceneManager.sceneLoaded -= HandleSceneLoaded;
+
+            if (_boundReplication == null) return;
+
+            Debug.LogWarning("NetEntitySpawner::OnDisable->Disabled while a session is bound; the roster will not survive the next scene load.");
         }
 
-        private void OnDestroy() {
+        /// <remarks>Overrides must call <c>base.OnDestroy()</c> or the client world keeps this object's subscriptions.</remarks>
+        protected virtual void OnDestroy() {
             UnbindReplication();
         }
 
         /// <remarks>
         /// Polled rather than driven by a session event because the client world is created and disposed
         /// with each connection attempt, and the service exposes the live one rather than announcing it.
-        /// The cost while offline is one null comparison a frame.
+        /// The cost while offline is one null comparison a frame. Overrides must call
+        /// <c>base.Update()</c> or nothing ever binds.
         /// </remarks>
-        private void Update() {
+        protected virtual void Update() {
             ClientReplication replication = _sessionService?.Replication;
 
             if (ReferenceEquals(replication, _boundReplication)) return;
@@ -171,7 +194,26 @@ namespace AlpineLib.Networking {
             _boundReplication.OnEntityEvent -= HandleEntityEvent;
             _boundReplication = null;
 
+            ClearAnnouncedPlayer();
             DestroyAllViews();
+        }
+
+        /// <summary>
+        /// Tells the player service the actor it was handed here is going away.
+        /// </summary>
+        /// <remarks>
+        /// Only on the unbind path: a session ending destroys the pawn the player was driving, and a
+        /// service left holding a destroyed actor cannot be told apart from one that never had a player.
+        /// A scene-load rebuild deliberately says nothing, because it re-instantiates the same roster and
+        /// hands the player straight back in the same frame.
+        /// </remarks>
+        private void ClearAnnouncedPlayer() {
+            // Reference comparison: a pawn destroyed earlier in the session still leaves the service
+            // holding it, so the announcement is owed either way.
+            if (ReferenceEquals(_announcedPlayer, null)) return;
+
+            _announcedPlayer = null;
+            ResolvePlayerService()?.ClearPlayer();
         }
 
         /// <summary>
@@ -190,10 +232,20 @@ namespace AlpineLib.Networking {
             RebuildViews();
         }
 
+        /// <remarks>
+        /// The old views are destroyed rather than merely forgotten, because a scene load only accounts
+        /// for the instances still sitting in the scene it replaces: one an override moved elsewhere —
+        /// under the app root, or through <c>DontDestroyOnLoad</c> — would otherwise survive unreachable
+        /// and be duplicated. The roster is copied first because instantiating a prefab and decorating it
+        /// runs code this class does not own, and anything of it that reaches back into the session would
+        /// mutate the list being walked.
+        /// </remarks>
         private void RebuildViews() {
-            _viewsByEntityId.Clear();
+            DestroyAllViews();
 
-            foreach (NetEntity entity in _boundReplication.Entities) {
+            List<NetEntity> roster = new List<NetEntity>(_boundReplication.Entities);
+
+            foreach (NetEntity entity in roster) {
                 SpawnEntityView(entity);
             }
         }
@@ -237,7 +289,7 @@ namespace AlpineLib.Networking {
         /// Everything past the decoration is pawn business. A mover is a moving platform: nobody drives
         /// it, it has no actor to possess and no <see cref="NetController"/> to interpolate it, because
         /// its prefab positions itself from the same scene-authored path both simulations evaluate.
-        /// Handing one to <see cref="PossessPawn"/> would log two errors a spawn and, worse, put a
+        /// Handing one to <see cref="PossessPawn"/> would log an error a spawn and, worse, put a
         /// controller on it that fights the path for the transform.
         /// </remarks>
         private void SpawnEntityView(NetEntity entity) {
@@ -314,17 +366,16 @@ namespace AlpineLib.Networking {
         }
 
         /// <remarks>
-        /// Resolved through the interface and narrowed to the concrete service because handing a player
-        /// over is deliberately not part of <see cref="IPlayerService"/> — only whoever spawns the player
-        /// may do it, which offline is the scene and in a session is this object. A game service that
-        /// implements the interface without deriving from <see cref="PlayerService"/> is left alone, and
-        /// the controller takes the body directly.
+        /// Kept at the interface rather than narrowed to <see cref="PlayerService"/>, so a game that
+        /// implements <see cref="IPlayerService"/> its own way is handed the player it spawned instead of
+        /// being silently skipped. Null means no service is registered at all — the supported offline
+        /// composition — or the injector is already gone with the application.
         /// </remarks>
-        private PlayerService ResolvePlayerService() {
+        private IPlayerService ResolvePlayerService() {
             if (!Injector.HasInstance) return null;
             if (!Injector.Instance.TryResolve(out IPlayerService playerService)) return null;
 
-            return playerService as PlayerService;
+            return playerService;
         }
 
         private void DestroyAllViews() {

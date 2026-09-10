@@ -24,7 +24,9 @@ namespace AlpineLib.Networking {
     /// <para>
     /// Possession is polled rather than announced because <see cref="Actor"/> exposes the brain that holds
     /// it as plain state; the check is a single reference comparison and the work behind it runs only on
-    /// the frame the brain actually changes.
+    /// the frame the brain actually changes. Left at Unity's default execution order on purpose: the gate
+    /// belongs ahead of the pawn drivers, which are pinned behind it at
+    /// <see cref="NetExecutionOrder.PawnDrivers"/>.
     /// </para>
     /// </remarks>
     [RequireComponent(typeof(Actor))]
@@ -35,17 +37,36 @@ namespace AlpineLib.Networking {
         private Actor _actor;
         private Controller _lastBrain;
 
-        private void Awake() {
-            _actor = GetComponent<Actor>();
+        /// <summary>
+        /// True when the brain that has just taken this actor is the local player's.
+        /// </summary>
+        /// <remarks>
+        /// Any brain that is not the network's, by default: a pawn nobody remote is driving is the one
+        /// this client drives. A game that also puts an AI or cutscene brain on the same prefab narrows
+        /// this rather than reimplementing the gate — the default would switch the player's input reader
+        /// on for that brain too, since an AI steers through intents exactly as a player does.
+        /// </remarks>
+        protected virtual bool IsLocalBrain(Controller brain) {
+            return brain != null && !(brain is NetController);
         }
 
-        private void Update() {
+        /// <remarks>Overrides must call <c>base.Awake()</c> or the actor behind the gate is never found.</remarks>
+        protected virtual void Awake() {
+            _actor = GetComponent<Actor>();
+
+            if (localOnly != null && localOnly.Length > 0) return;
+
+            Debug.LogWarning($"PossessionGate::Awake->{name} gates nothing; author the local-only components onto the prefab.");
+        }
+
+        /// <remarks>Overrides must call <c>base.Update()</c> or possession stops switching anything.</remarks>
+        protected virtual void Update() {
             Controller brain = _actor.Brain;
 
             if (ReferenceEquals(brain, _lastBrain)) return;
 
             _lastBrain = brain;
-            SetLocalControlEnabled(brain != null && !(brain is NetController));
+            SetLocalControlEnabled(IsLocalBrain(brain));
         }
 
         /// <summary>

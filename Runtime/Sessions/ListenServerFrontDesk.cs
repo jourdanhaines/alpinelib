@@ -7,6 +7,7 @@ using AlpineLib.Netcode.Replication;
 using AlpineLib.Netcode.Sessions;
 using AlpineLib.Netcode.Sessions.Claims;
 using AlpineLib.Netcode.Sessions.Messages;
+using AlpineLib.Netcode.Sessions.Spawning;
 using AlpineLib.Netcode.Transport;
 using UnityEngine;
 
@@ -31,6 +32,11 @@ namespace AlpineLib.Sessions {
     /// <see cref="ServerClaimRegistry"/> is here for the same reason: the host arbitrates who holds a
     /// slot even when the holder is the player sitting at this machine.
     /// </para>
+    /// <para>
+    /// Player bodies are not its business, though. Handing an arriving member a pawn and taking it away
+    /// again is the same job on a listen host as on a dedicated server, so it is delegated to a
+    /// <see cref="SessionPawnSpawner"/> the desk merely owns the lifetime of.
+    /// </para>
     /// </remarks>
     public class ListenServerFrontDesk : ISessionFrontDesk {
         /// <summary>Session id given to the one session a listen host runs.</summary>
@@ -41,11 +47,15 @@ namespace AlpineLib.Sessions {
         private readonly NetConfig _netConfig;
         private readonly SessionAuthDesk _authDesk;
         private readonly JoinCodeGenerator _joinCodeGenerator = new JoinCodeGenerator();
+        private readonly ushort _pawnPrefabId;
+        private readonly AuthorityMode _pawnAuthority;
+        private readonly ISpawnPlacement _spawnPlacement;
 
         private CollisionWorld _collisionWorld;
         private SessionHost _host;
         private ServerReplication _replication;
         private ServerClaimRegistry _claims;
+        private SessionPawnSpawner _pawnSpawner;
         private bool _isClosed;
 
         /// <summary>
@@ -59,16 +69,28 @@ namespace AlpineLib.Sessions {
         /// The scene collision the pawns this host simulates are stepped against. Null falls back to an
         /// endless floor at y = 0, which is what a scene with no exported geometry gets.
         /// </param>
+        /// <param name="pawnPrefabId">Which entry of the client's prefab registry a player body is.</param>
+        /// <param name="pawnAuthority">Who simulates a player body once it exists.</param>
+        /// <param name="placement">
+        /// Where arriving players appear. Null falls back to a ring around the origin, which is what a
+        /// scene with no authored spawn points gets.
+        /// </param>
         public ListenServerFrontDesk(
             NetServer server,
             SessionConfigData config,
             NetConfig netConfig,
             IAuthValidator validator,
-            CollisionWorld collisionWorld) {
+            CollisionWorld collisionWorld,
+            ushort pawnPrefabId,
+            AuthorityMode pawnAuthority,
+            ISpawnPlacement placement) {
             _server = server ?? throw new ArgumentNullException(nameof(server));
             _config = config ?? throw new ArgumentNullException(nameof(config));
             _netConfig = netConfig ?? throw new ArgumentNullException(nameof(netConfig));
             _collisionWorld = collisionWorld ?? CollisionWorld.Flat();
+            _pawnPrefabId = pawnPrefabId;
+            _pawnAuthority = pawnAuthority;
+            _spawnPlacement = placement ?? new RingSpawnPlacement();
             _authDesk = new SessionAuthDesk(server, validator ?? new AnonymousAuthValidator());
 
             _authDesk.RegisterHandlers(server.Router);
@@ -85,6 +107,9 @@ namespace AlpineLib.Sessions {
 
         /// <summary>The session's claim slots, or null before the session exists.</summary>
         public ServerClaimRegistry Claims => _claims;
+
+        /// <summary>What gives the session's members their bodies, or null before the session exists.</summary>
+        public SessionPawnSpawner PawnSpawner => _pawnSpawner;
 
         /// <summary>Code a second player types to reach this session, or empty before it exists.</summary>
         public string JoinCode => _host != null ? _host.JoinCode : string.Empty;
@@ -175,6 +200,9 @@ namespace AlpineLib.Sessions {
             _isClosed = true;
             _server.OnPeerDisconnected -= HandlePeerDisconnected;
 
+            _pawnSpawner?.Dispose();
+            _pawnSpawner = null;
+
             if (_host != null) {
                 _host.OnMemberNeedsKeyframe -= HandleMemberNeedsKeyframe;
                 _host.OnMemberLeft -= HandleMemberLeft;
@@ -218,6 +246,8 @@ namespace AlpineLib.Sessions {
             // ever told about. Nobody has attached yet, so the spawns go to an empty peer list and reach
             // the first member as part of the keyframe its join sends.
             _replication.UseWorld(_collisionWorld);
+
+            _pawnSpawner = new SessionPawnSpawner(_host, _replication, _pawnPrefabId, _pawnAuthority, _spawnPlacement);
         }
 
         private void AttachPeer(PeerHandle peer, PlayerIdentity identity) {
@@ -294,30 +324,28 @@ namespace AlpineLib.Sessions {
         }
 
         /// <summary>
-        /// Drops the pawns and the claim slots of a member the session has finished with, so a leave
-        /// does not leave a body standing in the lobby or a lever nobody can take.
+        /// Frees the claim slots of a member the session has finished with, so a leave does not leave a
+        /// lever nobody can take. The body that member was standing in is the spawner's business.
         /// </summary>
+        /// <remarks>
+        /// The host retires a member before it raises this and retiring clears the peer id, so the release
+        /// only bites where the event still carries one. A graceful leave is covered by the disconnect
+        /// that follows it, which frees the same slots through <see cref="HandlePeerDisconnected"/>.
+        /// </remarks>
         private void HandleMemberLeft(SessionMember member, LeaveReason reason) {
             if (member == null || member.PeerId == SessionMember.NoPeerId) return;
 
-            _replication?.DespawnOwnedBy(member.PeerId);
-
-            // A graceful leave never touches the transport, so the disconnect path above may not run for
-            // this member at all. A slot left held by somebody who has gone is unrecoverable.
             _claims?.ReleaseAllHeldBy(new PeerHandle(member.PeerId));
         }
 
         /// <summary>
-        /// Sends the world and the held claim slots in full to a member the session says needs them — a
-        /// newcomer, or somebody who has just rejoined mid-match.
+        /// Sends the held claim slots in full to a member the session says needs them — a newcomer, or
+        /// somebody who has just rejoined mid-match. The world's own keyframe is the spawner's business.
         /// </summary>
         private void HandleMemberNeedsKeyframe(SessionMember member) {
             if (member == null || member.PeerId == SessionMember.NoPeerId) return;
 
-            var peer = new PeerHandle(member.PeerId);
-
-            _replication?.SendKeyframeTo(peer);
-            _claims?.SendKeyframeTo(peer);
+            _claims?.SendKeyframeTo(new PeerHandle(member.PeerId));
         }
 
         private IReadOnlyList<PeerHandle> ResolveSessionPeers() {

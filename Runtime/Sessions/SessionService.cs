@@ -10,6 +10,7 @@ using AlpineLib.Netcode.Protocol;
 using AlpineLib.Netcode.Replication;
 using AlpineLib.Netcode.Sessions;
 using AlpineLib.Netcode.Sessions.Claims;
+using AlpineLib.Netcode.Sessions.Spawning;
 using AlpineLib.Netcode.Transport;
 using AlpineLib.Networking;
 using UnityEngine;
@@ -546,7 +547,8 @@ namespace AlpineLib.Sessions {
                 _config.ToData(),
                 _netConfig,
                 new AnonymousAuthValidator(_config.defaultDisplayName),
-                CurrentCollisionWorld());
+                CurrentCollisionWorld(),
+                pawnPrefabId: 0, pawnAuthority: AuthorityMode.Server, placement: new RingSpawnPlacement());
 
             return LoopbackEndpoint();
         }
