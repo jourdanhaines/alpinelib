@@ -18,19 +18,22 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
     /// other side of the platform.
     /// </para>
     /// <para>
-    /// <b>How the overflow spreads out.</b> Arrival <i>n</i> beyond the authored list takes overflow seat
-    /// <i>n</i>, and the seat fixes both the direction and the distance: the angle is one of
-    /// <see cref="OverflowSeats"/> directions on a ring turned half a seat off +X and +Z, where
+    /// <b>How the overflow spreads out.</b> A marker's <i>k</i>th trip round the list takes overflow seat
+    /// <i>k</i> on that marker's own ring — counted per marker, not per arrival, because the arrival
+    /// ordinal jumps by the list length between two arrivals at one marker and would stand the seat still
+    /// whenever the two share a factor. The seat fixes both the direction and the distance: the angle is
+    /// one of <see cref="OverflowSeats"/> directions on a ring turned half a seat off +X and +Z, where
     /// hand-authored rows live, and each full revolution steps the radius out by
     /// <see cref="OverflowRadiusMetres"/>. The widening stops after <see cref="OverflowRevolutions"/>, so a
-    /// marker holds <c>OverflowSeats * OverflowRevolutions</c> overflow places and then starts over — the
-    /// seventeenth arrival at a marker stands where its first overflow arrival did. It repeats on purpose:
-    /// the probe answers about the plane the marker was authored on, so a seat widened past the edge of
-    /// that platform is dropped onto whatever is twenty metres below, which is worse than a shared spot.
+    /// marker holds <c>OverflowSeats * OverflowRevolutions</c> overflow places, whatever the list length,
+    /// and then starts over — a marker's seventeenth overflow arrival stands where its first did. It
+    /// repeats on purpose: the probe answers about the plane the marker was authored on, so a seat widened
+    /// past the edge of that platform is dropped onto whatever is twenty metres below, which is worse than
+    /// a shared spot.
     /// A marker therefore wants <c>OverflowRadiusMetres * OverflowRevolutions</c> of surface around it.
     /// </para>
     /// <para>
-    /// <b>Distinct seats, not spaced ones.</b> Each marker turns its ring one seat further round than the
+    /// <b>Distinct seats, not spaced ones.</b> Each marker turns its ring two seats further round than the
     /// marker before it, so two arrivals in a row land a quarter turn apart instead of an eighth and a row
     /// of markers fans its overflow out rather than leaning it all the same way. Nothing here reads the
     /// authored spacing, though, so this is not a promise that two pawns never overlap: overflow arrivals
@@ -62,7 +65,8 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
         private readonly SpawnPoint[] _points;
         private readonly SpawnGroundProbe _probe;
 
-        // Counted as a long so a session that never closes cannot wrap the ordinal into a negative index.
+        // Counted as a long so no session that can exist wraps the ordinal into a negative index: the wrap
+        // itself would throw, but it is nine quintillion arrivals away.
         private long _nextArrival;
 
         /// <summary>Builds a placement over an authored list.</summary>
@@ -106,20 +110,24 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
         /// the axes, widening by <see cref="OverflowRadiusMetres"/> each revolution and starting over after
         /// <see cref="OverflowRevolutions"/> of them.
         /// </summary>
-        /// <param name="overflowSeat">The arrival's ordinal past the authored list. Negative on the first pass.</param>
+        /// <param name="overflowOrdinal">The arrival's ordinal past the authored list. Negative on the first pass.</param>
         /// <param name="pointIndex">Which marker the arrival is ringing. It turns the ring off its neighbours'.</param>
-        private static Vector3 ResolveOverflowOffset(long overflowSeat, int pointIndex) {
-            if (overflowSeat < 0L) {
+        private Vector3 ResolveOverflowOffset(long overflowOrdinal, int pointIndex) {
+            if (overflowOrdinal < 0L) {
                 return Vector3.Zero;
             }
 
+            // Trips round the list, not arrivals overall: the ordinal advances by the list length between
+            // two arrivals at one marker, which stands the seat still whenever the two share a factor.
+            long roundAtMarker = overflowOrdinal / _points.Length;
+
             // The revolution wraps rather than growing without end: a seat further out than the surface the
             // marker was authored on is worse than a shared one.
-            long revolution = overflowSeat / OverflowSeats % OverflowRevolutions;
+            long revolution = roundAtMarker / OverflowSeats % OverflowRevolutions;
 
-            // Turned by the marker's own index as well as the seat, so neighbouring markers in a row send
-            // their overflow arrivals different ways instead of leaning them all the same way.
-            long seatOnRing = (overflowSeat + pointIndex) % OverflowSeats;
+            // Two seats of turn per marker, so neighbouring markers in a row send their overflow arrivals a
+            // quarter turn apart instead of leaning them all the same way.
+            long seatOnRing = (roundAtMarker + 2L * pointIndex) % OverflowSeats;
 
             float angleRadians = (seatOnRing + 0.5f) * (2f * MathF.PI / OverflowSeats);
             float radiusMetres = OverflowRadiusMetres * (1f + revolution);
