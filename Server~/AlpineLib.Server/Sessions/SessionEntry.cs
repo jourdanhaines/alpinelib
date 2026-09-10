@@ -89,7 +89,11 @@ namespace AlpineLib.Server.Sessions {
             }
 
             _replication = new ServerReplication(server, ResolveBroadcastPeers, validator);
-            _claims = new ServerClaimRegistry(server, ResolveBroadcastPeers);
+
+            // The game's authority rule over slots is asked for before the registry exists, not fitted
+            // afterwards: a registry that is live and unfiltered for even one message has already
+            // answered a request it should have refused.
+            _claims = new ServerClaimRegistry(server, ResolveBroadcastPeers, moduleFactory?.BuildClaimValidator(host));
             _spawner = new SessionPawnSpawner(host, _replication, spawn.PawnPrefabId, spawn.PawnAuthority, placement);
             _chatHost = new SessionHostChatAdapter(host, clock);
             _chatTransport = new ChatServerEnvelopeTransport(server, ResolvePlayerForPeer, ResolvePeerForPlayer);

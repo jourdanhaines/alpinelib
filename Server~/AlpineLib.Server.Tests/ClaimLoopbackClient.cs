@@ -22,6 +22,7 @@ namespace AlpineLib.Server.Tests {
         private readonly List<ClaimVerdict> _verdicts = new List<ClaimVerdict>();
         private readonly List<ushort> _granted = new List<ushort>();
         private readonly List<ushort> _lost = new List<ushort>();
+        private readonly List<ushort> _denied = new List<ushort>();
 
         private bool _isDisposed;
 
@@ -33,6 +34,7 @@ namespace AlpineLib.Server.Tests {
             _claims.OnClaimChanged += RecordClaimChanged;
             _claims.OnClaimGranted += RecordGranted;
             _claims.OnClaimLost += RecordLost;
+            _claims.OnClaimDenied += RecordDenied;
         }
 
         /// <summary>This client's view of the session's slots.</summary>
@@ -55,6 +57,9 @@ namespace AlpineLib.Server.Tests {
 
         /// <summary>Every slot the view said stopped being ours, in order.</summary>
         public IReadOnlyList<ushort> Lost => _lost;
+
+        /// <summary>Every slot the server refused us, in order.</summary>
+        public IReadOnlyList<ushort> Denied => _denied;
 
         /// <summary>Dials the one server on the loopback network.</summary>
         public void Connect() {
@@ -80,6 +85,7 @@ namespace AlpineLib.Server.Tests {
             _verdicts.Clear();
             _granted.Clear();
             _lost.Clear();
+            _denied.Clear();
         }
 
         /// <inheritdoc />
@@ -93,6 +99,7 @@ namespace AlpineLib.Server.Tests {
             _claims.OnClaimChanged -= RecordClaimChanged;
             _claims.OnClaimGranted -= RecordGranted;
             _claims.OnClaimLost -= RecordLost;
+            _claims.OnClaimDenied -= RecordDenied;
             _claims.Dispose();
             _client.Dispose();
             _transport.Dispose();
@@ -108,6 +115,10 @@ namespace AlpineLib.Server.Tests {
 
         private void RecordLost(ushort slot) {
             _lost.Add(slot);
+        }
+
+        private void RecordDenied(ushort slot) {
+            _denied.Add(slot);
         }
     }
 }

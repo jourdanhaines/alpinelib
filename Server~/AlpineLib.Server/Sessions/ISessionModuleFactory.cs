@@ -1,5 +1,7 @@
 using System;
 using AlpineLib.Netcode.Protocol;
+using AlpineLib.Netcode.Sessions;
+using AlpineLib.Netcode.Sessions.Claims;
 using AlpineLib.Netcode.Transport;
 
 namespace AlpineLib.Server.Sessions {
@@ -37,5 +39,26 @@ namespace AlpineLib.Server.Sessions {
         /// that skips this check is acting on a message from a peer in somebody else's session.
         /// </param>
         void RegisterHandlers(MessageRouter router, Func<PeerHandle, SessionEntry> resolveEntry);
+
+        /// <summary>
+        /// Which claims a session of this game will answer for, or null to accept every slot number.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Asked <b>before</b> the entry exists, because the claim registry is one of the pieces the
+        /// entry is built out of and an authority rule that arrives after the registry is live has
+        /// already been wrong once. That is also why it is handed the <see cref="SessionHost"/> rather
+        /// than the half-built entry: everything reachable from the host is real at this point, and
+        /// nothing else is.
+        /// </para>
+        /// <para>
+        /// The validator is called on the loop thread for every claim request off the wire, with the
+        /// slot asked for, the peer that asked and the registry itself — so a rule about sibling slots
+        /// ("one driver per train") can read <c>registry.Holders</c> to answer. It must not mutate the
+        /// registry. A refused request is answered with <c>ClaimDenied</c>, so refusing is not silence.
+        /// </para>
+        /// </remarks>
+        Func<ushort, PeerHandle, ServerClaimRegistry, bool> BuildClaimValidator(SessionHost host) => null;
+
     }
 }

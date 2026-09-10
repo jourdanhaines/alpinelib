@@ -40,6 +40,7 @@ namespace AlpineLib.Server.Tests {
         public void TheWholeClaimBandIsReserved() {
             Assert.True(MessageIdBudget.IsReservedByLibrary(MessageIdBudget.ClaimBandStart));
             Assert.True(MessageIdBudget.IsReservedByLibrary(85));
+            Assert.True(MessageIdBudget.IsReservedByLibrary(87));
             Assert.True(MessageIdBudget.IsReservedByLibrary(MessageIdBudget.ClaimBandEnd));
         }
 
@@ -67,7 +68,7 @@ namespace AlpineLib.Server.Tests {
         public void TheGapsBetweenLibraryBandsAreFreeToo() {
             Assert.False(MessageIdBudget.IsReservedByLibrary(3));
             Assert.False(MessageIdBudget.IsReservedByLibrary(63));
-            Assert.False(MessageIdBudget.IsReservedByLibrary(87));
+            Assert.False(MessageIdBudget.IsReservedByLibrary(88));
             Assert.False(MessageIdBudget.IsReservedByLibrary(119));
         }
 

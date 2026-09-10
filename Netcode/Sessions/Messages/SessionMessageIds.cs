@@ -11,7 +11,7 @@ namespace AlpineLib.Netcode.Sessions.Messages {
     /// listen-host process migration, which is designed for but not built in v1.
     /// </para>
     /// <para>
-    /// 84-86 belong to the claim messages and 87-119 are free, so this band is not contiguous.
+    /// 84-87 belong to the claim messages and 88-119 are free, so this band is not contiguous.
     /// <see cref="AlpineLib.Netcode.Protocol.MessageIdBudget"/> is the single authority on the whole
     /// map — check an id there rather than inferring a range from this class.
     /// </para>

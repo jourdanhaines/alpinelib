@@ -41,7 +41,7 @@ namespace AlpineLib.Netcode.Protocol {
         public const ushort ClaimBandStart = 84;
 
         /// <summary>Last id of the claim band.</summary>
-        public const ushort ClaimBandEnd = 86;
+        public const ushort ClaimBandEnd = 87;
 
         /// <summary>
         /// First id of the session tail, which carries ownership transfer and the ids held back for
@@ -82,7 +82,7 @@ namespace AlpineLib.Netcode.Protocol {
 
         /// <summary>
         /// True for the band a game should author its own message ids in. Ids outside it may still be
-        /// unreserved — 3-63, 87-119 and everything past 192 are free too — but they sit between library
+        /// unreserved — 3-63, 88-119 and everything past 192 are free too — but they sit between library
         /// bands that may grow, so a game that stays here never has to renumber.
         /// </summary>
         /// <remarks>

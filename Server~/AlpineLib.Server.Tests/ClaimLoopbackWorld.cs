@@ -33,10 +33,13 @@ namespace AlpineLib.Server.Tests {
         /// False leaves the claim ids unbound, which is how a test drives the registry the way a
         /// multi-session front desk does — through the public handlers rather than through the router.
         /// </param>
-        public ClaimLoopbackWorld(bool attachToRouter = true) {
+        /// <param name="isClaimAllowed">The game's own authority rule, or null to answer for every slot.</param>
+        public ClaimLoopbackWorld(
+            bool attachToRouter = true,
+            Func<ushort, PeerHandle, ServerClaimRegistry, bool> isClaimAllowed = null) {
             _serverTransport = _network.CreateServerTransport();
             _server = new NetServer(_serverTransport, BuildConfig());
-            _registry = new ServerClaimRegistry(_server, () => _sessionPeers);
+            _registry = new ServerClaimRegistry(_server, () => _sessionPeers, isClaimAllowed);
 
             if (attachToRouter) {
                 _registry.AttachToRouter();

@@ -53,11 +53,11 @@ namespace AlpineLib.Server.Tests {
         }
 
         /// <summary>
-        /// A listener that re-seats a not-yet-published slot and then hands it straight back leaves the
-        /// departure loop publishing a freeing for a slot that is already free.
+        /// A listener that re-seats a not-yet-published slot and then hands it straight back has already
+        /// announced the freeing itself, so the departure loop stays quiet about it.
         /// </summary>
         [Fact]
-        public void AReseatHandedBackDuringADepartureIsFreedTwice() {
+        public void AReseatHandedBackDuringADepartureIsFreedOnce() {
             var peers = new List<PeerHandle> { Alice, Bob };
             using var transport = new FakeNetTransport();
             using var server = new NetServer(transport, BuildConfig());
@@ -86,7 +86,6 @@ namespace AlpineLib.Server.Tests {
                 new[] {
                     "Claim(slot=10, holder=-1)",
                     "Claim(slot=11, holder=2)",
-                    "Claim(slot=11, holder=-1)",
                     "Claim(slot=11, holder=-1)"
                 },
                 Describe(verdicts));
@@ -115,11 +114,12 @@ namespace AlpineLib.Server.Tests {
         }
 
         /// <summary>
-        /// A client changing identity again from inside the loss that identity raised leaves the outer
-        /// call granting slots the new identity does not hold.
+        /// A client changing identity again from inside the loss that identity raised: the outer call's
+        /// snapshot is stale by the time it is walked, and every slot in it is re-checked against the
+        /// map before its event goes out, so only the grant the current identity really has is raised.
         /// </summary>
         [Fact]
-        public void ChangingIdentityFromInsideALossGrantsASlotWeDoNotHold() {
+        public void ChangingIdentityFromInsideALossOnlyGrantsWhatTheNewIdentityHolds() {
             using var world = new ClaimLoopbackWorld();
             ClaimLoopbackClient first = world.ConnectClient();
             ClaimLoopbackClient second = world.ConnectClient();
@@ -147,8 +147,13 @@ namespace AlpineLib.Server.Tests {
             view.LocalPeerId = secondId;
 
             Assert.Equal(firstId, view.LocalPeerId);
-            Assert.Contains<ushort>(7, granted);
+            Assert.DoesNotContain<ushort>(7, granted);
             Assert.False(view.IsHeldLocally(7));
+
+            // The nested adopt's own grant is honest and still goes out: slot 5 really is the first
+            // identity's, which is the identity the view ends on.
+            Assert.Contains<ushort>(5, granted);
+            Assert.True(view.IsHeldLocally(5));
         }
 
         /// <summary>A game validator that throws takes the exception out through the router.</summary>
@@ -158,7 +163,9 @@ namespace AlpineLib.Server.Tests {
             using var transport = new FakeNetTransport();
             using var server = new NetServer(transport, BuildConfig());
             var registry = new ServerClaimRegistry(
-                server, () => peers, (slot) => throw new InvalidOperationException("bad slot table"));
+                server,
+                () => peers,
+                (slot, requester, claims) => throw new InvalidOperationException("bad slot table"));
 
             var request = new ClaimRequest(4);
 

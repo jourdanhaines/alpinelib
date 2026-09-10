@@ -249,14 +249,15 @@ namespace AlpineLib.Server.Tests {
 
         /// <summary>
         /// The game's own validator is the first gate: a train with four levers answers for four numbers,
-        /// and a request naming a fifth costs the session nothing and is told nothing.
+        /// and a request naming a fifth moves nothing and costs the session no broadcast — only the
+        /// unicast refusal the asker is owed.
         /// </summary>
         [Fact]
-        public void ASlotTheGameDoesNotUseIsRefusedSilently() {
+        public void ASlotTheGameDoesNotUseIsRefusedWithoutABroadcast() {
             var peers = new List<PeerHandle> { Alice };
             using var transport = new FakeNetTransport();
             using var server = new NetServer(transport, BuildConfig());
-            var registry = new ServerClaimRegistry(server, () => peers, (slot) => slot < 4);
+            var registry = new ServerClaimRegistry(server, () => peers, (slot, requester, claims) => slot < 4);
 
             var verdicts = new List<ClaimVerdict>();
             registry.OnClaimChanged += (slot, holder) => verdicts.Add(new ClaimVerdict(slot, holder));
@@ -282,7 +283,7 @@ namespace AlpineLib.Server.Tests {
             var peers = new List<PeerHandle> { Alice };
             using var transport = new FakeNetTransport();
             using var server = new NetServer(transport, BuildConfig());
-            var registry = new ServerClaimRegistry(server, () => peers, (slot) => false);
+            var registry = new ServerClaimRegistry(server, () => peers, (slot, requester, claims) => false);
 
             Assert.True(registry.TryClaim(DriverLever, Alice));
             Assert.Equal(Alice.Id, registry.Holder(DriverLever));

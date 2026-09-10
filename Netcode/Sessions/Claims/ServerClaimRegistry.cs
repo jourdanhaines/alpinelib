@@ -33,10 +33,20 @@ namespace AlpineLib.Netcode.Sessions.Claims {
     /// <para>
     /// <b>What a request may name is bounded.</b> A slot number arrives from a client, so a modded one can
     /// name all 65536 of them and cost the session a dictionary entry and a reliable broadcast for each.
-    /// Requests off the wire are therefore filtered twice — by the game's own <c>isSlotValid</c>, and by
-    /// <see cref="MaxSlots"/> — and a refusal is silent: no verdict, no reply, no throw, so a client
-    /// learns nothing it can grind against and a legitimate one cannot be knocked over by a neighbour.
-    /// The host's own <see cref="TryClaim"/> is not filtered; seating a driver is the host's business.
+    /// Requests off the wire are therefore filtered twice — by the game's own <c>isClaimAllowed</c>, and
+    /// by <see cref="MaxSlots"/> — and a refusal costs the session one unicast
+    /// <see cref="Messages.ClaimDenied"/> back to the asker rather than a broadcast, so a client
+    /// grinding on slot numbers pays for its own traffic and nobody else's. A request from a peer that
+    /// is not in this session is still answered with nothing at all: an outsider learns neither that the
+    /// session exists nor which slots it uses. The host's own <see cref="TryClaim"/> is not filtered;
+    /// seating a driver is the host's business.
+    /// </para>
+    /// <para>
+    /// <b>Every request gets an answer.</b> A client that asks and waits must be able to stop waiting on
+    /// an event rather than a timer, so all three outcomes reply: a grant broadcasts
+    /// <see cref="Messages.ClaimChanged"/>, a refusal unicasts <see cref="Messages.ClaimDenied"/>, and a
+    /// re-request by the peer that already holds the slot unicasts the verdict it already agrees with —
+    /// which changes nothing on the far side but breaks the silence.
     /// </para>
     /// </remarks>
     public sealed class ServerClaimRegistry {
@@ -56,10 +66,12 @@ namespace AlpineLib.Netcode.Sessions.Claims {
 
         private readonly NetServer server;
         private readonly Func<IReadOnlyList<PeerHandle>> peerSource;
-        private readonly Func<ushort, bool> isSlotValid;
+        private readonly Func<ushort, PeerHandle, ServerClaimRegistry, bool> isClaimAllowed;
         private readonly Dictionary<ushort, int> holders = new Dictionary<ushort, int>();
+        private readonly HashSet<ushort> freedDuringDeparture = new HashSet<ushort>();
 
         private bool isAttachedToRouter;
+        private bool isPublishingDeparture;
 
         /// <summary>Creates the registry for one session's slots.</summary>
         /// <param name="server">The server facade the verdicts are broadcast through.</param>
@@ -67,18 +79,25 @@ namespace AlpineLib.Netcode.Sessions.Claims {
         /// The session's connected peers, re-read on every send. It is a delegate rather than a list so
         /// that a roster change is seen without the registry having to be told about it.
         /// </param>
-        /// <param name="isSlotValid">
-        /// Which slot numbers this session's clients are allowed to name — a train with four cars might
-        /// answer only for the levers those cars have. Null accepts every number up to
-        /// <see cref="MaxSlots"/>, which is what a game that has not decided yet gets.
+        /// <param name="isClaimAllowed">
+        /// Whether this session will answer one client's request: the slot asked for, who asked, and the
+        /// registry itself. Null accepts every number up to <see cref="MaxSlots"/>, which is what a game
+        /// that has not decided yet gets.
         /// </param>
+        /// <remarks>
+        /// The validator is handed the registry rather than only the number because the interesting
+        /// rules are about siblings — "one driver per train" is a question about the other slots on the
+        /// same consist, not about this one. It is called on the loop thread inside the request handler
+        /// and must only read (<see cref="Holders"/>, <see cref="Holder"/>, <see cref="IsHeld"/>):
+        /// claiming or releasing from inside it mutates the map the caller is about to write to.
+        /// </remarks>
         public ServerClaimRegistry(
             NetServer server,
             Func<IReadOnlyList<PeerHandle>> peerSource,
-            Func<ushort, bool> isSlotValid = null) {
+            Func<ushort, PeerHandle, ServerClaimRegistry, bool> isClaimAllowed = null) {
             this.server = server ?? throw new ArgumentNullException(nameof(server));
             this.peerSource = peerSource ?? throw new ArgumentNullException(nameof(peerSource));
-            this.isSlotValid = isSlotValid;
+            this.isClaimAllowed = isClaimAllowed;
         }
 
         /// <summary>A slot changed hands: the slot, and its new holder or -1 when it went free.</summary>
@@ -178,6 +197,12 @@ namespace AlpineLib.Netcode.Sessions.Claims {
         public void ReleaseAllHeldBy(PeerHandle peer) {
             List<ushort> released = SlotsHeldBy(peer);
 
+            ForgetSlotsHeldBy(peer, released);
+            PublishDepartureFreeings(released);
+        }
+
+        /// <summary>Takes a departing peer's slots out of the map, before any verdict goes out.</summary>
+        private void ForgetSlotsHeldBy(PeerHandle peer, List<ushort> released) {
             for (int slotIndex = 0; slotIndex < released.Count; slotIndex++) {
                 ushort slot = released[slotIndex];
 
@@ -185,16 +210,54 @@ namespace AlpineLib.Netcode.Sessions.Claims {
                     holders.Remove(slot);
                 }
             }
+        }
 
-            for (int slotIndex = 0; slotIndex < released.Count; slotIndex++) {
-                ushort slot = released[slotIndex];
+        /// <summary>Announces the departure's freeings, each one exactly once.</summary>
+        /// <remarks>
+        /// A listener reacting to an earlier freeing may re-seat one of the remaining slots — in which
+        /// case it is held again and this loop has nothing to say about it — or re-seat it and hand it
+        /// straight back, in which case its own release has already published the freeing and the map
+        /// alone cannot tell the two apart. Recording what has actually gone out is what keeps the
+        /// second case from being announced twice.
+        /// </remarks>
+        private void PublishDepartureFreeings(List<ushort> released) {
+            bool isOutermost = !isPublishingDeparture;
+            isPublishingDeparture = true;
 
-                if (holders.ContainsKey(slot)) {
-                    continue;
-                }
-
-                PublishClaimChanged(slot, FreeHolderPeerId);
+            try {
+                WalkDepartureFreeings(released);
             }
+            finally {
+                isPublishingDeparture = !isOutermost;
+                ForgetDepartureRecord(isOutermost);
+            }
+        }
+
+        private void WalkDepartureFreeings(List<ushort> released) {
+            for (int slotIndex = 0; slotIndex < released.Count; slotIndex++) {
+                PublishDepartureFreeing(released[slotIndex]);
+            }
+        }
+
+        /// <summary>Drops the record once the outermost departure is over; a nested one keeps sharing it.</summary>
+        private void ForgetDepartureRecord(bool isOutermost) {
+            if (!isOutermost) {
+                return;
+            }
+
+            freedDuringDeparture.Clear();
+        }
+
+        private void PublishDepartureFreeing(ushort slot) {
+            if (holders.ContainsKey(slot)) {
+                return;
+            }
+
+            if (freedDuringDeparture.Contains(slot)) {
+                return;
+            }
+
+            PublishClaimChanged(slot, FreeHolderPeerId);
         }
 
         /// <summary>Peer id holding a slot, or -1 when it is free.</summary>
@@ -239,20 +302,31 @@ namespace AlpineLib.Netcode.Sessions.Claims {
         /// resolving which session the sender belongs to.
         /// </summary>
         /// <remarks>
-        /// A request the session will not answer — from an outsider, for a number the game does not use,
-        /// or one slot past the cap — is dropped where it lands. See the note on the type for why the
-        /// refusal says nothing back.
+        /// A request from an outsider is dropped where it lands. Every other outcome answers the sender;
+        /// see the note on the type for the three shapes that answer takes.
         /// </remarks>
         public void HandleClaimRequest(in ClaimRequest message, PeerHandle sender) {
             if (!IsSessionPeer(sender)) {
                 return;
             }
 
-            if (!IsRequestableSlot(message.Slot)) {
+            if (!IsRequestableSlot(message.Slot, sender)) {
+                SendClaimDenied(sender, message.Slot);
                 return;
             }
 
-            TryClaim(message.Slot, sender);
+            // Before the claim, not after: re-claiming a slot you already hold broadcasts nothing, so
+            // this is the only place the repeat can be told apart from a fresh grant.
+            if (Holder(message.Slot) == sender.Id) {
+                SendClaimChanged(sender, message.Slot, sender.Id);
+                return;
+            }
+
+            if (TryClaim(message.Slot, sender)) {
+                return;
+            }
+
+            SendClaimDenied(sender, message.Slot);
         }
 
         /// <summary>
@@ -272,8 +346,8 @@ namespace AlpineLib.Netcode.Sessions.Claims {
         /// session must have room for it. A slot already in the map is always requestable, so a full map
         /// never blocks the holder from re-stating a claim it already won.
         /// </summary>
-        private bool IsRequestableSlot(ushort slot) {
-            if (isSlotValid != null && !isSlotValid(slot)) {
+        private bool IsRequestableSlot(ushort slot, PeerHandle requester) {
+            if (isClaimAllowed != null && !isClaimAllowed(slot, requester, this)) {
                 return false;
             }
 
@@ -295,9 +369,27 @@ namespace AlpineLib.Netcode.Sessions.Claims {
 
         /// <summary>Tells the session about a transition, then whoever is watching this registry.</summary>
         private void PublishClaimChanged(ushort slot, int holderPeerId) {
+            // Recorded only while a departure is walking its slots, so the loop can tell a slot a
+            // listener freed for itself from one that is still owed a verdict.
+            if (isPublishingDeparture && holderPeerId == FreeHolderPeerId) {
+                freedDuringDeparture.Add(slot);
+            }
+
             var message = new ClaimChanged(slot, holderPeerId);
             server.SendToMany(Peers, ClaimMessageIds.ClaimChanged, in message, DeliveryClass.ReliableOrdered);
             OnClaimChanged?.Invoke(slot, holderPeerId);
+        }
+
+        /// <summary>Tells one peer what it already agrees with, so its request is answered rather than lost.</summary>
+        private void SendClaimChanged(PeerHandle peer, ushort slot, int holderPeerId) {
+            var message = new ClaimChanged(slot, holderPeerId);
+            server.Send(peer, ClaimMessageIds.ClaimChanged, in message, DeliveryClass.ReliableOrdered);
+        }
+
+        /// <summary>Tells one peer its request lost. Nobody else needs to hear about a slot that did not move.</summary>
+        private void SendClaimDenied(PeerHandle peer, ushort slot) {
+            var message = new ClaimDenied(slot);
+            server.Send(peer, ClaimMessageIds.ClaimDenied, in message, DeliveryClass.ReliableOrdered);
         }
 
         /// <summary>

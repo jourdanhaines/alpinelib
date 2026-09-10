@@ -43,16 +43,40 @@ namespace AlpineLib.Netcode.Sessions.Claims {
             this.client = client ?? throw new ArgumentNullException(nameof(client));
 
             client.Router.Register<ClaimChanged>(ClaimMessageIds.ClaimChanged, HandleClaimChanged);
+            client.Router.Register<ClaimDenied>(ClaimMessageIds.ClaimDenied, HandleClaimDenied);
         }
 
         /// <summary>A slot changed hands: the slot, and its new holder or -1 when it went free.</summary>
+        /// <remarks>
+        /// Raised first of the three, and the map is already updated when it runs, so a handler that
+        /// wants to know what a slot became reads the argument or <see cref="Holder"/> rather than
+        /// waiting for the grant or the loss.
+        /// </remarks>
         public event Action<ushort, int> OnClaimChanged;
 
         /// <summary>A slot became ours.</summary>
         public event Action<ushort> OnClaimGranted;
 
         /// <summary>A slot we were holding is no longer ours, whether we let it go or lost it.</summary>
+        /// <remarks>
+        /// One transition raises <see cref="OnClaimChanged"/> and then this, so a lever handed straight
+        /// from us to somebody else reaches a listener as "changed to B" followed by "you lost it" — the
+        /// loss does not mean the slot went free. A handler that has to tell the two apart re-reads
+        /// <see cref="Holder"/>; by the time it runs the map already holds the new answer.
+        /// </remarks>
         public event Action<ushort> OnClaimLost;
+
+        /// <summary>
+        /// The server refused a slot we asked for. Nothing about the slot has changed.
+        /// </summary>
+        /// <remarks>
+        /// Exists so a client that is waiting on a request can stop waiting on an event rather than on a
+        /// timer. It says only which slot was asked for: the honest reason is either "somebody else has
+        /// it", which the last <see cref="OnClaimChanged"/> already said, or "this session does not
+        /// answer for that number", which is a bug in the asker rather than something to show a player.
+        /// A denial for a slot we never asked for is possible after a rejoin and means the same thing.
+        /// </remarks>
+        public event Action<ushort> OnClaimDenied;
 
         /// <summary>Which peer this client is, or -1 before the server has said.</summary>
         /// <remarks>
@@ -109,7 +133,7 @@ namespace AlpineLib.Netcode.Sessions.Claims {
             List<ushort> lost = LocallyHeldSlots();
             holders.Clear();
 
-            RaiseSlots(OnClaimLost, lost);
+            RaiseSlots(OnClaimLost, lost, heldLocally: false);
         }
 
         /// <summary>
@@ -129,6 +153,7 @@ namespace AlpineLib.Netcode.Sessions.Claims {
             Clear();
 
             client.Router.Unregister(ClaimMessageIds.ClaimChanged);
+            client.Router.Unregister(ClaimMessageIds.ClaimDenied);
         }
 
         /// <summary>
@@ -152,6 +177,11 @@ namespace AlpineLib.Netcode.Sessions.Claims {
 
             OnClaimChanged?.Invoke(message.Slot, message.HolderPeerId);
             RaiseLocalTransition(message.Slot, previousHolder, message.HolderPeerId);
+        }
+
+        /// <summary>Passes a refusal straight through; the view has nothing to record about it.</summary>
+        private void HandleClaimDenied(in ClaimDenied message, PeerHandle sender) {
+            OnClaimDenied?.Invoke(message.Slot);
         }
 
         /// <summary>
@@ -187,8 +217,8 @@ namespace AlpineLib.Netcode.Sessions.Claims {
             localPeerId = peerId;
             List<ushort> granted = LocallyHeldSlots();
 
-            RaiseSlots(OnClaimLost, lost);
-            RaiseSlots(OnClaimGranted, granted);
+            RaiseSlots(OnClaimLost, lost, heldLocally: false);
+            RaiseSlots(OnClaimGranted, granted, heldLocally: true);
         }
 
         /// <summary>
@@ -211,13 +241,25 @@ namespace AlpineLib.Netcode.Sessions.Claims {
             return slots;
         }
 
-        /// <summary>Raises one event over a snapshot of slots.</summary>
-        private void RaiseSlots(Action<ushort> handler, List<ushort> slots) {
+        /// <summary>
+        /// Raises one event over a snapshot, dropping any slot the map has since disagreed with.
+        /// </summary>
+        /// <remarks>
+        /// The snapshot is taken before the first handler runs, and a handler may claim, release or
+        /// change identity from inside the walk — so a slot that was ours when the list was built can
+        /// have moved by the time its turn comes. Re-reading the map here is what stops a game being
+        /// told it was granted a lever it demonstrably does not hold.
+        /// </remarks>
+        private void RaiseSlots(Action<ushort> handler, List<ushort> slots, bool heldLocally) {
             if (handler == null) {
                 return;
             }
 
             for (int slotIndex = 0; slotIndex < slots.Count; slotIndex++) {
+                if (IsHeldLocally(slots[slotIndex]) != heldLocally) {
+                    continue;
+                }
+
                 handler(slots[slotIndex]);
             }
         }
