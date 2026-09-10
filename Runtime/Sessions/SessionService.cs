@@ -238,7 +238,12 @@ namespace AlpineLib.Sessions {
         public bool IsListenHosting => _frontDesk != null;
 
         /// <inheritdoc />
-        public NetEndpoint HostEndpoint => _hostEndpoint;
+        /// <remarks>
+        /// Answered against the launcher, not from the field alone: a server process that exits on its
+        /// own — the idle timeout, or a crash — leaves an address nothing answers on, and a menu reading
+        /// this out to friends has to stop offering it the moment that happens.
+        /// </remarks>
+        public NetEndpoint HostEndpoint => IsHostEndpointLive() ? _hostEndpoint : NetEndpoint.None;
 
         /// <summary>
         /// Where the next <see cref="HostSessionAsync"/> puts its server. Settable so an app root or a
@@ -316,6 +321,7 @@ namespace AlpineLib.Sessions {
         private ListenServerFrontDesk _frontDesk;
         private LocalServerLauncher _localServer;
         private CollisionWorld _collisionWorld;
+        private CancellationTokenSource _hostStartSource;
         private NetEndpoint _hostEndpoint;
         private string _hostEndpointFailure = string.Empty;
         private string _currentSceneName = string.Empty;
@@ -379,7 +385,14 @@ namespace AlpineLib.Sessions {
                 return;
             }
 
+            if (config == localServer) return;
+
             localServer = config;
+
+            // The launcher captured the old config when it was built, so it cannot serve the new one:
+            // keeping it would silently launch the previous executable on the previous port.
+            _localServer?.Dispose();
+            _localServer = null;
         }
 
         /// <inheritdoc />
@@ -424,10 +437,14 @@ namespace AlpineLib.Sessions {
 
             if (!connectResult.IsSuccess) return connectResult;
 
+            // Recorded before the await, not after: a teardown landing mid-create clears it, and writing
+            // it back on the way out would hand the menu an address for a session that no longer exists.
+            _hostEndpoint = endpoint;
+
             SessionJoinResult createResult = await _sessionClient.CreateSessionAsync(ResolveProfileId());
 
-            if (createResult.IsSuccess) {
-                _hostEndpoint = endpoint;
+            if (!createResult.IsSuccess) {
+                _hostEndpoint = NetEndpoint.None;
             }
 
             return createResult;
@@ -502,6 +519,8 @@ namespace AlpineLib.Sessions {
             // alive past this service, and there is no session left to reuse a warm server for.
             _localServer?.Dispose();
             _localServer = null;
+            _hostStartSource?.Dispose();
+            _hostStartSource = null;
 
             if (!Injector.HasInstance) return;
 
@@ -585,23 +604,57 @@ namespace AlpineLib.Sessions {
         /// to host wants a denial to show the player, not an exception to catch.
         /// </remarks>
         private async Task<NetEndpoint> StartLocalServerAsync() {
-            WarnIfServerAddressOverrideIgnored();
-
             if (localServer == null) {
                 _hostEndpointFailure = "No local server config.";
                 Debug.LogError("SessionService::StartLocalServerAsync->No local server config; assign one or call ConfigureLocalServer.");
                 return NetEndpoint.None;
             }
 
+            WarnIfServerAddressOverrideIgnored();
+
             _localServer ??= new LocalServerLauncher(localServer);
 
             try {
-                return await _localServer.StartAsync(CancellationToken.None);
+                return await _localServer.StartAsync(RenewHostStartToken());
+            } catch (OperationCanceledException) {
+                _hostEndpointFailure = "Hosting was cancelled.";
+                return NetEndpoint.None;
             } catch (Exception exception) {
                 _hostEndpointFailure = "The local server did not start.";
                 Debug.LogError($"SessionService::StartLocalServerAsync->{exception.Message}");
                 return NetEndpoint.None;
             }
+        }
+
+        /// <summary>
+        /// Replaces the token a pending server start is cancelled by, and hands out the new one.
+        /// </summary>
+        /// <remarks>
+        /// Teardown is the signal this exists for. A player who presses Host and then leaves — or exits
+        /// play mode, or loses the transport — must not be left watching "starting a train…" until a
+        /// readiness budget nobody is waiting for runs out.
+        /// </remarks>
+        private CancellationToken RenewHostStartToken() {
+            _hostStartSource?.Dispose();
+            _hostStartSource = new CancellationTokenSource();
+
+            return _hostStartSource.Token;
+        }
+
+        /// <summary>Cancels a server start still in flight, if there is one.</summary>
+        private void CancelHostStart() {
+            if (_hostStartSource == null) return;
+
+            _hostStartSource.Cancel();
+            _hostStartSource.Dispose();
+            _hostStartSource = null;
+        }
+
+        /// <summary>True unless the host endpoint belongs to a local server that has since died.</summary>
+        private bool IsHostEndpointLive() {
+            if (hostingMode != SessionHostingMode.LocalServerProcess) return true;
+
+            return _localServer != null && _localServer.Endpoint.IsValid;
         }
 
         /// <summary>
@@ -928,11 +981,13 @@ namespace AlpineLib.Sessions {
                 _sessionClient = null;
             }
 
-            _replication?.Dispose();
-            _replication = null;
-
+            // Claims first: disposing them raises OnClaimLost, and a handler that reacts by looking at
+            // the world reads Replication.LocalPeerId — which a disposed replication no longer answers.
             _claims?.Dispose();
             _claims = null;
+
+            _replication?.Dispose();
+            _replication = null;
 
             _frontDesk?.Close(reason);
             _frontDesk = null;
@@ -943,6 +998,10 @@ namespace AlpineLib.Sessions {
             _collisionWorld = null;
             _currentSceneName = string.Empty;
             _hostEndpoint = NetEndpoint.None;
+
+            // Before the shutdown: a host request still waiting on readiness has to fail now, not when
+            // its budget runs out, or the menu sits on "starting a train…" for a session already gone.
+            CancelHostStart();
 
             _networkService?.Shutdown();
 

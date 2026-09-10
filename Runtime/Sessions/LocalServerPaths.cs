@@ -28,11 +28,11 @@ namespace AlpineLib.Sessions {
         /// Levels between a macOS player's data path and the folder the <c>.app</c> bundle sits in.
         /// </summary>
         /// <remarks>
-        /// A macOS build buries its data inside the bundle, so the bundled server folder is reached by
-        /// walking back out of it, unlike Windows and Linux where the data folder is a single sibling
-        /// step away from the executable.
+        /// A macOS player's data path <em>is</em> <c>&lt;Game&gt;.app/Contents</c>, so one step up reaches
+        /// the bundle itself and a second reaches the folder the bundle sits in. Windows and Linux need
+        /// only one step, their data folder being a sibling of the executable.
         /// </remarks>
-        private const int MacBundleDepth = 3;
+        private const int MacBundleDepth = 2;
 
         /// <summary>
         /// The directory the server executable lives in: the project-relative publish output in the
@@ -89,7 +89,12 @@ namespace AlpineLib.Sessions {
             return Path.GetFullPath(Path.Combine(basePath, relativePath));
         }
 
-        private static bool IsWindows() {
+        /// <summary>True when this process runs on Windows.</summary>
+        /// <remarks>
+        /// Two things hang off it and neither is about paths alone: the executable gains a
+        /// <c>.exe</c> suffix, and Windows has no POSIX process group for a launcher to reap.
+        /// </remarks>
+        public static bool IsWindows() {
             RuntimePlatform platform = Application.platform;
 
             return platform == RuntimePlatform.WindowsPlayer

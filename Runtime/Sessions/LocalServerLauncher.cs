@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Threading;
@@ -9,8 +8,6 @@ using UnityEngine;
 #if UNITY_EDITOR
 using UnityEditor;
 #endif
-using DataReceivedEventArgs = System.Diagnostics.DataReceivedEventArgs;
-using Process = System.Diagnostics.Process;
 using ProcessStartInfo = System.Diagnostics.ProcessStartInfo;
 
 namespace AlpineLib.Sessions {
@@ -35,7 +32,8 @@ namespace AlpineLib.Sessions {
     /// Everything about the lifetime is defensive, because an orphaned server holds the port and the
     /// next launch inherits the failure. It dies with the process, with a domain reload and with play
     /// mode, and the server is additionally told to exit on its own after an idle stretch in case all
-    /// three are skipped by a crash.
+    /// three are skipped by a crash. Each try lives in its own <see cref="LocalServerAttempt"/>, so a
+    /// superseded attempt can only ever reap the process it started itself.
     /// </para>
     /// </remarks>
     public sealed class LocalServerLauncher : IDisposable {
@@ -44,21 +42,26 @@ namespace AlpineLib.Sessions {
 
         private const string ReadyPortToken = "port=";
         private const string LoopbackHost = "127.0.0.1";
+        private const string UnixShellPath = "/bin/sh";
+
+        /// <remarks>
+        /// <c>setsid</c> puts the server in a process group of its own, so the launcher can reap that
+        /// whole group rather than one pid and a server's helper processes cannot outlive it. It is not
+        /// on every host — macOS ships without it — hence the plain exec behind it; a server that ends
+        /// up sharing this process's group is killed by pid instead.
+        /// </remarks>
+        private const string UnixLaunchScript =
+            "command -v setsid >/dev/null 2>&1 && exec setsid \"$0\" \"$@\"; exec \"$0\" \"$@\"";
+
+        private const int MinPort = 1;
         private const int MaxPort = 65535;
         private const int EphemeralPort = 0;
-        private const int NoPort = -1;
-        private const int DiagnosticLineCount = 20;
-        private const int StopWaitMilliseconds = 2000;
-        private const float MinimumReadyTimeoutSeconds = 1f;
 
         private readonly LocalServerConfig _config;
         private readonly object _gate = new object();
-        private readonly Queue<string> _recentOutputLines = new Queue<string>();
 
-        private Process _process;
-        private TaskCompletionSource<int> _readyPort;
+        private LocalServerAttempt _attempt;
         private NetEndpoint _endpoint;
-        private int _lastExitCode;
         private bool _areHooksInstalled;
         private bool _isDisposed;
 
@@ -68,16 +71,15 @@ namespace AlpineLib.Sessions {
         }
 
         /// <summary>True while a server started by this launcher is still alive.</summary>
-        public bool IsRunning {
-            get {
-                Process process = CurrentProcess();
-
-                return process != null && IsAlive(process);
-            }
-        }
+        public bool IsRunning => CurrentAttempt()?.IsRunning == true;
 
         /// <summary>The endpoint the running server is listening on, or none while there is no server.</summary>
-        public NetEndpoint Endpoint => _endpoint;
+        /// <remarks>
+        /// Gated on the process still being alive: a server that exits on its own — the idle timeout, or
+        /// a crash — leaves an address nothing answers on, and a menu reading that address out to
+        /// friends has to stop offering it the moment it happens.
+        /// </remarks>
+        public NetEndpoint Endpoint => IsRunning ? _endpoint : NetEndpoint.None;
 
         /// <summary>
         /// Starts the server and completes once it has reported the port it is listening on.
@@ -91,48 +93,57 @@ namespace AlpineLib.Sessions {
         /// </remarks>
         public async Task<NetEndpoint> StartAsync(CancellationToken cancellationToken) {
             if (_isDisposed) throw new ObjectDisposedException(nameof(LocalServerLauncher));
-            if (IsRunning && _endpoint.IsValid) return _endpoint;
+
+            NetEndpoint running = Endpoint;
+
+            if (running.IsValid) return running;
+
+            string executablePath = RequireExecutablePath();
 
             InstallLifecycleHooks();
 
-            int port = await RunAttemptAsync(_config.preferredPort, cancellationToken);
+            int preferredPort = _config.ClampedPreferredPort();
+            LocalServerAttempt attempt = await RunAttemptAsync(executablePath, preferredPort, cancellationToken);
+            int port = ReportedPort(attempt);
 
-            if (port == NoPort && _lastExitCode != 0) {
-                Debug.LogWarning($"LocalServerLauncher::StartAsync->The local server exited with code {_lastExitCode} before it was ready on port {_config.preferredPort}; retrying on an ephemeral port.");
-                port = await RunAttemptAsync(EphemeralPort, cancellationToken);
+            if (port == LocalServerAttempt.NoPort && attempt.ExitCode != 0) {
+                Debug.LogWarning($"LocalServerLauncher::StartAsync->The local server {DescribeExit(attempt.ExitCode)} before it was ready on port {preferredPort}; retrying on an ephemeral port.");
+                attempt = await RunAttemptAsync(executablePath, EphemeralPort, cancellationToken);
+                port = ReportedPort(attempt);
             }
 
-            if (port == NoPort) {
+            if (port == LocalServerAttempt.NoPort) {
                 throw new InvalidOperationException(
-                    DescribeFailure($"exited with code {_lastExitCode} before reporting readiness"));
+                    DescribeFailure(attempt, DescribeExit(attempt.ExitCode) + " before reporting readiness"));
             }
 
-            _endpoint = NetEndpoint.Direct(LoopbackHost, port);
-            return _endpoint;
+            if (!TryAdoptEndpoint(attempt, port, out NetEndpoint endpoint)) {
+                throw new InvalidOperationException(
+                    DescribeFailure(attempt, "was replaced by a newer launch before it was ready"));
+            }
+
+            return endpoint;
         }
 
         /// <summary>
         /// Kills the server and forgets it. Safe to call when there is nothing running, and safe to
         /// call twice — both happen, because it is wired to several shutdown signals that overlap.
         /// </summary>
+        /// <remarks>
+        /// A start still waiting on readiness ends here too, and ends promptly: the attempt settles its
+        /// own promise as it dies, so a host request abandoned by teardown or by leaving play mode
+        /// reports failure at once rather than after the whole readiness budget.
+        /// </remarks>
         public void Stop() {
-            Process process;
+            LocalServerAttempt attempt;
 
             lock (_gate) {
-                process = _process;
-                _process = null;
+                attempt = _attempt;
+                _attempt = null;
+                _endpoint = NetEndpoint.None;
             }
 
-            _endpoint = NetEndpoint.None;
-
-            if (process == null) return;
-
-            process.OutputDataReceived -= HandleOutputLine;
-            process.ErrorDataReceived -= HandleErrorLine;
-            process.Exited -= HandleProcessExited;
-
-            KillAndWait(process);
-            process.Dispose();
+            attempt?.Stop();
         }
 
         /// <inheritdoc />
@@ -169,11 +180,16 @@ namespace AlpineLib.Sessions {
             return TryParsePort(remainder.Substring(ReadyPortToken.Length).TrimEnd(), out port);
         }
 
+        /// <remarks>
+        /// Zero is rejected as hard as a malformed line. A bound socket always knows its port, so
+        /// <c>port=0</c> means the server echoed the request instead of the result, and accepting it
+        /// hands the caller an endpoint nothing is listening on — reported as success.
+        /// </remarks>
         private static bool TryParsePort(string value, out int port) {
             port = 0;
 
             if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out int parsed)) return false;
-            if (parsed > MaxPort) return false;
+            if (parsed < MinPort || parsed > MaxPort) return false;
 
             port = parsed;
             return true;
@@ -183,178 +199,158 @@ namespace AlpineLib.Sessions {
         /// Runs one launch attempt: starts the process and waits for readiness, the process dying, the
         /// timeout, or the caller giving up.
         /// </summary>
-        /// <returns>The port the server reported, or <see cref="NoPort"/> when it exited first.</returns>
-        private async Task<int> RunAttemptAsync(int port, CancellationToken cancellationToken) {
-            StartProcess(port);
-
-            Task<int> readySignal = _readyPort.Task;
+        private async Task<LocalServerAttempt> RunAttemptAsync(string executablePath, int port, CancellationToken cancellationToken) {
+            LocalServerAttempt attempt = StartAttempt(executablePath, port);
 
             using (var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)) {
-                Task first = await Task.WhenAny(readySignal, Task.Delay(ReadyTimeoutMilliseconds(), timeoutSource.Token));
+                Task first = await Task.WhenAny(attempt.ReadyPort, Task.Delay(ReadyTimeoutMilliseconds(), timeoutSource.Token));
                 timeoutSource.Cancel();
 
-                if (ReferenceEquals(first, readySignal)) return await readySignal;
+                if (ReferenceEquals(first, attempt.ReadyPort)) return attempt;
             }
 
-            Stop();
+            StopAttempt(attempt);
             cancellationToken.ThrowIfCancellationRequested();
 
+            throw new InvalidOperationException(DescribeFailure(attempt,
+                $"did not report readiness within {DescribeReadyTimeout()} s"));
+        }
+
+        /// <summary>Reads a settled attempt's port, turning a stop mid-wait into a launcher failure.</summary>
+        private int ReportedPort(LocalServerAttempt attempt) {
+            if (!attempt.ReadyPort.IsCanceled) return attempt.ReadyPort.Result;
+
             throw new InvalidOperationException(
-                DescribeFailure($"did not report readiness within {_config.readyTimeoutSeconds.ToString("0.#", CultureInfo.InvariantCulture)} s"));
+                DescribeFailure(attempt, "was stopped before it reported readiness"));
         }
 
         /// <summary>Spawns the server with stdout and stderr redirected, replacing anything still running.</summary>
-        private void StartProcess(int port) {
+        private LocalServerAttempt StartAttempt(string executablePath, int port) {
             Stop();
 
-            string executablePath = LocalServerPaths.ResolveExecutablePath(_config);
-
-            if (!File.Exists(executablePath)) {
-                throw new InvalidOperationException(
-                    $"LocalServerLauncher::StartProcess->No server executable at '{executablePath}'; publish the dedicated server before hosting one locally.");
-            }
+            var attempt = new LocalServerAttempt(BuildStartInfo(executablePath, port));
 
             lock (_gate) {
-                _recentOutputLines.Clear();
+                _attempt = attempt;
             }
 
-            _lastExitCode = 0;
-            _readyPort = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            attempt.Start();
+            return attempt;
+        }
 
-            var process = new Process {
-                StartInfo = BuildStartInfo(executablePath, port),
-                EnableRaisingEvents = true
-            };
+        /// <summary>Stops one attempt, and forgets it only if it is still the live one.</summary>
+        /// <remarks>
+        /// The guard is the point. A superseded attempt reaches its timeout long after a newer one has
+        /// taken over, and without this it would kill a server somebody is already playing on.
+        /// </remarks>
+        private void StopAttempt(LocalServerAttempt attempt) {
+            lock (_gate) {
+                if (ReferenceEquals(_attempt, attempt)) {
+                    _attempt = null;
+                    _endpoint = NetEndpoint.None;
+                }
+            }
 
-            process.OutputDataReceived += HandleOutputLine;
-            process.ErrorDataReceived += HandleErrorLine;
-            process.Exited += HandleProcessExited;
+            attempt.Stop();
+        }
 
-            process.Start();
-            _process = process;
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
+        /// <summary>Publishes a ready attempt's endpoint, unless a newer attempt has already taken over.</summary>
+        private bool TryAdoptEndpoint(LocalServerAttempt attempt, int port, out NetEndpoint endpoint) {
+            endpoint = NetEndpoint.Direct(LoopbackHost, port);
+
+            lock (_gate) {
+                if (!ReferenceEquals(_attempt, attempt)) return false;
+
+                _endpoint = endpoint;
+                return true;
+            }
+        }
+
+        /// <remarks>
+        /// Checked before the lifecycle hooks are installed, so a launcher that never had a server to
+        /// lose does not leave itself subscribed to a static event.
+        /// </remarks>
+        private string RequireExecutablePath() {
+            string executablePath = LocalServerPaths.ResolveExecutablePath(_config);
+
+            if (File.Exists(executablePath)) return executablePath;
+
+            throw new InvalidOperationException(
+                $"LocalServerLauncher::RequireExecutablePath->No server executable at '{executablePath}'; publish the dedicated server before hosting one locally.");
         }
 
         private ProcessStartInfo BuildStartInfo(string executablePath, int port) {
-            return new ProcessStartInfo {
-                FileName = executablePath,
-                Arguments = BuildArguments(port),
+            var startInfo = new ProcessStartInfo {
                 WorkingDirectory = LocalServerPaths.ResolveServerDirectory(_config),
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             };
+
+            AppendCommand(startInfo, executablePath);
+            AppendArguments(startInfo, port);
+
+            return startInfo;
         }
 
-        private string BuildArguments(int port) {
-            string configDirectory = LocalServerPaths.ResolveConfigDirectory(_config);
+        /// <summary>Names the program to run, through a shell on POSIX so the server leads its own group.</summary>
+        private static void AppendCommand(ProcessStartInfo startInfo, string executablePath) {
+            if (LocalServerPaths.IsWindows()) {
+                startInfo.FileName = executablePath;
+                return;
+            }
 
-            return "--port " + port.ToString(CultureInfo.InvariantCulture)
-                + " --config \"" + configDirectory + "\""
-                + " --idle-exit-seconds " + _config.idleExitSeconds.ToString(CultureInfo.InvariantCulture);
+            startInfo.FileName = UnixShellPath;
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add(UnixLaunchScript);
+            startInfo.ArgumentList.Add(executablePath);
         }
 
         /// <remarks>
-        /// Both of these arrive on a thread pool thread. Nothing here touches Unity objects, and the
-        /// completion is handed back through a task whose continuation the caller's synchronisation
-        /// context — the main thread, for a service awaiting this from <c>Update</c> — resumes.
+        /// Built as a list rather than one command line: the config directory is an authored path that
+        /// can hold spaces or quotes, and hand-quoting it is a seam with nothing on the other side to
+        /// catch a mistake.
         /// </remarks>
-        private void HandleOutputLine(object sender, DataReceivedEventArgs eventArgs) {
-            if (eventArgs.Data == null) return;
-
-            RecordLine(eventArgs.Data);
-
-            if (!TryParseReadinessLine(eventArgs.Data, out int port)) return;
-
-            _readyPort?.TrySetResult(port);
+        private void AppendArguments(ProcessStartInfo startInfo, int port) {
+            startInfo.ArgumentList.Add("--port");
+            startInfo.ArgumentList.Add(port.ToString(CultureInfo.InvariantCulture));
+            startInfo.ArgumentList.Add("--config");
+            startInfo.ArgumentList.Add(LocalServerPaths.ResolveConfigDirectory(_config));
+            startInfo.ArgumentList.Add("--idle-exit-seconds");
+            startInfo.ArgumentList.Add(_config.ClampedIdleExitSeconds().ToString(CultureInfo.InvariantCulture));
         }
 
-        private void HandleErrorLine(object sender, DataReceivedEventArgs eventArgs) {
-            if (eventArgs.Data == null) return;
+        private static string DescribeExit(int exitCode) {
+            if (exitCode == LocalServerAttempt.UnknownExitCode) return "exited with an unreadable exit code";
 
-            RecordLine(eventArgs.Data);
+            return "exited with code " + exitCode.ToString(CultureInfo.InvariantCulture);
         }
 
-        private void HandleProcessExited(object sender, EventArgs eventArgs) {
-            _lastExitCode = ReadExitCode(sender as Process);
-
-            // Resolving rather than faulting: a server that died before readiness is an outcome the
-            // caller retries, not an exception it has to catch to make a decision with.
-            _readyPort?.TrySetResult(NoPort);
+        /// <remarks>
+        /// Quotes the budget that was actually waited out, floor included: a message naming an authored
+        /// 0.2 s after a one-second wait sends the reader looking for the wrong problem.
+        /// </remarks>
+        private string DescribeReadyTimeout() {
+            return _config.ClampedReadyTimeoutSeconds().ToString("0.#", CultureInfo.InvariantCulture);
         }
 
-        private static int ReadExitCode(Process process) {
-            if (process == null) return 0;
-
-            try {
-                return process.ExitCode;
-            } catch (InvalidOperationException) {
-                return 0;
-            }
-        }
-
-        /// <summary>Keeps the tail of the server's output for a failure message nobody can otherwise see.</summary>
-        private void RecordLine(string line) {
-            lock (_gate) {
-                _recentOutputLines.Enqueue(line);
-
-                while (_recentOutputLines.Count > DiagnosticLineCount) {
-                    _recentOutputLines.Dequeue();
-                }
-            }
-        }
-
-        private string DescribeFailure(string what) {
+        private string DescribeFailure(LocalServerAttempt attempt, string what) {
             string executablePath = LocalServerPaths.ResolveExecutablePath(_config);
 
             return $"LocalServerLauncher->The local server at '{executablePath}' {what}."
                 + Environment.NewLine
-                + "Last server output:" + Environment.NewLine + RecentOutput();
-        }
-
-        private string RecentOutput() {
-            lock (_gate) {
-                if (_recentOutputLines.Count == 0) return "(none)";
-
-                return string.Join(Environment.NewLine, _recentOutputLines.ToArray());
-            }
+                + "Last server output (stdout and stderr, interleaved by arrival):"
+                + Environment.NewLine + attempt.RecentOutput();
         }
 
         private int ReadyTimeoutMilliseconds() {
-            float seconds = Mathf.Max(_config.readyTimeoutSeconds, MinimumReadyTimeoutSeconds);
-
-            return Mathf.RoundToInt(seconds * 1000f);
+            return Mathf.RoundToInt(_config.ClampedReadyTimeoutSeconds() * 1000f);
         }
 
-        private Process CurrentProcess() {
+        private LocalServerAttempt CurrentAttempt() {
             lock (_gate) {
-                return _process;
-            }
-        }
-
-        private static bool IsAlive(Process process) {
-            try {
-                return !process.HasExited;
-            } catch (InvalidOperationException) {
-                return false;
-            }
-        }
-
-        /// <remarks>
-        /// Best effort on purpose: the process may have died between the check and the kill, and a
-        /// server that is already gone is the outcome this method wanted anyway.
-        /// </remarks>
-        private static void KillAndWait(Process process) {
-            try {
-                if (!process.HasExited) {
-                    process.Kill();
-                }
-
-                process.WaitForExit(StopWaitMilliseconds);
-            } catch (Exception exception) {
-                Debug.LogWarning($"LocalServerLauncher::KillAndWait->Could not stop the local server cleanly: {exception.Message}");
+                return _attempt;
             }
         }
 

@@ -20,7 +20,25 @@ namespace AlpineLib.Sessions {
     /// </remarks>
     [CreateAssetMenu(fileName = "LocalServerConfig", menuName = "AlpineLib/Networking/Local Server Config")]
     public class LocalServerConfig : ScriptableObject {
+        /// <summary>Lowest port that can be asked for; zero means "any free port".</summary>
+        public const int MinimumPort = 0;
+
+        /// <summary>Highest port a UDP socket can bind.</summary>
+        public const int MaximumPort = 65535;
+
+        /// <summary>
+        /// Floor on the readiness wait, in seconds.
+        /// </summary>
+        /// <remarks>
+        /// A shorter budget cannot be honoured anyway: process spawn plus a socket bind costs a good
+        /// fraction of a second on a cold cache, so anything below this only ever reports a false
+        /// timeout for a server that was about to answer.
+        /// </remarks>
+        public const float MinimumReadyTimeoutSeconds = 1f;
+
         [Header("Executable")]
+        // Name the server binary itself, not a script that forks it: on Windows only the launched
+        // process is killed, so a wrapper's child would outlive the game and keep holding the port.
         [Tooltip("File name of the published server, without an extension. '.exe' is appended on Windows.")]
         public string executableName = "Game.Server";
         [Tooltip("Project-relative directory the editor launches the server from, usually a publish output.")]
@@ -29,11 +47,34 @@ namespace AlpineLib.Sessions {
         public string bundledServerFolderName = "Server";
 
         [Header("Launch")]
-        [Tooltip("Port the server is asked to bind. Taken ports fall back to an ephemeral one automatically.")]
+        // Not a Range: a 0..65535 slider is unusable for picking a port. The upper end is clamped in
+        // code instead.
+        [Min(MinimumPort)]
+        [Tooltip("Port the server is asked to bind. Taken ports fall back to an ephemeral one automatically. 0 asks for any free port.")]
         public int preferredPort = 9050;
+        [Min(MinimumReadyTimeoutSeconds)]
         [Tooltip("How long to wait for the server's readiness line before giving up and killing it.")]
         public float readyTimeoutSeconds = 15f;
+        [Min(0)]
         [Tooltip("Seconds with no players after which the server exits on its own, so a crashed client leaves nothing behind.")]
         public int idleExitSeconds = 30;
+
+        /// <summary>The preferred port, forced into the range a socket can actually bind.</summary>
+        public int ClampedPreferredPort() {
+            if (preferredPort < MinimumPort) return MinimumPort;
+            if (preferredPort > MaximumPort) return MaximumPort;
+
+            return preferredPort;
+        }
+
+        /// <summary>The idle-exit budget, never negative.</summary>
+        public int ClampedIdleExitSeconds() {
+            return idleExitSeconds < 0 ? 0 : idleExitSeconds;
+        }
+
+        /// <summary>The readiness budget actually waited out, floor applied.</summary>
+        public float ClampedReadyTimeoutSeconds() {
+            return readyTimeoutSeconds < MinimumReadyTimeoutSeconds ? MinimumReadyTimeoutSeconds : readyTimeoutSeconds;
+        }
     }
 }

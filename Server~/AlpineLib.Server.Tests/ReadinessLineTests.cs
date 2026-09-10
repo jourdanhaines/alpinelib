@@ -9,7 +9,6 @@ namespace AlpineLib.Server.Tests {
     /// </summary>
     public sealed class ReadinessLineTests {
         [Theory]
-        [InlineData(0)]
         [InlineData(1)]
         [InlineData(7777)]
         [InlineData(65535)]
@@ -27,6 +26,7 @@ namespace AlpineLib.Server.Tests {
 
         [Theory]
         [InlineData(-1)]
+        [InlineData(0)]
         [InlineData(65536)]
         public void FormatRejectsPortsOutsideTheUdpRange(int port) {
             Assert.Throws<ArgumentOutOfRangeException>(() => ReadinessLine.Format(port));
@@ -47,6 +47,7 @@ namespace AlpineLib.Server.Tests {
         [InlineData("[ready] port=")]
         [InlineData("[ready] port=abc")]
         [InlineData("[ready] port=-1")]
+        [InlineData("[ready] port=0")]
         [InlineData("[ready] port=65536")]
         [InlineData("not [ready] port=7777")]
         public void TryParseRejectsAnythingElse(string line) {

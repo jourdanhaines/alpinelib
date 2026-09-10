@@ -24,12 +24,18 @@ namespace AlpineLib.Server.Hosting {
         public const string Prefix = "[ready]";
 
         private const string PortToken = "port=";
+        private const int MinPort = 1;
         private const int MaxPort = 65535;
 
         /// <summary>Renders the readiness line for a server listening on <paramref name="port"/>.</summary>
+        /// <remarks>
+        /// Zero is out of range even though a socket can be <em>asked</em> to bind it: this line reports
+        /// the port that was bound, and a bound socket always has a real one. Announcing zero would hand
+        /// a launcher an endpoint nothing is listening on, dressed up as success.
+        /// </remarks>
         public static string Format(int port) {
-            if (port < 0 || port > MaxPort) {
-                throw new ArgumentOutOfRangeException(nameof(port), port, "Port must be in 0..65535.");
+            if (port < MinPort || port > MaxPort) {
+                throw new ArgumentOutOfRangeException(nameof(port), port, "Port must be in 1..65535.");
             }
 
             return Prefix + " " + PortToken + port.ToString(CultureInfo.InvariantCulture);
@@ -67,7 +73,7 @@ namespace AlpineLib.Server.Hosting {
                 return false;
             }
 
-            if (parsed > MaxPort) {
+            if (parsed < MinPort || parsed > MaxPort) {
                 return false;
             }
 
