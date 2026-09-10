@@ -228,7 +228,6 @@ namespace AlpineLib.Sessions {
             string joinCode = _joinCodeGenerator.Generate();
 
             _host = new SessionHost(LocalSessionId, joinCode, _config, _server);
-            _host.OnMemberNeedsKeyframe += HandleMemberNeedsKeyframe;
             _host.Open();
 
             _replication = new ServerReplication(
@@ -246,6 +245,10 @@ namespace AlpineLib.Sessions {
             _replication.UseWorld(_collisionWorld);
 
             _pawnSpawner = new SessionPawnSpawner(_host, _replication, _pawnPrefabId, _pawnAuthority, _spawnPlacement);
+
+            // Subscribed after the spawner because subscription order is invocation order: a newcomer has
+            // to be told the world exists before it is told who is holding what in it.
+            _host.OnMemberNeedsKeyframe += HandleMemberNeedsKeyframe;
         }
 
         private void AttachPeer(PeerHandle peer, PlayerIdentity identity) {

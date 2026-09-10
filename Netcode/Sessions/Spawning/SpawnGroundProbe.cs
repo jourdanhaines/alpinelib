@@ -38,12 +38,6 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
             _belowMetres = belowMetres;
         }
 
-        /// <summary>How far above the nominal spawn plane this probe starts.</summary>
-        public float AboveMetres => _aboveMetres;
-
-        /// <summary>How far below the nominal spawn plane this probe reaches.</summary>
-        public float BelowMetres => _belowMetres;
-
         /// <summary>A grounded, walking, world-space pawn state dropped onto whatever the scene puts under it.</summary>
         public PawnState BuildStandingState(CollisionWorld world, Vector3 nominalPosition, float yawDegrees, uint serverTick) {
             float height = ResolveHeight(world, nominalPosition.X, nominalPosition.Z, nominalPosition.Y, serverTick);

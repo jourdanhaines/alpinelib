@@ -74,9 +74,16 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
         /// Stops reacting to the session and forgets which pawn belonged to whom.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// The pawns themselves are left alone. Disposal happens when the session is closing and the whole
         /// world is about to go with it, and despawning here would broadcast a departure for every member
         /// to clients that are being told the session has ended in the same breath.
+        /// </para>
+        /// <para>
+        /// The flag is checked in the handlers as well as unhooked here, because unsubscribing does not
+        /// retract a raise already under way: a co-subscriber of the same membership event that closes the
+        /// session would otherwise still get a pawn spawned behind it, into a world about to be discarded.
+        /// </para>
         /// </remarks>
         public void Dispose() {
             if (_isDisposed) {
@@ -96,17 +103,46 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
         /// dropped, so both paths spawn: the seat came back, the body did not.
         /// </summary>
         private void HandleMemberJoined(SessionMember member, bool isRejoin) {
-            if (member == null) {
+            if (_isDisposed || member == null) {
                 return;
             }
 
             DespawnPawnFor(member.PlayerId);
 
-            PawnState spawnState = _placement.NextSpawnState(member, isRejoin, _replication.World, _replication.CurrentTick);
+            PawnState spawnState = ResolveSpawnState(member, isRejoin);
             NetEntity pawn = _replication.SpawnEntity(_prefabId, member.PeerId, _authority, in spawnState);
+
+            // The spawn raises its own event, and a handler there is free to dispose us mid-flight;
+            // recording afterwards would put a row back into a map disposal had just cleared.
+            if (_isDisposed) {
+                return;
+            }
+
             _pawnByPlayer[member.PlayerId] = pawn.Id;
 
             OnPawnSpawned?.Invoke(member, pawn);
+        }
+
+        /// <summary>
+        /// Asks the placement where the arrival goes, and pins the answer to a frame the authority mode
+        /// allows.
+        /// </summary>
+        /// <remarks>
+        /// A placement is game code called from inside a membership event. Replication refuses a
+        /// server-simulated entity in a carrier's frame, and letting that throw would unwind out of
+        /// <see cref="SessionHost.AnnounceArrival"/> with the member already seated and announced — a
+        /// player holding an empty world forever because nobody ever sent it one. Coercing costs a
+        /// misplaced pawn at worst; throwing costs the join.
+        /// </remarks>
+        private PawnState ResolveSpawnState(SessionMember member, bool isRejoin) {
+            PawnState spawnState = _placement.NextSpawnState(
+                member, isRejoin, _replication.World, _replication.CurrentTick);
+
+            if (_authority != AuthorityMode.Server || !spawnState.IsCarrierRelative) {
+                return spawnState;
+            }
+
+            return spawnState.WithCarrier(PawnState.WorldCarrierId);
         }
 
         /// <summary>
@@ -114,7 +150,7 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
         /// answering.
         /// </summary>
         private void HandleMemberLeft(SessionMember member, LeaveReason reason) {
-            if (member == null) {
+            if (_isDisposed || member == null) {
                 return;
             }
 
@@ -123,7 +159,7 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
 
         /// <summary>Sends the world in full to a member the session says needs it.</summary>
         private void HandleMemberNeedsKeyframe(SessionMember member) {
-            if (member == null || member.PeerId == SessionMember.NoPeerId) {
+            if (_isDisposed || member == null || member.PeerId == SessionMember.NoPeerId) {
                 return;
             }
 

@@ -8,9 +8,16 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
     /// Seats arrivals evenly around a ring centred on the origin.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The default placement, and the one a scene with no authored markers gets. It needs nothing from
     /// the scene but its floor, so a session can open before anybody has exported geometry for it and
     /// still put its members somewhere sensible rather than all on the same spot.
+    /// </para>
+    /// <para>
+    /// Seats are handed out, never returned: the count is of arrivals ever, not of members present, so a
+    /// lobby with churn puts arrival nine on top of whoever is standing at seat zero. A scene that cares
+    /// authors markers and uses <see cref="ListSpawnPlacement"/>, whose overflow widens instead.
+    /// </para>
     /// </remarks>
     public sealed class RingSpawnPlacement : ISpawnPlacement {
         /// <summary>Radius of the ring arrivals are placed on, so two pawns never spawn inside each other.</summary>
@@ -50,8 +57,11 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
 
         /// <inheritdoc />
         public PawnState NextSpawnState(SessionMember member, bool isRejoin, CollisionWorld world, uint serverTick) {
-            float angleRadians = _nextSeat % _seats * (2f * MathF.PI / _seats);
-            _nextSeat++;
+            float angleRadians = _nextSeat * (2f * MathF.PI / _seats);
+
+            // Wrapped on the increment rather than on read: a counter that only ever grew would run past
+            // int.MaxValue in a session that never closes and start mirroring the ring.
+            _nextSeat = (_nextSeat + 1) % _seats;
 
             float x = MathF.Cos(angleRadians) * _radiusMetres;
             float z = MathF.Sin(angleRadians) * _radiusMetres;

@@ -16,6 +16,13 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
     /// Implementations are stateful by design: consecutive calls are expected to hand out different
     /// places, so two players joining in the same tick never stand inside each other.
     /// </para>
+    /// <para>
+    /// <b>Answer in world space under server authority.</b> A carrier-relative state is only meaningful for
+    /// an owner-simulated pawn, so a server-authority session downgrades one to world space rather than
+    /// letting replication refuse the spawn — the call happens inside a membership event, and a throw there
+    /// leaves the member seated and announced with no body and no world. The numbers are kept as given, so
+    /// a placement that means "two metres along this train car" must do the maths into world space itself.
+    /// </para>
     /// </remarks>
     public interface ISpawnPlacement {
         /// <summary>

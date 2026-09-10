@@ -18,21 +18,35 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
     /// other side of the platform.
     /// </para>
     /// <para>
+    /// <b>How the overflow spreads out.</b> Arrival <i>n</i> beyond the authored list takes overflow seat
+    /// <i>n</i>, and the seat alone fixes both the direction and the distance: the angle is seat
+    /// <c>n % OverflowSeats</c> of an eight-seat ring turned half a seat off the axes, and the radius grows
+    /// by <see cref="OverflowRadiusMetres"/> every revolution. Seeding from the arrival rather than the lap
+    /// matters because a lap-only offset shifted every authored point by the same vector, so a row of
+    /// markers a lap-radius apart overlapped itself; the half-seat turn keeps the ring off +X and +Z, which
+    /// is where hand-authored rows live. Because the radius grows, positions never repeat — no arrival
+    /// count puts two pawns on the same spot.
+    /// </para>
+    /// <para>
     /// The authored height is a nominal plane, not the answer: every point is probed against the scene's
-    /// collision the same way the ring placement probes the origin plane.
+    /// collision the same way the ring placement probes the origin plane. The probe reaches much further
+    /// down than up, so a marker authored more than the probe's upward reach <i>below</i> the real floor
+    /// keeps its nominal height and its pawn spawns inside the geometry. Authoring tools should warn on
+    /// that rather than expecting the probe to rescue it.
     /// </para>
     /// </remarks>
     public sealed class ListSpawnPlacement : ISpawnPlacement {
-        /// <summary>How far from its point an overflow arrival stands, in metres.</summary>
+        /// <summary>How far from its point the first revolution of overflow arrivals stands, in metres.</summary>
         public const float OverflowRadiusMetres = 1.5f;
 
-        /// <summary>Seats on the overflow ring around one point before they repeat.</summary>
+        /// <summary>Seats on one revolution of the overflow ring, after which it widens rather than repeats.</summary>
         public const int OverflowSeats = 8;
 
         private readonly SpawnPoint[] _points;
         private readonly SpawnGroundProbe _probe;
 
-        private int _nextIndex;
+        // Counted as a long so a session that never closes cannot wrap the ordinal into a negative index.
+        private long _nextArrival;
 
         /// <summary>Builds a placement over an authored list.</summary>
         /// <param name="points">The points, in the order arrivals take them. Never null or empty.</param>
@@ -57,31 +71,39 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
 
         /// <inheritdoc />
         public PawnState NextSpawnState(SessionMember member, bool isRejoin, CollisionWorld world, uint serverTick) {
-            int index = _nextIndex % _points.Length;
-            int lap = _nextIndex / _points.Length;
-            _nextIndex++;
+            long arrival = _nextArrival;
+            _nextArrival++;
 
-            SpawnPoint point = _points[index];
-            Vector3 nominal = point.Position + ResolveOverflowOffset(lap);
+            SpawnPoint point = _points[(int)(arrival % _points.Length)];
+
+            // The first pass over the list takes the points verbatim, so the overflow seat only starts
+            // counting once every authored point has been handed out.
+            Vector3 nominal = point.Position + ResolveOverflowOffset(arrival - _points.Length);
 
             return _probe.BuildStandingState(world, nominal, point.YawDegrees, serverTick);
         }
 
         /// <summary>
-        /// Where an arrival stands relative to its point. The first lap takes the point itself; later ones
-        /// take a seat on a small ring around it, so a list shorter than the roster still keeps bodies
-        /// apart.
+        /// Where an overflow arrival stands relative to its point: a seat on a ring that turns half a seat
+        /// off the axes and widens by <see cref="OverflowRadiusMetres"/> each revolution, so no two
+        /// arrivals ever share a place however long the session runs.
         /// </summary>
-        private static Vector3 ResolveOverflowOffset(int lap) {
-            if (lap <= 0) {
+        /// <param name="overflowSeat">The arrival's ordinal past the authored list. Negative on the first pass.</param>
+        private static Vector3 ResolveOverflowOffset(long overflowSeat) {
+            if (overflowSeat < 0L) {
                 return Vector3.Zero;
             }
 
-            float angleRadians = (lap - 1) % OverflowSeats * (2f * MathF.PI / OverflowSeats);
+            long revolution = overflowSeat / OverflowSeats;
+            long seatOnRing = overflowSeat % OverflowSeats;
+
+            float angleRadians = (seatOnRing + 0.5f) * (2f * MathF.PI / OverflowSeats);
+            float radiusMetres = OverflowRadiusMetres * (1f + revolution);
+
             return new Vector3(
-                MathF.Cos(angleRadians) * OverflowRadiusMetres,
+                MathF.Cos(angleRadians) * radiusMetres,
                 0f,
-                MathF.Sin(angleRadians) * OverflowRadiusMetres);
+                MathF.Sin(angleRadians) * radiusMetres);
         }
 
         /// <summary>
