@@ -30,13 +30,33 @@ namespace AlpineLib.Netcode.Sessions.Claims {
     /// session a peer belongs to, and calls <see cref="HandleClaimRequest"/> and
     /// <see cref="HandleClaimRelease"/> on the right registry.
     /// </para>
+    /// <para>
+    /// <b>What a request may name is bounded.</b> A slot number arrives from a client, so a modded one can
+    /// name all 65536 of them and cost the session a dictionary entry and a reliable broadcast for each.
+    /// Requests off the wire are therefore filtered twice — by the game's own <c>isSlotValid</c>, and by
+    /// <see cref="MaxSlots"/> — and a refusal is silent: no verdict, no reply, no throw, so a client
+    /// learns nothing it can grind against and a legitimate one cannot be knocked over by a neighbour.
+    /// The host's own <see cref="TryClaim"/> is not filtered; seating a driver is the host's business.
+    /// </para>
     /// </remarks>
     public sealed class ServerClaimRegistry {
         /// <summary>Holder id of a slot nobody holds. Matches <see cref="PeerHandle.None"/>.</summary>
         public const int FreeHolderPeerId = -1;
 
+        /// <summary>
+        /// How many distinct slots this session will hold on behalf of its clients at once.
+        /// </summary>
+        /// <remarks>
+        /// A ceiling rather than a tuning knob: a game with more than a thousand simultaneously held
+        /// levers has outgrown a per-slot broadcast, and every number under the cap still costs a client
+        /// nothing but the request. Once the map is full, a request for a slot nobody holds is refused;
+        /// re-claiming a slot already in the map always gets through, so the cap cannot strand a holder.
+        /// </remarks>
+        public const int MaxSlots = 1024;
+
         private readonly NetServer server;
         private readonly Func<IReadOnlyList<PeerHandle>> peerSource;
+        private readonly Func<ushort, bool> isSlotValid;
         private readonly Dictionary<ushort, int> holders = new Dictionary<ushort, int>();
 
         private bool isAttachedToRouter;
@@ -47,9 +67,18 @@ namespace AlpineLib.Netcode.Sessions.Claims {
         /// The session's connected peers, re-read on every send. It is a delegate rather than a list so
         /// that a roster change is seen without the registry having to be told about it.
         /// </param>
-        public ServerClaimRegistry(NetServer server, Func<IReadOnlyList<PeerHandle>> peerSource) {
+        /// <param name="isSlotValid">
+        /// Which slot numbers this session's clients are allowed to name — a train with four cars might
+        /// answer only for the levers those cars have. Null accepts every number up to
+        /// <see cref="MaxSlots"/>, which is what a game that has not decided yet gets.
+        /// </param>
+        public ServerClaimRegistry(
+            NetServer server,
+            Func<IReadOnlyList<PeerHandle>> peerSource,
+            Func<ushort, bool> isSlotValid = null) {
             this.server = server ?? throw new ArgumentNullException(nameof(server));
             this.peerSource = peerSource ?? throw new ArgumentNullException(nameof(peerSource));
+            this.isSlotValid = isSlotValid;
         }
 
         /// <summary>A slot changed hands: the slot, and its new holder or -1 when it went free.</summary>
@@ -59,6 +88,7 @@ namespace AlpineLib.Netcode.Sessions.Claims {
         public IReadOnlyList<PeerHandle> Peers => peerSource() ?? Array.Empty<PeerHandle>();
 
         /// <summary>Every held slot and its holder. Free slots are absent rather than mapped to -1.</summary>
+        /// <remarks>The live map, not a copy: claiming or releasing while walking it throws.</remarks>
         public IReadOnlyDictionary<ushort, int> Holders => holders;
 
         /// <summary>True while this instance owns the claim ids on the server's router.</summary>
@@ -132,19 +162,37 @@ namespace AlpineLib.Netcode.Sessions.Claims {
         /// Frees every slot a peer holds — the disconnect and leave path.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// A slot left held by a peer that is gone is unrecoverable without this: nobody else may release
         /// it, and the holder can never ask again. Called on both a transport drop and a graceful leave,
         /// because either may happen without the other.
+        /// </para>
+        /// <para>
+        /// Every slot is freed before the first verdict goes out, so a listener on
+        /// <see cref="OnClaimChanged"/> — a game seating the next driver the moment the last one drops —
+        /// sees the departure as one finished event rather than a map half way through it. A slot that
+        /// listener re-seats keeps its new holder and its own verdict; this loop will not publish a
+        /// freeing that has already been undone.
+        /// </para>
         /// </remarks>
         public void ReleaseAllHeldBy(PeerHandle peer) {
-            // The slots are collected before any of them is freed: the dictionary cannot be written while
-            // it is being walked, and a listener on OnClaimChanged is free to claim or release from inside
-            // the loop, which a reused scratch list would not survive.
             List<ushort> released = SlotsHeldBy(peer);
 
             for (int slotIndex = 0; slotIndex < released.Count; slotIndex++) {
                 ushort slot = released[slotIndex];
-                holders.Remove(slot);
+
+                if (holders.TryGetValue(slot, out int holder) && holder == peer.Id) {
+                    holders.Remove(slot);
+                }
+            }
+
+            for (int slotIndex = 0; slotIndex < released.Count; slotIndex++) {
+                ushort slot = released[slotIndex];
+
+                if (holders.ContainsKey(slot)) {
+                    continue;
+                }
+
                 PublishClaimChanged(slot, FreeHolderPeerId);
             }
         }
@@ -163,13 +211,20 @@ namespace AlpineLib.Netcode.Sessions.Claims {
         /// Sends one peer the current holder of every held slot — the join, rejoin and desync-repair path.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// Free slots are not sent. A client starts with every slot free, and a rejoining one clears its
         /// map before the keyframe arrives, so silence about a slot is already the right answer and
         /// naming every unheld slot would make the keyframe grow with the game's slot space instead of
         /// with what is actually in use.
+        /// </para>
+        /// <para>
+        /// The recipient is checked against the session's roster the way a request's sender is: a
+        /// multi-session front desk that resolves the wrong session would otherwise hand an outsider this
+        /// session's whole holder map, which is the leak the membership rule exists to stop.
+        /// </para>
         /// </remarks>
         public void SendKeyframeTo(PeerHandle peer) {
-            if (!peer.IsValid) {
+            if (!IsSessionPeer(peer)) {
                 return;
             }
 
@@ -183,8 +238,17 @@ namespace AlpineLib.Netcode.Sessions.Claims {
         /// Takes a peer's request for a slot. Public so a multi-session front desk can route to it after
         /// resolving which session the sender belongs to.
         /// </summary>
+        /// <remarks>
+        /// A request the session will not answer — from an outsider, for a number the game does not use,
+        /// or one slot past the cap — is dropped where it lands. See the note on the type for why the
+        /// refusal says nothing back.
+        /// </remarks>
         public void HandleClaimRequest(in ClaimRequest message, PeerHandle sender) {
             if (!IsSessionPeer(sender)) {
+                return;
+            }
+
+            if (!IsRequestableSlot(message.Slot)) {
                 return;
             }
 
@@ -201,6 +265,19 @@ namespace AlpineLib.Netcode.Sessions.Claims {
             }
 
             Release(message.Slot, sender);
+        }
+
+        /// <summary>
+        /// Whether a client is allowed to ask for this slot: the game must know the number, and the
+        /// session must have room for it. A slot already in the map is always requestable, so a full map
+        /// never blocks the holder from re-stating a claim it already won.
+        /// </summary>
+        private bool IsRequestableSlot(ushort slot) {
+            if (isSlotValid != null && !isSlotValid(slot)) {
+                return false;
+            }
+
+            return holders.Count < MaxSlots || holders.ContainsKey(slot);
         }
 
         /// <summary>Every slot a peer currently holds, as a list the caller may outlive the walk with.</summary>

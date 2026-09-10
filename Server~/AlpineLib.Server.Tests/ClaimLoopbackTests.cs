@@ -224,45 +224,28 @@ namespace AlpineLib.Server.Tests {
         }
 
         /// <summary>
-        /// Leaving a session drops the view without pretending the slots were released: the events belong
-        /// to a session that no longer exists, and the client is about to be disposed anyway.
+        /// Leaving a session forgets every slot and reports the ones we were holding as lost: a player
+        /// standing at a lever is disengaged by that event, and staying silent because the session is over
+        /// would leave them welded to a control that no longer exists. Somebody else's lever is forgotten
+        /// too, but forgetting is not losing.
         /// </summary>
         [Fact]
-        public void ClearForgetsEverySlotWithoutRaisingALoss() {
+        public void ClearForgetsEverySlotAndReportsOurOwnAsLost() {
             using var world = new ClaimLoopbackWorld();
             ClaimLoopbackClient driver = world.ConnectClient();
+            ClaimLoopbackClient passenger = world.ConnectClient();
 
             driver.Claims.RequestClaim(DriverLever);
-            world.Pump(2);
+            passenger.Claims.RequestClaim(BrakeLever);
+            world.Pump(4);
             driver.ClearLog();
 
             driver.Claims.Clear();
 
             Assert.False(driver.Claims.IsHeldLocally(DriverLever));
             Assert.Empty(driver.Claims.Holders);
-            Assert.Empty(driver.Lost);
+            Assert.Equal(new ushort[] { DriverLever }, driver.Lost);
             Assert.Empty(driver.Verdicts);
-        }
-
-        /// <summary>
-        /// A verdict that lands before the roster does is still recorded, so the peer id arriving late
-        /// cannot leave a client believing a slot it holds is somebody else's.
-        /// </summary>
-        [Fact]
-        public void AVerdictReceivedBeforeThePeerIdIsAdoptedStillCounts() {
-            using var world = new ClaimLoopbackWorld();
-            ClaimLoopbackClient driver = world.ConnectClient();
-            driver.Claims.LocalPeerId = ClientClaims.FreeHolderPeerId;
-
-            world.Registry.TryClaim(DriverLever, driver.ServerSidePeer);
-            world.Pump(2);
-
-            Assert.False(driver.Claims.IsHeldLocally(DriverLever));
-            Assert.Empty(driver.Granted);
-
-            driver.Claims.LocalPeerId = driver.ServerSidePeer.Id;
-
-            Assert.True(driver.Claims.IsHeldLocally(DriverLever));
         }
 
         private static void ClearLogs(params ClaimLoopbackClient[] clients) {

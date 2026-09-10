@@ -125,12 +125,13 @@ namespace AlpineLib.Server.Tests {
         }
 
         /// <summary>
-        /// Retires a dropped peer exactly the way a front desk does: off the roster first, then every slot
-        /// it was holding freed, so the verdicts still reach the members that remain.
+        /// Retires a dropped peer exactly the way a front desk does: every slot it was holding freed
+        /// first, while it is still on the roster, and only then taken off it. The copy of the free
+        /// verdict addressed to the dead peer is part of what the shipped path does.
         /// </summary>
         private void HandlePeerDisconnected(PeerHandle peer, DisconnectReason reason) {
-            _sessionPeers.Remove(peer);
             _registry.ReleaseAllHeldBy(peer);
+            _sessionPeers.Remove(peer);
         }
 
         /// <summary>The handle of the peer that just joined, whatever kind of peer it happens to be.</summary>

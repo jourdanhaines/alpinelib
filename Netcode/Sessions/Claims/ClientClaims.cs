@@ -22,9 +22,10 @@ namespace AlpineLib.Netcode.Sessions.Claims {
     /// </para>
     /// <para>
     /// <see cref="LocalPeerId"/> is what separates "somebody holds it" from "I hold it", and it is only
-    /// known once the server has put this client on a roster. Verdicts that arrive before it is set are
-    /// still recorded, but raise no grant or loss — which is why whoever owns this object should adopt
-    /// the peer id on the same event it adopts replication's.
+    /// known once the server has put this client on a roster. A verdict that lands before then is recorded
+    /// but belongs to nobody in particular; learning the id re-reads what is already held and raises the
+    /// grants that were waiting on it, so a game may adopt the id whenever its own plumbing knows it
+    /// instead of having to beat the first verdict to the pump.
     /// </para>
     /// </remarks>
     public sealed class ClientClaims : IDisposable {
@@ -34,13 +35,12 @@ namespace AlpineLib.Netcode.Sessions.Claims {
         private readonly NetClient client;
         private readonly Dictionary<ushort, int> holders = new Dictionary<ushort, int>();
 
+        private int localPeerId = FreeHolderPeerId;
         private bool disposed;
 
         /// <summary>Creates the view and starts listening for verdicts on the given connection.</summary>
         public ClientClaims(NetClient client) {
             this.client = client ?? throw new ArgumentNullException(nameof(client));
-
-            LocalPeerId = FreeHolderPeerId;
 
             client.Router.Register<ClaimChanged>(ClaimMessageIds.ClaimChanged, HandleClaimChanged);
         }
@@ -55,9 +55,18 @@ namespace AlpineLib.Netcode.Sessions.Claims {
         public event Action<ushort> OnClaimLost;
 
         /// <summary>Which peer this client is, or -1 before the server has said.</summary>
-        public int LocalPeerId { get; set; }
+        /// <remarks>
+        /// Setting this re-reads the map: slots already held by the new id are granted, slots held by the
+        /// old one are lost. Without that a verdict that arrived before the roster did would leave the
+        /// client silently holding a lever it was never told it had.
+        /// </remarks>
+        public int LocalPeerId {
+            get => localPeerId;
+            set => AdoptLocalPeerId(value);
+        }
 
         /// <summary>Every held slot and its holder. Free slots are absent rather than mapped to -1.</summary>
+        /// <remarks>The live map, not a copy: mutating the view while walking it throws.</remarks>
         public IReadOnlyDictionary<ushort, int> Holders => holders;
 
         /// <summary>Asks the server for a slot. Nothing changes here until the verdict arrives.</summary>
@@ -88,14 +97,29 @@ namespace AlpineLib.Netcode.Sessions.Claims {
         }
 
         /// <summary>
-        /// Forgets every slot without raising anything. Used when leaving a session or before rebuilding
-        /// on rejoin, where a loss event would be about a session that no longer exists.
+        /// Forgets every slot, reporting the ones we were holding as lost.
         /// </summary>
+        /// <remarks>
+        /// Leaving a session is a loss like any other from the game's side: a player standing at a lever
+        /// is disengaged by <see cref="OnClaimLost"/>, and staying silent here because the session is over
+        /// would leave that player welded to a control that no longer exists. The map is emptied before
+        /// the first event, so a handler that reads the view sees the session already gone.
+        /// </remarks>
         public void Clear() {
+            List<ushort> lost = LocallyHeldSlots();
             holders.Clear();
+
+            RaiseSlots(OnClaimLost, lost);
         }
 
-        /// <inheritdoc />
+        /// <summary>
+        /// Stops listening and drops the view, reporting every slot we were holding as lost.
+        /// </summary>
+        /// <remarks>
+        /// A teardown reaches the game the same way a kick does — through <see cref="OnClaimLost"/> — so
+        /// whoever is standing at a lever is disengaged by the same path either way and needs no separate
+        /// shutdown hook of its own.
+        /// </remarks>
         public void Dispose() {
             if (disposed) {
                 return;
@@ -136,17 +160,65 @@ namespace AlpineLib.Netcode.Sessions.Claims {
         /// are.
         /// </summary>
         private void RaiseLocalTransition(ushort slot, int previousHolder, int newHolder) {
-            if (LocalPeerId < 0) {
+            if (localPeerId < 0) {
                 return;
             }
 
-            if (newHolder == LocalPeerId) {
+            if (newHolder == localPeerId) {
                 OnClaimGranted?.Invoke(slot);
                 return;
             }
 
-            if (previousHolder == LocalPeerId) {
+            if (previousHolder == localPeerId) {
                 OnClaimLost?.Invoke(slot);
+            }
+        }
+
+        /// <summary>
+        /// Takes on a new identity and re-reads the map through it, so that slots already recorded turn
+        /// into the grants and losses the game would have heard had the id been known all along.
+        /// </summary>
+        private void AdoptLocalPeerId(int peerId) {
+            if (peerId == localPeerId) {
+                return;
+            }
+
+            List<ushort> lost = LocallyHeldSlots();
+            localPeerId = peerId;
+            List<ushort> granted = LocallyHeldSlots();
+
+            RaiseSlots(OnClaimLost, lost);
+            RaiseSlots(OnClaimGranted, granted);
+        }
+
+        /// <summary>
+        /// Every slot the current identity holds, snapshotted: an event handler may claim, release or
+        /// change identity again from inside the walk that follows.
+        /// </summary>
+        private List<ushort> LocallyHeldSlots() {
+            var slots = new List<ushort>();
+
+            if (localPeerId < 0) {
+                return slots;
+            }
+
+            foreach (KeyValuePair<ushort, int> held in holders) {
+                if (held.Value == localPeerId) {
+                    slots.Add(held.Key);
+                }
+            }
+
+            return slots;
+        }
+
+        /// <summary>Raises one event over a snapshot of slots.</summary>
+        private void RaiseSlots(Action<ushort> handler, List<ushort> slots) {
+            if (handler == null) {
+                return;
+            }
+
+            for (int slotIndex = 0; slotIndex < slots.Count; slotIndex++) {
+                handler(slots[slotIndex]);
             }
         }
     }

@@ -205,7 +205,6 @@ namespace AlpineLib.Sessions {
 
             if (_host != null) {
                 _host.OnMemberNeedsKeyframe -= HandleMemberNeedsKeyframe;
-                _host.OnMemberLeft -= HandleMemberLeft;
                 _host.Close(reason);
                 _host = null;
             }
@@ -230,7 +229,6 @@ namespace AlpineLib.Sessions {
 
             _host = new SessionHost(LocalSessionId, joinCode, _config, _server);
             _host.OnMemberNeedsKeyframe += HandleMemberNeedsKeyframe;
-            _host.OnMemberLeft += HandleMemberLeft;
             _host.Open();
 
             _replication = new ServerReplication(
@@ -310,9 +308,19 @@ namespace AlpineLib.Sessions {
             _host.HandleClientReady(sender, in message);
         }
 
+        /// <summary>
+        /// Sees a member out, freeing the levers it was holding on the way.
+        /// </summary>
+        /// <remarks>
+        /// A graceful leave never touches the transport, so the disconnect path may not run for this peer
+        /// at all — and the host retires the member before it announces the departure, which zeroes the
+        /// peer id. This is the last place the handle still exists, so it is the only place the slots can
+        /// be freed by name.
+        /// </remarks>
         private void HandleLeaveNotice(in LeaveNotice message, PeerHandle sender) {
             if (_host == null) return;
 
+            _claims?.ReleaseAllHeldBy(sender);
             _host.HandleLeaveNotice(sender);
         }
 
@@ -321,21 +329,6 @@ namespace AlpineLib.Sessions {
             _replication?.OnPeerLeft(peer);
             _claims?.ReleaseAllHeldBy(peer);
             _host?.DetachPeer(peer, LeaveReason.TransportLost);
-        }
-
-        /// <summary>
-        /// Frees the claim slots of a member the session has finished with, so a leave does not leave a
-        /// lever nobody can take. The body that member was standing in is the spawner's business.
-        /// </summary>
-        /// <remarks>
-        /// The host retires a member before it raises this and retiring clears the peer id, so the release
-        /// only bites where the event still carries one. A graceful leave is covered by the disconnect
-        /// that follows it, which frees the same slots through <see cref="HandlePeerDisconnected"/>.
-        /// </remarks>
-        private void HandleMemberLeft(SessionMember member, LeaveReason reason) {
-            if (member == null || member.PeerId == SessionMember.NoPeerId) return;
-
-            _claims?.ReleaseAllHeldBy(new PeerHandle(member.PeerId));
         }
 
         /// <summary>
