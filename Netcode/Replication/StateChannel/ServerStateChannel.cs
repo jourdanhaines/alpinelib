@@ -45,8 +45,17 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
     /// <b>Retirement rides the record, not a message of its own.</b> <see cref="Remove"/> puts a
     /// retired record on the wire and the client forgets the subject. The retirement is repeated until
     /// the next keyframe has carried it reliably, because the dirty broadcast it first went out on is
-    /// unreliable and a client that missed it would hold a ghost forever. It is stamped no earlier than
-    /// the last state published for that subject, so the client can order it against what it holds.
+    /// unreliable and a client that missed it would hold a ghost forever. It is stamped with the tick of
+    /// the publish that carries it, which under <see cref="Set"/>'s contract is later than every state
+    /// already published for that subject, so the client can order the two.
+    /// </para>
+    /// <para>
+    /// <b>One tick counter, and it is the server's.</b> Every tick this channel handles — on a state, on
+    /// a retirement, on an envelope — comes from <c>NetServer.Tick</c>. The client orders a retirement
+    /// against the state it holds by comparing those numbers, so a game stamping <see cref="Set"/> from
+    /// a simulation counter of its own would be handing the client two clocks and asking it to compare
+    /// them. <see cref="Set"/> refuses a tick that cannot have come from the server's counter rather
+    /// than letting one reach the wire.
     /// </para>
     /// <para>
     /// <b>The game's own codec runs on the receive path.</b> A client decodes
@@ -77,7 +86,6 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         private readonly ushort messageId;
         private readonly List<ushort> ids = new List<ushort>();
         private readonly List<ushort> retiredIds = new List<ushort>();
-        private readonly Dictionary<ushort, uint> retiredTickFloors = new Dictionary<ushort, uint>();
         private readonly Dictionary<ushort, StateEntry> entriesById = new Dictionary<ushort, StateEntry>();
         private readonly HashSet<ushort> dirtyIds = new HashSet<ushort>();
         private readonly List<StateChannelRecord<TState>> records = new List<StateChannelRecord<TState>>();
@@ -87,6 +95,9 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         private double snapshotAccumulatorSeconds;
         private double keyframeAccumulatorSeconds;
         private uint currentTick;
+        private uint lastServerTick;
+        private uint lastPublishedTick;
+        private bool hasServerTick;
 
         /// <summary>Creates a channel publishing under one game-owned message id.</summary>
         /// <param name="server">The facade the session broadcasts through.</param>
@@ -135,15 +146,33 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         /// time joins the end of the wire order and stays there.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// A state is identified by its subject and its tick together, and a client drops a record whose
         /// tick it already holds. Always stamp the tick the state was computed at: restating one tick
         /// with a new payload publishes nothing.
+        /// </para>
+        /// <para>
+        /// <b>The tick must be the server's.</b> It has to come from the same counter this channel is
+        /// ticked and published with — <c>NetServer.Tick</c>, the value handed to
+        /// <see cref="Tick(uint, float)"/> — because the client orders a retirement against a state by
+        /// comparing the two numbers, and numbers from two counters do not compare. The rule is enforced
+        /// rather than trusted: a tick below the last publish, or more than one past the last tick the
+        /// channel was driven with, throws. One past is allowed because a game normally computes the
+        /// state for tick N and hands it over before pumping the channel for N. Nothing is checked until
+        /// the channel has been driven or published once, since until then there is no server tick to
+        /// check against.
+        /// </para>
         /// </remarks>
+        /// <exception cref="ArgumentException">
+        /// The tick did not come from the server's counter: it is older than the last publish or further
+        /// ahead than the next one.
+        /// </exception>
         public void Set(ushort id, in TState state, uint tick) {
+            GuardServerTick(tick);
+
             if (!entriesById.ContainsKey(id)) {
                 ids.Add(id);
                 retiredIds.Remove(id);
-                retiredTickFloors.Remove(id);
             }
 
             entriesById[id] = new StateEntry(state, tick);
@@ -161,14 +190,13 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         /// the client already holds, exactly as a plain restatement does.
         /// </remarks>
         public bool Remove(ushort id) {
-            if (!entriesById.TryGetValue(id, out StateEntry entry)) {
+            if (!entriesById.ContainsKey(id)) {
                 return false;
             }
 
             entriesById.Remove(id);
             ids.Remove(id);
             dirtyIds.Remove(id);
-            retiredTickFloors[id] = entry.Tick;
 
             if (!retiredIds.Contains(id)) {
                 retiredIds.Add(id);
@@ -204,6 +232,7 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         /// <param name="serverTick">The authoritative tick counter, from <c>NetServer.Tick</c>.</param>
         /// <param name="deltaSeconds">Wall time since the previous call, which drives the send cadences.</param>
         public void Tick(uint serverTick, float deltaSeconds) {
+            NoteServerTick(serverTick);
             currentTick = serverTick;
             snapshotAccumulatorSeconds += deltaSeconds;
             keyframeAccumulatorSeconds += deltaSeconds;
@@ -247,6 +276,8 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
                 return;
             }
 
+            NotePublishTick(tick);
+
             BuildRecords(onlyDirty: true, retireTick: tick);
             BroadcastRecords(tick, DeliveryClass.Unreliable);
             dirtyIds.Clear();
@@ -263,11 +294,12 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
                 return;
             }
 
+            NotePublishTick(tick);
+
             BuildRecords(onlyDirty: false, retireTick: tick);
             BroadcastRecords(tick, DeliveryClass.ReliableOrdered);
             dirtyIds.Clear();
             retiredIds.Clear();
-            retiredTickFloors.Clear();
         }
 
         /// <summary>
@@ -307,28 +339,63 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
 
             for (int retiredIndex = 0; retiredIndex < retiredIds.Count; retiredIndex++) {
                 ushort retiredId = retiredIds[retiredIndex];
-                records.Add(StateChannelRecord<TState>.Retired(retiredId, RetireTickFor(retiredId, retireTick)));
+                records.Add(StateChannelRecord<TState>.Retired(retiredId, retireTick));
             }
         }
 
         /// <summary>
-        /// The tick a retirement goes out stamped with: the publish tick, or the retired subject's own
-        /// last state tick when that is later.
+        /// Refuses a state tick that cannot have come from the server's counter, so the client is never
+        /// asked to order two clocks against each other.
         /// </summary>
         /// <remarks>
-        /// The client drops a retirement older than the state it holds, which is what stops a reordered
-        /// one from deleting a subject the server has since restated. That comparison is only sound if a
-        /// retirement can never be older than the last state published for the same subject, and the two
-        /// ticks do not have to come from the same counter: <see cref="Set"/> takes whatever tick the
-        /// game computed the state at, while a publish is stamped with the server's. Raising the floor
-        /// here keeps the ordering rule true whatever clock the game stamps with.
+        /// Two bounds, both of them things the server itself knows. Below the last publish the state is
+        /// describing a moment already on the wire, and a retirement published later would outrank it on
+        /// the client for no reason the game intended. Above the next tick it is describing a moment the
+        /// server has not reached, and the retirement of a subject restated at that tick could never
+        /// catch up with it. A channel neither driven nor published yet has no counter to compare with,
+        /// so the first stamp is taken on trust.
         /// </remarks>
-        private uint RetireTickFor(ushort id, uint retireTick) {
-            if (!retiredTickFloors.TryGetValue(id, out uint floor) || floor <= retireTick) {
-                return retireTick;
+        private void GuardServerTick(uint tick) {
+            if (!hasServerTick) {
+                return;
             }
 
-            return floor;
+            if (tick < lastPublishedTick) {
+                throw new ArgumentException(
+                    "State tick " + tick.ToString() + " is older than the last publish at "
+                    + lastPublishedTick.ToString()
+                    + ". Stamp a state with the server tick it was computed at, from the same counter this"
+                    + " channel is ticked with.", nameof(tick));
+            }
+
+            if (tick > lastServerTick && tick - lastServerTick > 1u) {
+                throw new ArgumentException(
+                    "State tick " + tick.ToString() + " is past the server tick " + lastServerTick.ToString()
+                    + " this channel was last driven with. Stamp a state with the server tick it was"
+                    + " computed at, from the same counter this channel is ticked with.", nameof(tick));
+            }
+        }
+
+        /// <summary>Records the server tick the channel was last driven with.</summary>
+        private void NoteServerTick(uint serverTick) {
+            hasServerTick = true;
+
+            if (serverTick > lastServerTick) {
+                lastServerTick = serverTick;
+            }
+        }
+
+        /// <summary>
+        /// Records the tick of a publish that actually put records on the wire, which is a server tick
+        /// as well as the floor a later state has to clear. A cadence that fires with nothing to say
+        /// does not raise it: no record went out for a later one to be ordered against.
+        /// </summary>
+        private void NotePublishTick(uint tick) {
+            NoteServerTick(tick);
+
+            if (tick > lastPublishedTick) {
+                lastPublishedTick = tick;
+            }
         }
 
         /// <summary>Sends the built records to the whole session, split across datagram-sized envelopes.</summary>

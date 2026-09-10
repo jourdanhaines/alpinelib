@@ -112,15 +112,17 @@ namespace AlpineLib.Server.Tests {
             using var world = new LoopbackWorld();
             ChannelClient client = world.ConnectClient();
 
-            world.Channel.Set(7, Moving(10f), 100u);
+            uint tick = world.ServerTick;
+            world.Channel.Set(7, Moving(10f), tick);
+            world.Channel.BroadcastDirty(tick);
             world.Pump(3);
             Assert.True(client.Channel.TryGet(7, out _, out uint held));
-            Assert.Equal(100u, held);
+            Assert.Equal(tick, held);
 
-            // The retire record is stamped with the broadcast tick; force it to the tick the client
-            // already holds, which is the one value the stale-drop would refuse for a state record.
+            // The retire record is stamped with the broadcast tick; publish it by hand at the tick the
+            // client already holds, which is the one value the stale-drop would refuse for a state.
             world.Channel.Remove(7);
-            world.Channel.BroadcastDirty(100u);
+            world.Channel.BroadcastDirty(tick);
             world.Pump(1);
 
             Assert.False(client.Channel.TryGet(7, out _, out _));
@@ -133,7 +135,7 @@ namespace AlpineLib.Server.Tests {
             using var world = new LoopbackWorld();
             ChannelClient client = world.ConnectClient();
 
-            world.Channel.Set(7, Moving(10f), 100u);
+            world.SetState(7, Moving(10f));
             world.Pump(3);
 
             world.Channel.Remove(7);
@@ -155,11 +157,11 @@ namespace AlpineLib.Server.Tests {
             WireSpy spy = world.ConnectSpy();
             ChannelClient client = world.ConnectClient();
 
-            world.Channel.Set(7, Moving(10f), 100u);
+            world.SetState(7, Moving(10f));
             world.Pump(3);
 
             world.Channel.Remove(7);
-            world.Channel.Set(7, Moving(20f), 101u);
+            uint resurrectionTick = world.SetState(7, Moving(20f));
             Assert.Empty(world.Channel.RetiringIds);
 
             world.Pump(3);
@@ -168,7 +170,7 @@ namespace AlpineLib.Server.Tests {
             Assert.Empty(client.Removals);
             Assert.True(client.Channel.TryGet(7, out StateChannelTestState state, out uint tick));
             Assert.Equal(20f, state.Distance);
-            Assert.Equal(101u, tick);
+            Assert.Equal(resurrectionTick, tick);
         }
 
         [Fact]
@@ -176,41 +178,46 @@ namespace AlpineLib.Server.Tests {
             using var world = new LoopbackWorld();
             ChannelClient client = world.ConnectClient();
 
-            world.Channel.Set(7, Moving(10f), 100u);
+            world.SetState(7, Moving(10f));
             world.Pump(3);
 
             world.Channel.Remove(7);
             world.Pump(3);
             Assert.Single(client.Removals);
 
-            world.Channel.Set(7, Moving(30f), 101u);
+            uint resurrectionTick = world.SetState(7, Moving(30f));
             world.Pump(3);
 
             Assert.True(client.Channel.TryGet(7, out StateChannelTestState state, out uint tick));
             Assert.Equal(30f, state.Distance);
-            Assert.Equal(101u, tick);
+            Assert.Equal(resurrectionTick, tick);
             Assert.Single(client.Removals);
         }
 
         [Fact]
-        public void ASubjectResurrectedAtATickAlreadyPublishedIsStillSeenBecauseTheClientDroppedIt() {
+        public void ASubjectResurrectedAtTheTickThatRetiredItIsStillSeenBecauseTheClientDroppedIt() {
             using var world = new LoopbackWorld();
             ChannelClient client = world.ConnectClient();
 
-            world.Channel.Set(7, Moving(10f), 100u);
+            world.SetState(7, Moving(10f));
             world.Pump(3);
 
             world.Channel.Remove(7);
             world.Pump(3);
 
+            // Publish the retirement repeat by hand so the floor is exactly here, then resurrect at
+            // that same tick — the lowest a state may still be stamped.
+            uint tick = world.ServerTick;
+            world.Channel.BroadcastDirty(tick);
+
             // The equal-tick drop cannot bite here: the client no longer holds the subject, so the
             // record takes the "first time seen" branch rather than the comparison.
-            world.Channel.Set(7, Moving(55f), 100u);
+            world.Channel.Set(7, Moving(55f), tick);
             world.Pump(3);
 
-            Assert.True(client.Channel.TryGet(7, out StateChannelTestState state, out uint tick));
+            Assert.True(client.Channel.TryGet(7, out StateChannelTestState state, out uint held));
             Assert.Equal(55f, state.Distance);
-            Assert.Equal(100u, tick);
+            Assert.Equal(tick, held);
         }
 
         [Fact]
@@ -218,13 +225,15 @@ namespace AlpineLib.Server.Tests {
             using var world = new LoopbackWorld();
             ChannelClient client = world.ConnectClient();
 
-            world.Channel.Set(7, Moving(10f), 100u);
+            uint tick = world.ServerTick;
+            world.Channel.Set(7, Moving(10f), tick);
+            world.Channel.BroadcastDirty(tick);
             world.Pump(3);
 
-            // Remove and Set in the same frame: no retire record is ever built, so the client still
-            // holds tick 100 and a resurrection stamped with it publishes nothing at all.
+            // Remove and Set at the same tick: no retire record is ever built, so the client still
+            // holds that tick and a resurrection stamped with it publishes nothing at all.
             world.Channel.Remove(7);
-            world.Channel.Set(7, Moving(99f), 100u);
+            world.Channel.Set(7, Moving(99f), tick);
             world.Pump(3);
 
             Assert.True(client.Channel.TryGet(7, out StateChannelTestState state, out _));
@@ -239,7 +248,7 @@ namespace AlpineLib.Server.Tests {
             client.Channel.Updated += (id, state, tick) => rosterSizes.Add(client.Channel.Ids.Count);
 
             for (ushort id = 1; id <= 200; id++) {
-                world.Channel.Set(id, Moving(id), 100u);
+                world.SetState(id, Moving(id));
             }
 
             world.Pump(3);
@@ -292,7 +301,7 @@ namespace AlpineLib.Server.Tests {
             WireSpy spy = world.ConnectSpy();
 
             for (ushort id = 1; id <= 200; id++) {
-                world.Channel.Set(id, Moving(id), 100u);
+                world.SetState(id, Moving(id));
             }
 
             world.Pump(3);
@@ -307,7 +316,7 @@ namespace AlpineLib.Server.Tests {
             using var world = new LoopbackWorld();
             ChannelClient client = world.ConnectClient();
 
-            world.Channel.Set(7, Moving(10f), 100u);
+            world.SetState(7, Moving(10f));
             world.Pump(150);
 
             Assert.Single(client.Updates);
@@ -320,10 +329,13 @@ namespace AlpineLib.Server.Tests {
             WireSpy spy = world.ConnectSpy();
             ChannelClient client = world.ConnectClient();
 
-            world.Channel.Set(7, Moving(10f), 100u);
+            uint tick = world.ServerTick;
+            world.Channel.Set(7, Moving(10f), tick);
+            world.Channel.BroadcastDirty(tick);
             world.Pump(3);
 
-            world.Channel.Set(7, Moving(999f), 100u);
+            world.Channel.Set(7, Moving(999f), tick);
+            world.Channel.BroadcastDirty(tick);
             world.Pump(3);
 
             // FINDING (documented, not a defect): the bandwidth is spent — the record goes out — and
@@ -656,6 +668,16 @@ namespace AlpineLib.Server.Tests {
 
             /// <summary>The channel under test.</summary>
             public ServerStateChannel<StateChannelTestState> Channel { get; }
+
+            /// <summary>The tick the server is on — the only tick the channel takes a state at.</summary>
+            public uint ServerTick => server.Tick;
+
+            /// <summary>Stamps a state with the server's current tick and reports which tick that was.</summary>
+            public uint SetState(ushort id, in StateChannelTestState state) {
+                uint tick = server.Tick;
+                Channel.Set(id, state, tick);
+                return tick;
+            }
 
             /// <summary>Dials a client that builds a channel from the wire.</summary>
             public ChannelClient ConnectClient() {

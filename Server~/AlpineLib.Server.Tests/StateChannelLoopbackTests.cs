@@ -32,14 +32,14 @@ namespace AlpineLib.Server.Tests {
             using var world = new LoopbackWorld(AllocatePort());
             WireSpyClient spy = world.ConnectSpy();
 
-            world.Channel.Set(1, Moving(10f), 100u);
-            world.Channel.Set(2, Moving(20f), 100u);
+            world.SetState(1, Moving(10f));
+            world.SetState(2, Moving(20f));
             world.Pump(3);
 
             Assert.Single(spy.Envelopes);
             Assert.Equal(2, spy.Envelopes[0].Records.Count);
 
-            world.Channel.Set(2, Moving(25f), 101u);
+            world.SetState(2, Moving(25f));
             world.Pump(3);
 
             Assert.Equal(2, spy.Envelopes.Count);
@@ -53,8 +53,8 @@ namespace AlpineLib.Server.Tests {
             using var world = new LoopbackWorld(AllocatePort());
             WireSpyClient spy = world.ConnectSpy();
 
-            world.Channel.Set(1, Moving(10f), 100u);
-            world.Channel.Set(2, Moving(20f), 100u);
+            world.SetState(1, Moving(10f));
+            world.SetState(2, Moving(20f));
             world.Pump(3);
 
             Assert.Single(spy.Envelopes);
@@ -78,8 +78,8 @@ namespace AlpineLib.Server.Tests {
             using var world = new LoopbackWorld(AllocatePort());
             ChannelClient early = world.ConnectClient();
 
-            world.Channel.Set(1, Moving(10f), 100u);
-            world.Channel.Set(2, Moving(20f), 100u);
+            uint setTick = world.SetState(1, Moving(10f));
+            world.SetState(2, Moving(20f));
             world.Pump(3);
 
             ChannelClient late = world.ConnectClient();
@@ -95,29 +95,33 @@ namespace AlpineLib.Server.Tests {
 
             Assert.True(late.Channel.TryGet(1, out StateChannelTestState state, out uint tick));
             Assert.Equal(10f, state.Distance);
-            Assert.Equal(100u, tick);
+            Assert.Equal(setTick, tick);
             Assert.Equal(new ushort[] { 1, 2 }, late.Channel.Ids);
             Assert.True(late.Channel.LastServerTick > 0u);
         }
 
+        /// <summary>
+        /// A state older than what is already on the wire is refused where the game stamps it, so the
+        /// client is never asked to choose between two versions of the same subject.
+        /// </summary>
         [Fact]
-        public void ARecordOlderThanTheOneHeldIsDropped() {
+        public void AStateStampedBelowTheLastPublishIsRefusedAndTheHeldStateStands() {
             using var world = new LoopbackWorld(AllocatePort());
             ChannelClient client = world.ConnectClient();
 
-            world.Channel.Set(1, Moving(50f), 200u);
+            uint setTick = world.SetState(1, Moving(50f));
             world.Pump(3);
 
             Assert.True(client.Channel.TryGet(1, out StateChannelTestState current, out uint currentTick));
             Assert.Equal(50f, current.Distance);
-            Assert.Equal(200u, currentTick);
+            Assert.Equal(setTick, currentTick);
 
-            world.Channel.Set(1, Moving(5f), 100u);
+            Assert.Throws<ArgumentException>(() => world.Channel.Set(1, Moving(5f), setTick - 1u));
             world.Pump(3);
 
             Assert.True(client.Channel.TryGet(1, out StateChannelTestState held, out uint heldTick));
             Assert.Equal(50f, held.Distance);
-            Assert.Equal(200u, heldTick);
+            Assert.Equal(setTick, heldTick);
             Assert.Single(client.Updates);
         }
 
@@ -126,12 +130,12 @@ namespace AlpineLib.Server.Tests {
             using var world = new LoopbackWorld(AllocatePort());
             ChannelClient client = world.ConnectClient();
 
-            world.Channel.Set(9, new StateChannelTestState(123.5f, -4.25f, -2), 777u);
+            uint setTick = world.SetState(9, new StateChannelTestState(123.5f, -4.25f, -2));
             world.Pump(3);
 
             Assert.Single(client.Updates);
             Assert.Equal(9, client.Updates[0].Id);
-            Assert.Equal(777u, client.Updates[0].Tick);
+            Assert.Equal(setTick, client.Updates[0].Tick);
             Assert.Equal(123.5f, client.Updates[0].State.Distance);
             Assert.Equal(-4.25f, client.Updates[0].State.Velocity);
             Assert.Equal(-2, client.Updates[0].State.Notch);
@@ -159,8 +163,8 @@ namespace AlpineLib.Server.Tests {
             using var world = new LoopbackWorld(AllocatePort());
             ChannelClient client = world.ConnectClient();
 
-            world.Channel.Set(1, Moving(10f), 100u);
-            world.Channel.Set(2, Moving(20f), 100u);
+            world.SetState(1, Moving(10f));
+            world.SetState(2, Moving(20f));
             world.Pump(3);
 
             Assert.Equal(new ushort[] { 1, 2 }, client.Channel.Ids);
@@ -177,7 +181,7 @@ namespace AlpineLib.Server.Tests {
         public void ARetirementIsRepeatedUntilAKeyframeHasCarriedItReliably() {
             using var world = new LoopbackWorld(AllocatePort());
 
-            world.Channel.Set(1, Moving(10f), 100u);
+            world.SetState(1, Moving(10f));
             world.Pump(3);
 
             world.Channel.Remove(1);
@@ -200,17 +204,17 @@ namespace AlpineLib.Server.Tests {
             using var world = new LoopbackWorld(AllocatePort());
             ChannelClient client = world.ConnectClient();
 
-            world.Channel.Set(1, Moving(10f), 100u);
+            world.SetState(1, Moving(10f));
             world.Pump(3);
 
             world.Channel.Remove(1);
-            world.Channel.Set(1, Moving(30f), 101u);
+            uint resurrectionTick = world.SetState(1, Moving(30f));
             world.Pump(3);
 
             Assert.Empty(client.Removals);
             Assert.True(client.Channel.TryGet(1, out StateChannelTestState held, out uint heldTick));
             Assert.Equal(30f, held.Distance);
-            Assert.Equal(101u, heldTick);
+            Assert.Equal(resurrectionTick, heldTick);
         }
 
         [Fact]
@@ -222,7 +226,7 @@ namespace AlpineLib.Server.Tests {
             const int subjects = 200;
 
             for (ushort id = 1; id <= subjects; id++) {
-                world.Channel.Set(id, Moving(id), 100u);
+                world.SetState(id, Moving(id));
             }
 
             world.Pump(3);
@@ -237,8 +241,8 @@ namespace AlpineLib.Server.Tests {
         public void RemovingASubjectDropsItFromTheServerSideSet() {
             using var world = new LoopbackWorld(AllocatePort());
 
-            world.Channel.Set(1, Moving(10f), 100u);
-            world.Channel.Set(2, Moving(20f), 100u);
+            world.SetState(1, Moving(10f));
+            world.SetState(2, Moving(20f));
 
             Assert.Equal(2, world.Channel.Count);
             Assert.True(world.Channel.Remove(1));
@@ -289,6 +293,16 @@ namespace AlpineLib.Server.Tests {
 
             /// <summary>The channel under test.</summary>
             public ServerStateChannel<StateChannelTestState> Channel => channel;
+
+            /// <summary>The tick the server is on — the only tick the channel takes a state at.</summary>
+            public uint ServerTick => server.Tick;
+
+            /// <summary>Stamps a state with the server's current tick and reports which tick that was.</summary>
+            public uint SetState(ushort id, in StateChannelTestState state) {
+                uint tick = server.Tick;
+                channel.Set(id, state, tick);
+                return tick;
+            }
 
             /// <summary>Builds another channel on this server, for the constructor's own guards.</summary>
             public ServerStateChannel<StateChannelTestState> BuildChannel(ushort messageId) {

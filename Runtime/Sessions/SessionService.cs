@@ -283,14 +283,23 @@ namespace AlpineLib.Sessions {
         /// null to accept every slot number.
         /// </summary>
         /// <remarks>
-        /// Only <see cref="SessionHostingMode.ListenHost"/> reads it, and only when the front desk is
-        /// stood up, so it has to be set before the first host. The other two modes get their rule from
-        /// the server process instead, through <c>ISessionModuleFactory.BuildClaimValidator</c>; this is
-        /// the same delegate, and a game with an authority rule should install it in both places or its
-        /// rule applies in one hosting mode and not the other. Exposed on the concrete type rather than
-        /// the interface because only whoever composes the app root has a rule to hand over.
+        /// Only <see cref="SessionHostingMode.ListenHost"/> reads it, and it is read once, where the
+        /// front desk is built — so it has to be set before each host, and a game that installs its rule
+        /// from a scene component rather than the app root can easily be too late. Setting it while a
+        /// front desk is already standing warns rather than passing silently, because the live session
+        /// keeps the rule it was built with. The other two modes get their rule from the server process
+        /// instead, through <c>ISessionModuleFactory.BuildClaimValidator</c>; this is the same delegate,
+        /// and a game with an authority rule should install it in both places or its rule applies in one
+        /// hosting mode and not the other. Exposed on the concrete type rather than the interface
+        /// because only whoever composes the app root has a rule to hand over.
         /// </remarks>
-        public Func<ushort, PeerHandle, ServerClaimRegistry, bool> ClaimValidator { get; set; }
+        public Func<ushort, PeerHandle, ServerClaimRegistry, bool> ClaimValidator {
+            get => _claimValidator;
+            set {
+                WarnIfClaimValidatorArrivesLate(value);
+                _claimValidator = value;
+            }
+        }
 
         /// <summary>
         /// Where the next <see cref="HostSessionAsync"/> puts its server. Settable so an app root or a
@@ -368,6 +377,7 @@ namespace AlpineLib.Sessions {
         private SessionClient _sessionClient;
         private ClientReplication _replication;
         private ClientClaims _claims;
+        private Func<ushort, PeerHandle, ServerClaimRegistry, bool> _claimValidator;
         private ListenServerFrontDesk _frontDesk;
         private LocalServerLauncher _localServer;
         private LocalServerConfig _launchedServerConfig;
@@ -656,6 +666,23 @@ namespace AlpineLib.Sessions {
                 isClaimAllowed: ClaimValidator);
 
             return LoopbackEndpoint();
+        }
+
+        /// <summary>
+        /// Warns when a claim rule arrives after the front desk that would have read it.
+        /// </summary>
+        /// <remarks>
+        /// The rule is handed to the registry the front desk builds, so a value assigned afterwards
+        /// reaches the next host and not this one. Silence here is an authority hole that looks like a
+        /// working rule; the same delegate arriving twice is not worth a line.
+        /// </remarks>
+        private void WarnIfClaimValidatorArrivesLate(Func<ushort, PeerHandle, ServerClaimRegistry, bool> incoming) {
+            if (_frontDesk == null || incoming == _claimValidator) {
+                return;
+            }
+
+            Debug.LogWarning(
+                "SessionService::ClaimValidator->A listen host is already up; it keeps the claim rule it was built with. Set this before hosting.");
         }
 
         private NetEndpoint LoopbackEndpoint() {

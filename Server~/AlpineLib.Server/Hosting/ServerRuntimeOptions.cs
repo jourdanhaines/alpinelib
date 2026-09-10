@@ -101,19 +101,22 @@ namespace AlpineLib.Server.Hosting {
         /// </summary>
         /// <remarks>
         /// <para>
-        /// The result is absolute and free of <c>.</c> and <c>..</c> segments, because these paths end
+        /// Given something to resolve against — a rooted path, or a relative one and a content root —
+        /// the result is absolute and free of <c>.</c> and <c>..</c> segments, because these paths end
         /// up in operator-facing log lines and in "no session config at X" messages — and
         /// <c>/opt/server/config/../../etc/session-config.json</c> is a sentence nobody can act on. It
         /// also means the same deployment reported from two different working directories reads the
-        /// same. A configured path so malformed that the platform refuses to normalise it throws here,
-        /// at startup, rather than becoming a file-not-found later.
+        /// same. On that arm a configured path so malformed that the platform refuses to normalise it
+        /// throws here, at startup, rather than becoming a file-not-found later.
         /// </para>
         /// <para>
         /// A relative path is only ever joined to the content root; it is never resolved against the
         /// process's working directory. With no content root to join it to there is nothing to
         /// normalise against, so it is handed back exactly as configured rather than being anchored
         /// wherever the launcher happened to be standing — the one way a deployment could name a
-        /// different file from one launch to the next.
+        /// different file from one launch to the next. That arm returns the operator's own text
+        /// unchecked: traversal segments survive it and a path the platform would refuse is not
+        /// discovered until something opens it.
         /// </para>
         /// </remarks>
         public static string ResolvePath(string contentRootPath, string configuredPath) {

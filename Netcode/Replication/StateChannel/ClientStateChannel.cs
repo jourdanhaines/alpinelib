@@ -28,7 +28,10 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
     /// <see cref="Updated"/> once a second forever. The other edge of the same rule: a server that
     /// stamps <c>Set</c> with a tick it has already published publishes nothing, whatever the payload
     /// changed to. A retirement is gated the same way, only strictly: one older than the held state is
-    /// dropped, so a reordered retirement cannot delete a subject the server has since restated.
+    /// dropped, so a reordered retirement cannot delete a subject the server has since restated. That
+    /// rests on the server stamping every state with its own tick counter, which
+    /// <c>ServerStateChannel.Set</c> enforces — the two ticks being compared here are otherwise not
+    /// comparable at all.
     /// </para>
     /// <para>
     /// <b>One channel per connection.</b> The tick floor only means anything within one server's
@@ -192,7 +195,8 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         /// A retirement is stamped with the tick it was published at, so it is subject to the same
         /// reordering as a state: the dirty publish is unreliable and unsequenced, so a retirement can
         /// arrive after a restatement the server made later, and applying it would delete a subject
-        /// that exists until the next keyframe put it back. The comparison is strict where
+        /// that exists until the next keyframe put it back. Both ticks come from the server's one
+        /// counter, which is what makes the comparison mean anything. It is strict where
         /// <see cref="AdoptOverHeld"/>'s is not: a state at the held tick restates what is already
         /// known and is worth nothing, while a retirement at the held tick is a later decision about
         /// that same tick and must win. A retirement for a subject this channel does not hold stays a
