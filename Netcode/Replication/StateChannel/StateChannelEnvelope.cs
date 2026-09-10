@@ -7,11 +7,12 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
     /// </summary>
     /// <remarks>
     /// <para>
-    /// One envelope carries both cadences. The dirty broadcast rides <c>UnreliableSequenced</c> — a lost
-    /// one is superseded before a retransmit could land, but a late one must never overwrite a newer
-    /// one — and the periodic keyframe rides <c>ReliableOrdered</c>. Nothing in the payload says which it
-    /// was, and nothing needs to: every record carries the tick its state was true at, so a client
-    /// resolves a stale line by comparing ticks rather than by trusting the channel it arrived on.
+    /// One envelope carries both cadences. The dirty broadcast rides plain <c>Unreliable</c> — a lost
+    /// one is superseded before a retransmit could land, and a publish that chunks must not be
+    /// sequenced, so both sizes take the same class — and the periodic keyframe rides
+    /// <c>ReliableOrdered</c>. Nothing in the payload says which it was, and nothing needs to: every
+    /// record carries the tick its state was true at, so a client resolves a stale line by comparing
+    /// ticks rather than by trusting the channel it arrived on.
     /// </para>
     /// <para>
     /// <see cref="MaxRecordCount"/> is a decode sanity cap and nothing more: it stops a corrupt length

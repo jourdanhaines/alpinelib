@@ -78,6 +78,19 @@ namespace AlpineLib.Server.Tests {
                 options.ResolveGeometryDirectory("/opt/server"));
         }
 
+        /// <summary>
+        /// With no content root there is nothing to anchor a relative path to, and the working directory
+        /// is not an answer: it would name a different file for a server launched from somewhere else.
+        /// </summary>
+        [Fact]
+        public void ARelativePathWithNoContentRootIsLeftAloneRatherThanTiedToTheWorkingDirectory() {
+            ServerRuntimeOptions options = new ServerRuntimeOptions {
+                GeometryDirectory = Path.Combine("config", "geometry")
+            };
+
+            Assert.Equal(Path.Combine("config", "geometry"), options.ResolveGeometryDirectory(string.Empty));
+        }
+
         /// <summary>A rooted path is normalised too — it is still the thing that goes in the log line.</summary>
         [Fact]
         public void ARootedPathIsNormalisedEvenThoughTheContentRootIsIgnored() {

@@ -27,7 +27,8 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
     /// a keyframe cannot drag a driven train backwards, and a parked subject does not re-raise
     /// <see cref="Updated"/> once a second forever. The other edge of the same rule: a server that
     /// stamps <c>Set</c> with a tick it has already published publishes nothing, whatever the payload
-    /// changed to.
+    /// changed to. A retirement is gated the same way, only strictly: one older than the held state is
+    /// dropped, so a reordered retirement cannot delete a subject the server has since restated.
     /// </para>
     /// <para>
     /// <b>One channel per connection.</b> The tick floor only means anything within one server's
@@ -160,7 +161,7 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         /// <summary>Adopts one record unless it restates a tick already held for that subject.</summary>
         private void ApplyRecord(in StateChannelRecord<TState> record) {
             if (record.IsRetired) {
-                RetireSubject(record.Id);
+                RetireSubject(record);
                 return;
             }
 
@@ -185,17 +186,30 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         }
 
         /// <summary>
-        /// Drops a retired subject. Unconditional on the tick: a retirement is not a state, so there is
-        /// nothing newer it could be losing to, and the server repeats it until a keyframe has carried
-        /// it reliably.
+        /// Drops a retired subject, unless the retirement is older than the state currently held for it.
         /// </summary>
-        private void RetireSubject(ushort id) {
-            if (!entriesById.Remove(id)) {
+        /// <remarks>
+        /// A retirement is stamped with the tick it was published at, so it is subject to the same
+        /// reordering as a state: the dirty publish is unreliable and unsequenced, so a retirement can
+        /// arrive after a restatement the server made later, and applying it would delete a subject
+        /// that exists until the next keyframe put it back. The comparison is strict where
+        /// <see cref="AdoptOverHeld"/>'s is not: a state at the held tick restates what is already
+        /// known and is worth nothing, while a retirement at the held tick is a later decision about
+        /// that same tick and must win. A retirement for a subject this channel does not hold stays a
+        /// no-op, which is what makes the server's repeats until the next keyframe harmless.
+        /// </remarks>
+        private void RetireSubject(in StateChannelRecord<TState> record) {
+            if (!entriesById.TryGetValue(record.Id, out StateEntry held)) {
                 return;
             }
 
-            ids.Remove(id);
-            Removed?.Invoke(id);
+            if (record.Tick < held.Tick) {
+                return;
+            }
+
+            entriesById.Remove(record.Id);
+            ids.Remove(record.Id);
+            Removed?.Invoke(record.Id);
         }
 
         /// <summary>One subject's held state and the tick it was true at.</summary>

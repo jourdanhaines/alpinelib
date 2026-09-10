@@ -100,20 +100,33 @@ namespace AlpineLib.Server.Hosting {
         /// Resolves a configured path against the content root and normalises it. Empty stays empty.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// The result is absolute and free of <c>.</c> and <c>..</c> segments, because these paths end
         /// up in operator-facing log lines and in "no session config at X" messages — and
         /// <c>/opt/server/config/../../etc/session-config.json</c> is a sentence nobody can act on. It
         /// also means the same deployment reported from two different working directories reads the
         /// same. A configured path so malformed that the platform refuses to normalise it throws here,
         /// at startup, rather than becoming a file-not-found later.
+        /// </para>
+        /// <para>
+        /// A relative path is only ever joined to the content root; it is never resolved against the
+        /// process's working directory. With no content root to join it to there is nothing to
+        /// normalise against, so it is handed back exactly as configured rather than being anchored
+        /// wherever the launcher happened to be standing — the one way a deployment could name a
+        /// different file from one launch to the next.
+        /// </para>
         /// </remarks>
         public static string ResolvePath(string contentRootPath, string configuredPath) {
             if (string.IsNullOrWhiteSpace(configuredPath)) {
                 return string.Empty;
             }
 
-            if (Path.IsPathRooted(configuredPath) || string.IsNullOrWhiteSpace(contentRootPath)) {
+            if (Path.IsPathRooted(configuredPath)) {
                 return Path.GetFullPath(configuredPath);
+            }
+
+            if (string.IsNullOrWhiteSpace(contentRootPath)) {
+                return configuredPath;
             }
 
             return Path.GetFullPath(Path.Combine(contentRootPath, configuredPath));

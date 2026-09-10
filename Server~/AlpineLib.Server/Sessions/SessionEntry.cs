@@ -153,12 +153,31 @@ namespace AlpineLib.Server.Sessions {
             }
 
             _replication.Tick(serverTick, deltaSeconds);
-            RunModule(() => _module?.Tick(serverTick, deltaSeconds), "step");
+
+            if (_module == null) {
+                return;
+            }
+
+            try {
+                _module.Tick(serverTick, deltaSeconds);
+            }
+            catch (Exception error) {
+                FaultSession(error, "step");
+            }
         }
 
         /// <summary>A connection was accepted into this session. Told to the game after the roster knows.</summary>
         public void OnPeerJoined(PeerHandle peer) {
-            RunModule(() => _module?.OnPeerJoined(peer), "seat an arrival in");
+            if (_module == null) {
+                return;
+            }
+
+            try {
+                _module.OnPeerJoined(peer);
+            }
+            catch (Exception error) {
+                FaultSession(error, "seat an arrival in");
+            }
         }
 
         /// <summary>
@@ -172,7 +191,17 @@ namespace AlpineLib.Server.Sessions {
         public void OnPeerLeft(PeerHandle peer) {
             _replication.OnPeerLeft(peer);
             _claims.ReleaseAllHeldBy(peer);
-            RunModule(() => _module?.OnPeerLeft(peer), "retire a departure from");
+
+            if (_module == null) {
+                return;
+            }
+
+            try {
+                _module.OnPeerLeft(peer);
+            }
+            catch (Exception error) {
+                FaultSession(error, "retire a departure from");
+            }
         }
 
         /// <summary>Hands a chat frame that arrived on one of this session's connections to the pipeline.</summary>
@@ -215,23 +244,21 @@ namespace AlpineLib.Server.Sessions {
         }
 
         /// <summary>
-        /// Runs one of the game's callbacks at this session's expense rather than the process's.
+        /// Closes this session because the game's own code threw out of one of its callbacks.
         /// </summary>
         /// <remarks>
         /// A module is the game's own code on the loop thread, and the loop's catch-all above this
-        /// stops the whole box: without this guard one player's join throwing on a bad car index would
-        /// take every other session on the server down with it. A throw closes this session and nothing
-        /// else, and the sweep retires it on the next step.
+        /// stops the whole box: without the guards that call this, one player's join throwing on a bad
+        /// car index would take every other session on the server down with it. A throw closes this
+        /// session and nothing else, and the sweep retires it on the next step. Each call site writes
+        /// its own <c>try</c>/<c>catch</c> rather than handing a lambda to a helper, because
+        /// <see cref="Tick"/> runs at the tick rate for every live session and a capturing lambda would
+        /// put a closure and a delegate allocation into that loop for a guard that costs nothing inline.
         /// </remarks>
-        private void RunModule(Action call, string what) {
-            try {
-                call();
-            }
-            catch (Exception error) {
-                _logger.LogError(error, "The game could not {What} session {SessionId}; the session is closing.",
-                    what, _host.SessionId);
-                _host.Close(SessionEndReason.HostClosed);
-            }
+        private void FaultSession(Exception error, string what) {
+            _logger.LogError(error, "The game could not {What} session {SessionId}; the session is closing.",
+                what, _host.SessionId);
+            _host.Close(SessionEndReason.HostClosed);
         }
 
         /// <summary>
@@ -249,9 +276,30 @@ namespace AlpineLib.Server.Sessions {
             catch (Exception) {
                 _disposed = true;
                 UnhookHostEvents();
-                _module.Dispose();
+                DisposeFaultedModule();
                 DisposeOwnedParts();
                 throw;
+            }
+        }
+
+        /// <summary>
+        /// Disposes a module whose <c>Attached</c> threw, without letting a second throw out of it
+        /// strand the entry's own parts.
+        /// </summary>
+        /// <remarks>
+        /// A module that failed to attach is a module in a bad state, so its <c>Dispose</c> is the
+        /// likeliest place for the next failure. Letting that one travel would skip the chat pipeline
+        /// and spawner teardown on an entry already marked disposed, which nobody holds and nobody will
+        /// ever dispose again. The attach failure is the one the caller needs, so this one is only
+        /// logged.
+        /// </remarks>
+        private void DisposeFaultedModule() {
+            try {
+                _module.Dispose();
+            }
+            catch (Exception error) {
+                _logger.LogError(error, "The game's module for session {SessionId} threw while being disposed "
+                    + "after a failed attach.", _host.SessionId);
             }
         }
 

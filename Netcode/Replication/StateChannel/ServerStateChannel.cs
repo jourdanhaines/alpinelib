@@ -37,15 +37,16 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
     /// right for a <typeparamref name="TState"/> whose encoded size varies with its contents — and
     /// packed into as many envelopes as it takes. Both cadences chunk, so a keyframe is bounded the
     /// same way a dirty broadcast is. The one thing chunking cannot rescue is a single record too big
-    /// for an empty datagram; that throws, because no amount of splitting would send it. A dirty
-    /// publish that chunks also drops the sequencer — see <c>BroadcastDirtyRecords</c> — so a reorder
-    /// inside the burst cannot discard the chunks that went out before it.
+    /// for an empty datagram; that throws, because no amount of splitting would send it. Every dirty
+    /// publish rides plain <c>Unreliable</c>, chunked or not — see <see cref="BroadcastDirty"/> — so
+    /// one publish never straddles two delivery classes.
     /// </para>
     /// <para>
     /// <b>Retirement rides the record, not a message of its own.</b> <see cref="Remove"/> puts a
     /// retired record on the wire and the client forgets the subject. The retirement is repeated until
     /// the next keyframe has carried it reliably, because the dirty broadcast it first went out on is
-    /// unreliable and a client that missed it would hold a ghost forever.
+    /// unreliable and a client that missed it would hold a ghost forever. It is stamped no earlier than
+    /// the last state published for that subject, so the client can order it against what it holds.
     /// </para>
     /// <para>
     /// <b>The game's own codec runs on the receive path.</b> A client decodes
@@ -76,6 +77,7 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         private readonly ushort messageId;
         private readonly List<ushort> ids = new List<ushort>();
         private readonly List<ushort> retiredIds = new List<ushort>();
+        private readonly Dictionary<ushort, uint> retiredTickFloors = new Dictionary<ushort, uint>();
         private readonly Dictionary<ushort, StateEntry> entriesById = new Dictionary<ushort, StateEntry>();
         private readonly HashSet<ushort> dirtyIds = new HashSet<ushort>();
         private readonly List<StateChannelRecord<TState>> records = new List<StateChannelRecord<TState>>();
@@ -141,6 +143,7 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
             if (!entriesById.ContainsKey(id)) {
                 ids.Add(id);
                 retiredIds.Remove(id);
+                retiredTickFloors.Remove(id);
             }
 
             entriesById[id] = new StateEntry(state, tick);
@@ -158,12 +161,14 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         /// the client already holds, exactly as a plain restatement does.
         /// </remarks>
         public bool Remove(ushort id) {
-            if (!entriesById.Remove(id)) {
+            if (!entriesById.TryGetValue(id, out StateEntry entry)) {
                 return false;
             }
 
+            entriesById.Remove(id);
             ids.Remove(id);
             dirtyIds.Remove(id);
+            retiredTickFloors[id] = entry.Tick;
 
             if (!retiredIds.Contains(id)) {
                 retiredIds.Add(id);
@@ -220,10 +225,22 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         /// along with any retirement still in flight.
         /// </summary>
         /// <remarks>
+        /// <para>
+        /// The whole publish rides plain <c>Unreliable</c>, one datagram or twenty. <c>UnreliableSequenced</c>
+        /// would suit a publish that always fitted one datagram, but a chunked one must not use it —
+        /// the chunks share a publish tick, so a reorder inside the burst discards the earlier chunks
+        /// outright. Splitting by size would then put single- and multi-chunk publishes on different
+        /// channels, which orders neither against the other; one class for both is the only shape that
+        /// stays coherent. Ordering is the per-record tick's job instead: every record carries the tick
+        /// its state was true at and the client ignores anything not newer than what it holds, for
+        /// retirements as much as for states.
+        /// </para>
+        /// <para>
         /// The dirty set is cleared only once every chunk has gone out. A send that throws — an
         /// oversized record, a transport refusing the datagram — therefore leaves the pending subjects
         /// pending, so the next broadcast republishes them instead of silently dropping a state nobody
         /// will ever hear about again.
+        /// </para>
         /// </remarks>
         public void BroadcastDirty(uint tick) {
             if (dirtyIds.Count == 0 && retiredIds.Count == 0) {
@@ -231,7 +248,7 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
             }
 
             BuildRecords(onlyDirty: true, retireTick: tick);
-            BroadcastDirtyRecords(tick);
+            BroadcastRecords(tick, DeliveryClass.Unreliable);
             dirtyIds.Clear();
         }
 
@@ -250,6 +267,7 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
             BroadcastRecords(tick, DeliveryClass.ReliableOrdered);
             dirtyIds.Clear();
             retiredIds.Clear();
+            retiredTickFloors.Clear();
         }
 
         /// <summary>
@@ -288,38 +306,29 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
             }
 
             for (int retiredIndex = 0; retiredIndex < retiredIds.Count; retiredIndex++) {
-                records.Add(StateChannelRecord<TState>.Retired(retiredIds[retiredIndex], retireTick));
+                ushort retiredId = retiredIds[retiredIndex];
+                records.Add(StateChannelRecord<TState>.Retired(retiredId, RetireTickFor(retiredId, retireTick)));
             }
         }
 
         /// <summary>
-        /// Sends a dirty publish, dropping the sequencer as soon as it takes more than one datagram.
+        /// The tick a retirement goes out stamped with: the publish tick, or the retired subject's own
+        /// last state tick when that is later.
         /// </summary>
         /// <remarks>
-        /// <c>UnreliableSequenced</c> discards a packet that arrives after a later one, which is exactly
-        /// right for a publish that is one datagram: a superseded snapshot is worth nothing. It is
-        /// exactly wrong for a publish split across several, because the chunks share one publish tick
-        /// and a reorder inside the burst throws the earlier chunks away outright — every subject in
-        /// them missing that publish rather than merely arriving late. Plain <c>Unreliable</c> costs
-        /// nothing here: every record carries its own tick and the client already compares on it, so
-        /// the protection the sequencer offered was one the record tick had anyway.
+        /// The client drops a retirement older than the state it holds, which is what stops a reordered
+        /// one from deleting a subject the server has since restated. That comparison is only sound if a
+        /// retirement can never be older than the last state published for the same subject, and the two
+        /// ticks do not have to come from the same counter: <see cref="Set"/> takes whatever tick the
+        /// game computed the state at, while a publish is stamped with the server's. Raising the floor
+        /// here keeps the ordering rule true whatever clock the game stamps with.
         /// </remarks>
-        private void BroadcastDirtyRecords(uint tick) {
-            IReadOnlyList<PeerHandle> targets = Peers;
-            int start = 0;
-            bool isFirstChunk = true;
-
-            while (start < records.Count) {
-                FillChunk(start);
-                start += chunk.Count;
-
-                bool isWholePublish = isFirstChunk && start >= records.Count;
-                isFirstChunk = false;
-
-                DeliveryClass delivery = isWholePublish ? DeliveryClass.UnreliableSequenced : DeliveryClass.Unreliable;
-                var message = new StateChannelEnvelope<TState>(tick, chunk);
-                server.SendToMany(targets, messageId, in message, delivery);
+        private uint RetireTickFor(ushort id, uint retireTick) {
+            if (!retiredTickFloors.TryGetValue(id, out uint floor) || floor <= retireTick) {
+                return retireTick;
             }
+
+            return floor;
         }
 
         /// <summary>Sends the built records to the whole session, split across datagram-sized envelopes.</summary>

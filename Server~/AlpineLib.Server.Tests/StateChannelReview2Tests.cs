@@ -253,23 +253,24 @@ namespace AlpineLib.Server.Tests {
         }
 
         /// <summary>
-        /// A dirty publish that fits one datagram keeps the sequencer, which is what makes a superseded
-        /// snapshot free to throw away.
+        /// A dirty publish that fits one datagram takes the same delivery class a chunked one must, so
+        /// two publishes of different sizes are never on two channels that order neither against the
+        /// other.
         /// </summary>
         [Fact]
-        public void ASingleChunkDirtyPublishStaysSequenced() {
+        public void ASingleChunkDirtyPublishRidesTheSameUnsequencedClassAChunkedOneDoes() {
             using var world = new BulkyWorld();
 
             world.Channel.Set(1, new BulkyState(10), 5u);
             world.Channel.BroadcastDirty(5u);
 
-            Assert.Equal(new[] { DeliveryClass.UnreliableSequenced }, world.Transport.Deliveries);
+            Assert.Equal(new[] { DeliveryClass.Unreliable }, world.Transport.Deliveries);
         }
 
         /// <summary>
-        /// A dirty publish that chunks drops the sequencer for every one of its datagrams: they share a
-        /// publish tick, so a reorder inside the burst would have the sequencer discard the earlier
-        /// chunks outright rather than merely deliver them late.
+        /// A dirty publish that chunks stays off the sequencer for every one of its datagrams: they
+        /// share a publish tick, so a reorder inside the burst would have the sequencer discard the
+        /// earlier chunks outright rather than merely deliver them late.
         /// </summary>
         [Fact]
         public void AChunkedDirtyPublishDropsTheSequencerForTheWholeBurst() {

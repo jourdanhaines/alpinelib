@@ -46,7 +46,9 @@ namespace AlpineLib.Netcode.Sessions.Claims {
     /// an event rather than a timer, so all three outcomes reply: a grant broadcasts
     /// <see cref="Messages.ClaimChanged"/>, a refusal unicasts <see cref="Messages.ClaimDenied"/>, and a
     /// re-request by the peer that already holds the slot unicasts the verdict it already agrees with —
-    /// which changes nothing on the far side but breaks the silence.
+    /// which changes nothing on the far side but breaks the silence. That last arm is answered before
+    /// the filters, so a rule that tightens under a current holder never answers it with a refusal for
+    /// a slot the map still says is theirs.
     /// </para>
     /// </remarks>
     public sealed class ServerClaimRegistry {
@@ -302,23 +304,33 @@ namespace AlpineLib.Netcode.Sessions.Claims {
         /// resolving which session the sender belongs to.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// A request from an outsider is dropped where it lands. Every other outcome answers the sender;
         /// see the note on the type for the three shapes that answer takes.
+        /// </para>
+        /// <para>
+        /// A requester restating a claim it already holds is answered before the validator is consulted.
+        /// A validator may tighten while a slot is held — the host seats a second driver, so the game's
+        /// one-driver rule now refuses that consist — and answering the holder's repeat with a refusal
+        /// for a slot the map still records as theirs would have the client clear a claim it has not
+        /// lost. Taking a slot away is the host's job, through <see cref="Release"/>, not something a
+        /// refusal should do behind its back.
+        /// </para>
         /// </remarks>
         public void HandleClaimRequest(in ClaimRequest message, PeerHandle sender) {
             if (!IsSessionPeer(sender)) {
                 return;
             }
 
-            if (!IsRequestableSlot(message.Slot, sender)) {
-                SendClaimDenied(sender, message.Slot);
+            // Before the validator and before the claim: re-claiming a slot you already hold broadcasts
+            // nothing, so this is the only place the repeat can be told apart from a fresh grant.
+            if (Holder(message.Slot) == sender.Id) {
+                SendClaimChanged(sender, message.Slot, sender.Id);
                 return;
             }
 
-            // Before the claim, not after: re-claiming a slot you already hold broadcasts nothing, so
-            // this is the only place the repeat can be told apart from a fresh grant.
-            if (Holder(message.Slot) == sender.Id) {
-                SendClaimChanged(sender, message.Slot, sender.Id);
+            if (!IsRequestableSlot(message.Slot, sender)) {
+                SendClaimDenied(sender, message.Slot);
                 return;
             }
 
