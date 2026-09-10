@@ -24,8 +24,8 @@ namespace AlpineLib.Networking {
     /// <para>
     /// Possession is polled rather than announced because <see cref="Actor"/> exposes the brain that holds
     /// it as plain state; the check is a single reference comparison and the work behind it runs only on
-    /// the frame the brain actually changes. Left at Unity's default execution order on purpose: the gate
-    /// belongs ahead of the pawn drivers, which are pinned behind it at
+    /// the frame the answer — local or not — actually changes. Left at Unity's default execution order on
+    /// purpose: the gate belongs ahead of the pawn drivers, which are pinned behind it at
     /// <see cref="NetExecutionOrder.PawnDrivers"/>.
     /// </para>
     /// </remarks>
@@ -36,6 +36,7 @@ namespace AlpineLib.Networking {
 
         private Actor _actor;
         private Controller _lastBrain;
+        private bool? _appliedLocalControl;
 
         /// <summary>
         /// True when the brain that has just taken this actor is the local player's.
@@ -66,7 +67,24 @@ namespace AlpineLib.Networking {
             if (ReferenceEquals(brain, _lastBrain)) return;
 
             _lastBrain = brain;
-            SetLocalControlEnabled(IsLocalBrain(brain));
+            ApplyLocalControl(IsLocalBrain(brain));
+        }
+
+        /// <summary>
+        /// Switches the gated components only when the local/remote answer changes, not on every
+        /// hand-over.
+        /// </summary>
+        /// <remarks>
+        /// A pawn changes brains during ordinary play — a walking brain gives the body to the one that
+        /// drives a lever and takes it back on release — and both of those are local. Re-enabling the set
+        /// on each hand-over would switch the walking brain back on underneath the lever brain that had
+        /// just stood it down for itself. Only a move between local and remote is this gate's business.
+        /// </remarks>
+        private void ApplyLocalControl(bool isEnabled) {
+            if (_appliedLocalControl == isEnabled) return;
+
+            _appliedLocalControl = isEnabled;
+            SetLocalControlEnabled(isEnabled);
         }
 
         /// <summary>
