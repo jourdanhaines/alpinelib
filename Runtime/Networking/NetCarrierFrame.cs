@@ -19,16 +19,27 @@ namespace AlpineLib.Networking {
     /// translation only — never <c>TransformPoint</c>, which folds the carrier's scale into the position
     /// while a velocity rotated by the same transform keeps world units, and hands the server a scaled
     /// displacement to measure against an unscaled gait ceiling. <see cref="NetCarrier"/> refuses to
-    /// register a scaled object for that reason. Yaw is read off <c>eulerAngles.y</c>, which is the exact
-    /// heading for a yaw-then-pitch rotation — a graded track is fine — and stops being the intuitive
-    /// heading once a carrier banks.
+    /// register a scaled object for that reason.
+    /// </para>
+    /// <para>
+    /// <b>Why a yaw is enough, and where it stops being.</b> Yaw is read off <c>eulerAngles.y</c>, which
+    /// under Unity's ZXY decomposition is the exact heading of the carrier's forward axis for any pitch
+    /// and any bank — the roll lands in <c>z</c> and leaves <c>y</c> alone — so the round trip through a
+    /// graded <em>or</em> canted deck is exact to within a wire quantization step. What a bank breaks is
+    /// not this arithmetic but the pose it is carried in: a rider on a canted deck stands tilted, and a
+    /// single yaw cannot say so, so what replicates is a rider drawn upright on a deck that is not. The
+    /// one arithmetic degeneracy is a carrier pitched to ±90°, where the decomposition has no heading
+    /// left to name. A carrier whose riders need more than a heading needs more than this frame.
     /// </para>
     /// <para>
     /// A null carrier means world space in both directions, but they are not symmetric about it:
     /// <see cref="ToLocal"/> hands the state back unrelabelled, because a pawn its game reports no
     /// carrier for is already a world-frame state, while <see cref="ToWorld"/> relabels to
     /// <see cref="PawnState.WorldCarrierId"/>, because its caller has just decided to treat the numbers
-    /// as world space and the label must say so.
+    /// as world space and the label must say so. An <em>unregistered</em> carrier counts as no carrier
+    /// for the same reason: <see cref="TryToWorld"/> asks the registry, so a label the registry cannot
+    /// invert would put deck-local metres on the wire that no peer — the sender included — could ever
+    /// convert back.
     /// </para>
     /// </remarks>
     public static class NetCarrierFrame {
@@ -68,9 +79,15 @@ namespace AlpineLib.Networking {
         /// The velocity has the carrier's own motion removed before it is rotated, so what replicates is
         /// the pawn's walking pace rather than the train's. That is the whole point of the frame: the
         /// server's gait ceiling and the interpolator's tangents then see a pawn doing what a pawn can do.
+        ///
+        /// A carrier the registry does not resolve to itself — the unassigned id, a duplicate, a refused
+        /// scale — is treated as no carrier and the world state is handed straight back. Moving numbers
+        /// into a frame nobody can name is strictly worse than leaving them in the one everybody shares.
         /// </remarks>
         public static PawnState ToLocal(in PawnState world, NetCarrier carrier) {
             if (carrier == null) return world;
+            if (carrier.CarrierId == PawnState.WorldCarrierId) return world;
+            if (!carrier.IsRegistered) return world;
 
             Transform frame = carrier.transform;
             Quaternion intoFrame = Quaternion.Inverse(frame.rotation);

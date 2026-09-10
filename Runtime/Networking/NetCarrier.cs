@@ -25,6 +25,15 @@ namespace AlpineLib.Networking {
     /// id its game will give it — and <c>SetId(0)</c> withdraws one.
     /// </para>
     /// <para>
+    /// <b>Only a registered carrier is a frame.</b> Registration is what makes an id resolvable, and a
+    /// rider's state is only worth labelling with an id every peer can turn back into this object — so
+    /// <see cref="IsRegistered"/> is the question the capture side asks, and an unregistered carrier
+    /// means world space rather than deck-local metres under a label nobody can invert. Registration is
+    /// retried every frame while it has not taken, so an id assigned a frame late, a scale a game fixes
+    /// after enabling, or a duplicate whose holder is later destroyed all heal on their own instead of
+    /// stranding this carrier's riders for the session.
+    /// </para>
+    /// <para>
     /// The velocity published here is measured, not authored: one frame's world-space position delta
     /// divided by the frame time, taken at <see cref="NetExecutionOrder.Carriers"/> so it is already this
     /// frame's value by the time a rider's sync reads it. Measuring rather than asking the carrier's own
@@ -41,15 +50,45 @@ namespace AlpineLib.Networking {
         /// </summary>
         public const float ScaleTolerance = 1e-3f;
 
+        /// <summary>
+        /// How long a game's <see cref="INetCarrierSource"/> must see a new carrier before it may report
+        /// the change. The hysteresis every source owes the replication side; see that interface.
+        /// </summary>
+        /// <remarks>
+        /// Longer than the server's own <c>MovementValidator.CarrierSwitchCooldownSeconds</c> on purpose:
+        /// a source that settles inside its own dwell window never presents the server with the rapid
+        /// alternation the cooldown exists to bound, so honest play never meets the budget at all.
+        /// </remarks>
+        public const float SourceHysteresisSeconds = 0.3f;
+
         [Tooltip("Session-wide id riders name in their replicated state. Must match on every peer; leave at zero for a carrier whose id is assigned at runtime.")]
         [SerializeField] private ushort carrierId;
 
         private Vector3 _previousPosition;
         private bool _hasPreviousPosition;
         private bool _isRegistered;
+        private bool _hasReportedScale;
+        private bool _hasReportedDuplicate;
 
         /// <summary>The id riders name in their replicated state.</summary>
         public ushort CarrierId => carrierId;
+
+        /// <summary>
+        /// True only while <see cref="NetCarrierRegistry"/> resolves this carrier's id to this very
+        /// object — the same question every reader of an inbound state asks.
+        /// </summary>
+        /// <remarks>
+        /// Asked of the registry rather than answered from a cached flag so that the side that
+        /// <em>labels</em> a state and the side that <em>resolves</em> one cannot disagree. They did:
+        /// a carrier still holding the unassigned id, or one the registry turned down for a duplicate id
+        /// or a non-unit scale, was happily handed out by a game's carrier source, and the deck-local
+        /// metres it produced went onto the wire as world space or under an id nothing answers to.
+        /// </remarks>
+        public bool IsRegistered =>
+            _isRegistered
+            && carrierId != PawnState.WorldCarrierId
+            && NetCarrierRegistry.TryResolve(carrierId, out NetCarrier resolved)
+            && ReferenceEquals(resolved, this);
 
         /// <summary>
         /// This carrier's own world velocity in metres per second, from the last frame's motion. Zero on
@@ -84,6 +123,8 @@ namespace AlpineLib.Networking {
 
         private void OnEnable() {
             _hasPreviousPosition = false;
+            _hasReportedScale = false;
+            _hasReportedDuplicate = false;
             Velocity = Vector3.zero;
             Register();
         }
@@ -96,6 +137,8 @@ namespace AlpineLib.Networking {
         }
 
         private void Update() {
+            Register();
+
             Vector3 position = transform.position;
 
             if (!_hasPreviousPosition || Time.deltaTime <= 0f) {
@@ -110,20 +153,46 @@ namespace AlpineLib.Networking {
         }
 
         /// <summary>
-        /// Publishes this carrier under its current id, once it has one and if its scale allows.
+        /// Publishes this carrier under its current id, once it has one, if its scale allows and if no
+        /// other carrier already holds that id. Called again every frame until it takes.
         /// </summary>
         /// <remarks>
         /// Zero is the unassigned state and is passed over in silence, not reported: a carrier spawned
         /// from a prefab enables before whatever builds it hands out ids, so an error here would fire
-        /// once per car on every scene load and mean nothing. <see cref="SetId"/> registers it when the
-        /// real id arrives.
+        /// once per car on every scene load and mean nothing. Retrying is what turns every refusal into
+        /// a delay: an id arrives, a game fixes a scale, a duplicate's holder is destroyed, and this
+        /// carrier picks the id up on the next frame instead of leaving its riders unresolvable for the
+        /// rest of the session. Each refusal is reported once, not once a frame.
         /// </remarks>
         private void Register() {
+            if (_isRegistered) return;
             if (carrierId == PawnState.WorldCarrierId) return;
 
             if (!HasUnitScale()) return;
+            if (IsIdHeldByAnother()) return;
 
             _isRegistered = NetCarrierRegistry.Register(this);
+        }
+
+        /// <summary>
+        /// Whether a different live carrier already answers to this id, reporting the clash once.
+        /// </summary>
+        /// <remarks>
+        /// Detected here rather than left to <see cref="NetCarrierRegistry.Register"/> because
+        /// registration is retried every frame, and the registry's own error would then arrive once a
+        /// frame for the whole session.
+        /// </remarks>
+        private bool IsIdHeldByAnother() {
+            if (!NetCarrierRegistry.TryResolve(carrierId, out NetCarrier holder) || holder == this) {
+                _hasReportedDuplicate = false;
+                return false;
+            }
+
+            if (_hasReportedDuplicate) return true;
+
+            _hasReportedDuplicate = true;
+            Debug.LogError($"NetCarrier::IsIdHeldByAnother->Carrier id {carrierId} is already held by '{holder.name}'; '{name}' stays unregistered and its riders replicate in world space until that id is free.");
+            return true;
         }
 
         /// <summary>
@@ -136,6 +205,10 @@ namespace AlpineLib.Networking {
         /// displacement against an unscaled gait ceiling and clamps an honest walk every tick — a
         /// carrier that rubber-bands its riders is much harder to recognise than one whose riders stay
         /// in world space with an error in the log.
+        ///
+        /// Only asked while unregistered, so a carrier <em>scaled after</em> it registers — an animated
+        /// lift, a tween — keeps its registration and does produce the scaled coordinates this refuses.
+        /// A carrier's scale is expected to be authored once and left alone.
         /// </remarks>
         private bool HasUnitScale() {
             Vector3 scale = transform.lossyScale;
@@ -143,10 +216,14 @@ namespace AlpineLib.Networking {
             if (Mathf.Abs(scale.x - 1f) <= ScaleTolerance
                 && Mathf.Abs(scale.y - 1f) <= ScaleTolerance
                 && Mathf.Abs(scale.z - 1f) <= ScaleTolerance) {
+                _hasReportedScale = false;
                 return true;
             }
 
-            Debug.LogError($"NetCarrier::HasUnitScale->{name} has a lossy scale of {scale}; carrier frames are unit-scale only and this carrier will not be registered.");
+            if (_hasReportedScale) return false;
+
+            _hasReportedScale = true;
+            Debug.LogError($"NetCarrier::HasUnitScale->{name} has a lossy scale of {scale}; carrier frames are unit-scale only and this carrier will not be registered until its scale is one.");
             return false;
         }
     }

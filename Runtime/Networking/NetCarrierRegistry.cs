@@ -18,7 +18,9 @@ namespace AlpineLib.Networking {
     /// A duplicate id is a scene-authoring mistake with a silent failure mode: riders of one carrier
     /// would be posed against another, somewhere else entirely. It is reported and the first
     /// registration keeps the id, so the error names the object that lost rather than leaving which one
-    /// won to load order.
+    /// won to load order. The loser is not stranded for the session — <see cref="NetCarrier"/> retries
+    /// while it is unregistered and picks the id up if the holder is destroyed — but until then its
+    /// riders replicate in world space rather than under an id that names somebody else's deck.
     /// </para>
     /// </remarks>
     public static class NetCarrierRegistry {
@@ -35,7 +37,7 @@ namespace AlpineLib.Networking {
             if (carrier == null) return false;
 
             if (CarriersById.TryGetValue(carrier.CarrierId, out NetCarrier existing) && existing != carrier) {
-                Debug.LogError($"NetCarrierRegistry::Register->Carrier id {carrier.CarrierId} is already held by '{existing.name}'; '{carrier.name}' will not be resolvable and its riders will be posed against the wrong object. It does not retry: the id stays unresolvable for the rest of the session even if '{existing.name}' later frees it.");
+                Debug.LogError($"NetCarrierRegistry::Register->Carrier id {carrier.CarrierId} is already held by '{existing.name}'; '{carrier.name}' is not registered and its riders replicate in world space until that id is free.");
                 return false;
             }
 

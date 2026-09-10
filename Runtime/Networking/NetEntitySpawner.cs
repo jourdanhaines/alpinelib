@@ -324,12 +324,14 @@ namespace AlpineLib.Networking {
         /// a rejoining rider near the world origin and lets its character controller resolve a spawn
         /// against whatever happens to be standing there, a frame before its driver corrects it.
         /// When the carrier is not loaded yet there is no world pose to place it at, so the prefab keeps
-        /// its own authored transform and the entity's driver places it on the first sample whose carrier
-        /// resolves. That is the simplest option that heals itself: instantiating the view disabled would
-        /// leave nothing running on it to notice the carrier arriving.
+        /// its own authored transform and the pawn's own driver places it once the carrier resolves:
+        /// <see cref="NetController"/> for a remote pawn, which places it on every sample anyway, and
+        /// <see cref="NetActorSync"/> for one this client owns, which nothing else would ever place.
         /// </remarks>
         private GameObject InstantiateAtReportedPose(GameObject prefab, NetEntity entity) {
-            if (!NetCarrierFrame.TryToWorld(entity.State, out PawnState world)) {
+            PawnState spawnState = entity.State;
+
+            if (!NetCarrierFrame.TryToWorld(in spawnState, out PawnState world)) {
                 return Instantiate(prefab, prefab.transform.position, prefab.transform.rotation);
             }
 

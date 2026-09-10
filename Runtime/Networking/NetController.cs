@@ -43,6 +43,19 @@ namespace AlpineLib.Networking {
     /// for a few frames is invisible; drawing deck-local metres as world coordinates would put every
     /// rider on a train near the world origin and snap them back, on every single join.
     /// </para>
+    /// <para>
+    /// <b>A co-operative-play trust limitation, stated plainly.</b> The server accepts whatever carrier
+    /// id a client claims — it does not know where any carrier is, by design — so an owner-authoritative
+    /// client can claim an id nothing in the session holds. Every observer then holds that pawn's last
+    /// pose for as long as the claim lasts, while the claiming client draws itself wherever it likes: a
+    /// pawn that is a stationary decoy to everyone but its owner. That is not fixed here, and it is not
+    /// fixable here — the server would have to know where carriers are. What this component does instead
+    /// is stop the hold being silent: <see cref="IsCarrierUnresolved"/> goes true once a pawn has been
+    /// held for <see cref="UnresolvedCarrierGraceSeconds"/>, long enough that ordinary join and streaming
+    /// windows never raise it, so a game that cares can mark, hide or report such a pawn on its own
+    /// terms. Adequate for the co-operative sessions this library is built for; not, as it stands, for
+    /// play among strangers.
+    /// </para>
     /// </remarks>
     [DefaultExecutionOrder(NetExecutionOrder.PawnDrivers)]
     public class NetController : Controller {
@@ -67,8 +80,30 @@ namespace AlpineLib.Networking {
         /// <summary>Speed below which a pawn is animated as standing rather than travelling, in m/s.</summary>
         public const float RestSpeedThreshold = 0.05f;
 
+        /// <summary>
+        /// How long this pawn may be held on an unresolvable carrier before
+        /// <see cref="IsCarrierUnresolved"/> admits it.
+        /// </summary>
+        /// <remarks>
+        /// Comfortably longer than the honest windows — a join's first snapshot arriving before the
+        /// scene's carriers register, a car streamed out and back — so raising it means something has
+        /// genuinely gone wrong rather than that a frame or two went by.
+        /// </remarks>
+        public const float UnresolvedCarrierGraceSeconds = 2f;
+
         /// <summary>Actor this controller is currently driving, or null while unpossessed.</summary>
         public Actor Character => _character;
+
+        /// <summary>
+        /// True while this pawn has been stuck on a carrier id nothing answers to for longer than
+        /// <see cref="UnresolvedCarrierGraceSeconds"/> — it is frozen at its last pose and staying there.
+        /// </summary>
+        /// <remarks>
+        /// Exposed rather than acted on, because what a game should do about it is a game's decision: hide
+        /// the pawn, tag it in a debug overlay, tell the host. See the trust-limitation note on the type
+        /// for how a pawn gets into this state and why the library cannot get it out.
+        /// </remarks>
+        public bool IsCarrierUnresolved { get; private set; }
 
         /// <inheritdoc />
         /// <remarks>The whole point of this brain: the interpolator owns the transform.</remarks>
@@ -80,6 +115,8 @@ namespace AlpineLib.Networking {
         private CrouchSystem _crouch;
         private ISessionService _sessionService;
         private INetworkService _networkService;
+        private float _heldSinceTime;
+        private bool _isHeld;
         private readonly HashSet<ushort> _warnedCarrierIds = new HashSet<ushort>();
 
         /// <inheritdoc />
@@ -95,6 +132,8 @@ namespace AlpineLib.Networking {
 
             _character = character;
             _character.Possess(this);
+            _isHeld = false;
+            IsCarrierUnresolved = false;
 
             _view = character.GetComponent<NetEntityView>();
             _locomotion = character.GetComponent<LocomotionSystem>();
@@ -125,6 +164,10 @@ namespace AlpineLib.Networking {
         /// <remarks>
         /// A pose whose carrier is not loaded is not a pose, so nothing is placed and the pawn keeps
         /// what it had. The interpolated stream will place it the moment the carrier registers.
+        ///
+        /// Nothing in the library calls this — a remote pawn is placed by <c>Update</c> every frame, and
+        /// an owned one is placed by <see cref="NetActorSync"/>, which possesses it instead. It is here
+        /// for a game holding an authoritative pose of its own: a scripted teleport, a cutscene start.
         /// </remarks>
         public void SnapTo(in PawnState state) {
             if (_character == null) return;
@@ -145,10 +188,34 @@ namespace AlpineLib.Networking {
         /// </remarks>
         /// <returns>False when the state named a carrier no loaded object answers to.</returns>
         private bool TryResolveWorldFrame(in PawnState state, out PawnState world) {
-            if (NetCarrierFrame.TryToWorld(in state, out world)) return true;
+            if (NetCarrierFrame.TryToWorld(in state, out world)) {
+                _isHeld = false;
+                IsCarrierUnresolved = false;
+                return true;
+            }
 
             WarnOnceForCarrier(state.CarrierId);
+            NoteHeldOnUnresolvedCarrier();
             return false;
+        }
+
+        /// <summary>
+        /// Runs the clock on a pawn held for want of a carrier, raising <see cref="IsCarrierUnresolved"/>
+        /// once the grace has passed.
+        /// </summary>
+        /// <remarks>
+        /// Timed rather than flagged on the first failure because the first failures are all honest: a
+        /// join whose snapshot beats the consist, a car streamed out for a moment. What the grace
+        /// separates out is a hold that is not going to end.
+        /// </remarks>
+        private void NoteHeldOnUnresolvedCarrier() {
+            if (!_isHeld) {
+                _isHeld = true;
+                _heldSinceTime = Time.time;
+                return;
+            }
+
+            IsCarrierUnresolved = Time.time - _heldSinceTime >= UnresolvedCarrierGraceSeconds;
         }
 
         private void WarnOnceForCarrier(ushort carrierId) {

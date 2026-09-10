@@ -31,13 +31,37 @@ namespace AlpineLib.Netcode.Replication {
     /// a train fifty metres down the track as a fifty-metre teleport. That is a real hole, and it is not
     /// one free move — it is one <em>unmeasured</em> move, of any size, and repeated on every tick it is
     /// unbounded travel at no speed the server ever sees. It is taken deliberately, because the
-    /// alternative is rejecting every legitimate boarding, but it is bounded by frequency rather than by
-    /// distance: a change is only honoured when the caller says it has not honoured one for this pawn
-    /// within <see cref="CarrierSwitchCooldownSeconds"/>, and one arriving sooner is rejected outright. Frequency is the only thing the server can judge here — it
-    /// does not know where any carrier is, so it cannot subtract two origins however much it would like
-    /// to. What the hole cannot buy, either way, is speed: every tick that keeps the same carrier is
+    /// alternative is rejecting every legitimate boarding, but it is bounded by frequency: the server
+    /// does not know where any carrier is, so frequency is the only thing here it can judge.
+    /// </para>
+    /// <para>
+    /// <b>A budget, not a bar.</b> The caller keeps a per-pawn window of
+    /// <see cref="CarrierSwitchCooldownSeconds"/> and counts the frame changes landing inside it. The
+    /// first <see cref="MaxCarrierSwitchesPerWindow"/> are accepted unmeasured; anything past that is
+    /// rejected outright, holding the previous state — carrier included — so the pawn stays
+    /// self-consistent and the client is told. A flat "no second change inside the window" bar was tried
+    /// first and it punished honest play: walking across a coupler from one car to the next is two frame
+    /// changes in quick succession, and a hop off a deck and back is another two, so real riders were
+    /// corrected for several ticks running while a cheat merely switched more slowly. A budget refuses
+    /// only the alternation nobody produces by walking — and honest play is kept away from it from the
+    /// other end too, because <c>INetCarrierSource</c> owes this side hysteresis and a source that
+    /// settles before it reports never reaches the budget at all.
+    /// </para>
+    /// <para>
+    /// What the hole cannot buy, either way, is speed: every tick that keeps the same carrier is
     /// validated exactly as before, in that carrier's frame, where the gait ceiling is the pawn's own
     /// walking pace and the carrier's motion is not part of the measurement at all.
+    /// </para>
+    /// <para>
+    /// <b>The remaining exposure, in full.</b> Distance is one half of it: a client alternating frames as
+    /// fast as the budget allows still buys <see cref="MaxCarrierSwitchesPerWindow"/> unmeasured moves
+    /// per window, of any size. The other half is not distance at all. The server never learns whether a
+    /// claimed carrier id names anything, so a client can claim one no object in the session holds; every
+    /// observer's <c>NetController</c> then fails to resolve the frame and holds that pawn's last pose
+    /// indefinitely, while the cheat's own client draws itself wherever it likes — a pawn that is a
+    /// stationary decoy to everyone but its owner. Closing that needs the server to know where carriers
+    /// are, which it deliberately does not; until then it is a co-operative-play trust limitation, and
+    /// <c>NetController.IsCarrierUnresolved</c> is what a game watches to see it happening.
     /// </para>
     /// </remarks>
     public sealed class MovementValidator {
@@ -55,12 +79,23 @@ namespace AlpineLib.Netcode.Replication {
         public const float RejectDistanceRatio = 3f;
 
         /// <summary>
-        /// Shortest time between two honoured carrier changes for one pawn. Long enough that repeating
-        /// the frame-change trick costs an order of magnitude in travel; short enough that a real
-        /// boarding never notices, including the awkward one — walking across a coupler from one car to
-        /// the next, which is two frame changes in quick succession.
+        /// Length of the window the caller counts a pawn's frame changes over. Long enough that repeating
+        /// the frame-change trick costs an order of magnitude in travel, short enough that the awkward
+        /// honest cases — a coupler crossing, a hop off a deck and back — fit inside one window's budget
+        /// rather than being spread across two.
         /// </summary>
         public const float CarrierSwitchCooldownSeconds = 0.25f;
+
+        /// <summary>
+        /// How many frame changes one pawn may have accepted unmeasured inside a single
+        /// <see cref="CarrierSwitchCooldownSeconds"/> window before the rest are rejected.
+        /// </summary>
+        /// <remarks>
+        /// Three, because the honest bursts have two changes in them — off a deck and back, or one car to
+        /// the next — and one spare keeps a rider who does both in the same breath out of the correction
+        /// path. Anything above that inside a quarter of a second is not a player walking.
+        /// </remarks>
+        public const int MaxCarrierSwitchesPerWindow = 3;
 
         private readonly NetConfig config;
 
@@ -73,11 +108,12 @@ namespace AlpineLib.Netcode.Replication {
 
         /// <summary>
         /// <see cref="CarrierSwitchCooldownSeconds"/> in server ticks, rounded up, never less than one.
+        /// The length of the window the caller counts a pawn's frame changes over.
         /// </summary>
         /// <remarks>
         /// Expressed here rather than at the call site so the policy and the constant it comes from stay
-        /// in one place; the caller owns the per-entity clock because this class is stateless and shared
-        /// by every pawn in the session.
+        /// in one place; the caller owns the per-entity clock and counter because this class is stateless
+        /// and shared by every pawn in the session.
         /// </remarks>
         public uint CarrierSwitchCooldownTicks =>
             (uint)Math.Max(1, (int)Math.Ceiling(CarrierSwitchCooldownSeconds * config.ServerTickRate));
@@ -101,9 +137,9 @@ namespace AlpineLib.Netcode.Replication {
         /// <param name="next">The state the owning client reported.</param>
         /// <param name="deltaSeconds">Time between the two, as the server measured it.</param>
         /// <param name="carrierChangeAllowed">
-        /// Whether this pawn's cooldown since its last honoured frame change has expired. False rejects a
-        /// change outright, which holds the previous state — carrier included — so the pawn stays
-        /// self-consistent and the client is told.
+        /// Whether this pawn still has frame changes left in its current window — see
+        /// <see cref="MaxCarrierSwitchesPerWindow"/>. False rejects the change outright, which holds the
+        /// previous state — carrier included — so the pawn stays self-consistent and the client is told.
         /// </param>
         public MovementVerdict Validate(
             ushort prefabId,

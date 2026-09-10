@@ -527,11 +527,12 @@ namespace AlpineLib.Netcode.Replication {
         /// owner when the claim did not survive judgement.
         /// </summary>
         /// <remarks>
-        /// The per-entity carrier clock is kept here rather than inside the validator, which is stateless
-        /// and shared by every pawn: this is where an entity and the current tick are both in hand. A
-        /// change that survives is stamped, and one that arrives inside the cooldown comes back as a
-        /// rejection — the previous state, previous frame and all — which the owner is told about like
-        /// any other, so repeats are visible through <see cref="OnMovementViolation"/> rather than free.
+        /// The per-entity frame-change window is kept here rather than inside the validator, which is
+        /// stateless and shared by every pawn: this is where an entity and the current tick are both in
+        /// hand. Changes inside one window are accepted unmeasured until the budget is spent, and the
+        /// ones past it come back as rejections — the previous state, previous frame and all — which the
+        /// owner is told about like any other, so an alternating claim is visible through
+        /// <see cref="OnMovementViolation"/> rather than free.
         /// </remarks>
         public void HandleOwnerPawnUpdate(in OwnerPawnUpdate message, PeerHandle sender) {
             if (!TryResolveOwnedEntity(message.EntityId, sender, AuthorityMode.OwnerClient, out NetEntity entity)) {
@@ -539,7 +540,6 @@ namespace AlpineLib.Netcode.Replication {
             }
 
             float deltaSeconds = ElapsedSince(entity.LastDirtyTick);
-            ushort heldCarrierId = entity.State.CarrierId;
             bool carrierChangeAllowed = IsCarrierChangeAllowed(entity, message.State.CarrierId);
             MovementVerdict verdict = validator.Validate(
                 entity.PrefabId,
@@ -547,10 +547,6 @@ namespace AlpineLib.Netcode.Replication {
                 message.State,
                 deltaSeconds,
                 carrierChangeAllowed);
-
-            if (verdict.ResolvedState.CarrierId != heldCarrierId) {
-                entity.LastCarrierChangeTick = currentTick;
-            }
 
             entity.ApplyState(verdict.ResolvedState, currentTick);
             entity.LastAcknowledgedInputSequence = message.ClientTick;
@@ -564,19 +560,32 @@ namespace AlpineLib.Netcode.Replication {
         }
 
         /// <summary>
-        /// Whether this pawn may change frame now: it either is not changing, has never changed, or last
-        /// changed at least <see cref="MovementValidator.CarrierSwitchCooldownTicks"/> ago.
+        /// Counts a claimed frame change into this pawn's window and answers whether the budget covers
+        /// it; see <see cref="MovementValidator.MaxCarrierSwitchesPerWindow"/>.
         /// </summary>
+        /// <remarks>
+        /// A claim that keeps the frame the pawn is already in costs nothing and is not counted — it is
+        /// measured as an ordinary move. Everything else opens a window or spends from the open one, the
+        /// refused attempts included, so a client cannot hold a window open by continuing to claim after
+        /// its budget has run out. The elapsed count is a plain unsigned subtraction, which stays correct
+        /// across the tick counter wrapping.
+        /// </remarks>
         private bool IsCarrierChangeAllowed(NetEntity entity, ushort claimedCarrierId) {
-            if (entity.State.CarrierId == claimedCarrierId || entity.LastCarrierChangeTick == 0u) {
+            if (entity.State.CarrierId == claimedCarrierId) return true;
+
+            uint elapsedTicks = currentTick - entity.CarrierSwitchWindowStartTick;
+
+            if (entity.CarrierSwitchesInWindow == 0 || elapsedTicks >= validator.CarrierSwitchCooldownTicks) {
+                entity.CarrierSwitchWindowStartTick = currentTick;
+                entity.CarrierSwitchesInWindow = 1;
                 return true;
             }
 
-            uint elapsedTicks = currentTick > entity.LastCarrierChangeTick
-                ? currentTick - entity.LastCarrierChangeTick
-                : 0u;
+            if (entity.CarrierSwitchesInWindow < byte.MaxValue) {
+                entity.CarrierSwitchesInWindow++;
+            }
 
-            return elapsedTicks >= validator.CarrierSwitchCooldownTicks;
+            return entity.CarrierSwitchesInWindow <= MovementValidator.MaxCarrierSwitchesPerWindow;
         }
 
         /// <summary>

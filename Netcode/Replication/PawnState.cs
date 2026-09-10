@@ -35,8 +35,10 @@ namespace AlpineLib.Netcode.Replication {
     /// actually see, instead of as a sixty-metre-a-second sprint the validator would reject and the
     /// interpolator would smear. Carriers must be rigid, unit-scale and no more than pitched: the
     /// conversion is a plain rotate-and-translate, so a scaled or deforming carrier would hand the server
-    /// a stretched displacement to measure against an unscaled gait ceiling, and a banked one would stop
-    /// the replicated yaw meaning the heading every consumer reads it as.
+    /// a stretched displacement to measure against an unscaled gait ceiling. A banked one is excluded
+    /// for a different reason — the yaw arithmetic survives a bank exactly — but one yaw cannot say that
+    /// a rider on a canted deck stands tilted, so what replicates is a rider drawn upright on a deck that
+    /// is not.
     /// </para>
     /// </remarks>
     public struct PawnState : INetMessage {

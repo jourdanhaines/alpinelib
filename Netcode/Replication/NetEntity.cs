@@ -39,7 +39,8 @@ namespace AlpineLib.Netcode.Replication {
             AuxId = auxId;
             state = initialState;
             LastDirtyTick = 0u;
-            LastCarrierChangeTick = 0u;
+            CarrierSwitchWindowStartTick = 0u;
+            CarrierSwitchesInWindow = 0;
             LastAcknowledgedInputSequence = 0u;
             HighestReceivedInputSequence = 0u;
             StarvedTicks = 0;
@@ -81,16 +82,28 @@ namespace AlpineLib.Netcode.Replication {
         public uint LastDirtyTick { get; private set; }
 
         /// <summary>
-        /// Tick at which this entity's carrier last changed. Zero means it has never changed frame, and
-        /// the first change is therefore always honoured.
+        /// Tick the current frame-change window opened on — the first change counted into it.
         /// </summary>
         /// <remarks>
-        /// A frame change is the one move the server accepts without measuring it, so how often one is
-        /// honoured is the only limit it can put on that trick — see the trust-boundary note on
-        /// <see cref="MovementValidator"/>. The clock lives here because the validator is stateless and
-        /// shared by every pawn in the session, and this is the only per-entity place there is.
+        /// A frame change is the one move the server accepts without measuring it, so how many are
+        /// honoured per unit of time is the only limit it can put on that trick — see the trust-boundary
+        /// note on <see cref="MovementValidator"/>. The window and its counter live here because the
+        /// validator is stateless and shared by every pawn in the session, and this is the only
+        /// per-entity place there is.
         /// </remarks>
-        public uint LastCarrierChangeTick { get; set; }
+        public uint CarrierSwitchWindowStartTick { get; set; }
+
+        /// <summary>
+        /// Frame changes counted into the current window, refused ones included. Zero means no window is
+        /// open and the next change opens one.
+        /// </summary>
+        /// <remarks>
+        /// Refused attempts are counted too: a client that keeps claiming a new frame after spending its
+        /// budget must not be able to hold the window open by making the counter stop moving, and a
+        /// counter that only rose on success would say nothing about how hard the pawn is trying.
+        /// Saturating rather than wrapping, because past the budget the exact number stops mattering.
+        /// </remarks>
+        public byte CarrierSwitchesInWindow { get; set; }
 
         /// <summary>
         /// The owner's input sequence this state accounts for. Rides on every correction so the owner's

@@ -66,6 +66,18 @@ namespace AlpineLib.Networking {
         /// </summary>
         private const float ResidualEpsilon = 0.001f;
 
+        /// <summary>
+        /// How long an owned pawn's spawn placement waits for the carrier its state names, before giving
+        /// up and placing it in world space.
+        /// </summary>
+        /// <remarks>
+        /// Long enough to cover a join whose first keyframe arrives before the scene's carriers have
+        /// registered, short enough that a pawn is never left standing at its prefab's authored transform
+        /// for a noticeable part of a session. Placing wrongly at the end of it beats not placing at all:
+        /// an unplaced owned pawn reports the prefab pose, and the authority adopts it.
+        /// </remarks>
+        public const float SpawnPlacementCarrierWaitSeconds = 5f;
+
         private NetEntityView _view;
         private Actor _actor;
         private CharacterController _characterController;
@@ -80,7 +92,12 @@ namespace AlpineLib.Networking {
         private Vector3 _correctionResidual;
         private PawnState _predictedState;
         private bool _hasPredictedState;
+        private uint _placedForEntityId;
+        private PawnState _spawnState;
+        private bool _hasSpawnState;
+        private float _spawnPlacementDeadline;
         private readonly HashSet<ushort> _warnedCarrierIds = new HashSet<ushort>();
+        private readonly HashSet<int> _warnedUnusableCarriers = new HashSet<int>();
 
         /// <summary>
         /// True while this pawn is actually being replicated: bound to an entity this client owns inside
@@ -175,12 +192,75 @@ namespace AlpineLib.Networking {
             if (!_view.IsBound || !_view.IsOwned) return;
 
             BindReplication(replication);
+            PlaceOnSpawnState();
 
             if (_view.Authority != AuthorityMode.OwnerClient) {
                 AccumulateAndSend(replication);
             }
 
             FollowPrediction();
+        }
+
+        /// <summary>
+        /// Puts a freshly bound owner-simulated pawn where the authority says it is, once.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Nothing else ever places an owned pawn. It is possessed by the game's own controller rather
+        /// than <see cref="NetController"/>, prediction is skipped for owner authority, and a correction
+        /// only arrives once the server has something to disagree with — so a rejoining rider whose
+        /// keyframe named a carrier the spawner could not resolve was left standing at its prefab's
+        /// authored transform, reported that pose, and had the authority adopt it. The pawn did not
+        /// heal; the world converged onto the bug.
+        /// </para>
+        /// <para>
+        /// The state is taken at bind and held, so what is placed is the spawn pose rather than whatever
+        /// the wrongly-placed pawn has since talked the server into. A carrier that has not registered
+        /// yet defers the placement rather than losing it, for at most
+        /// <see cref="SpawnPlacementCarrierWaitSeconds"/>, after which the numbers are placed as world
+        /// space with a warning — being visibly in the wrong place beats silently reporting the prefab's.
+        /// </para>
+        /// </remarks>
+        private void PlaceOnSpawnState() {
+            if (_view.Authority != AuthorityMode.OwnerClient) return;
+            if (_placedForEntityId == _view.EntityId) return;
+
+            RecordSpawnState();
+
+            if (NetCarrierFrame.TryToWorld(in _spawnState, out PawnState world)) {
+                PlaceAt(in world);
+                return;
+            }
+
+            if (Time.time < _spawnPlacementDeadline) return;
+
+            Debug.LogWarning($"NetActorSync::PlaceOnSpawnState->{name} spawned on carrier {_spawnState.CarrierId}, which never registered; placing entity {_view.EntityId} at those numbers as world space.");
+            PlaceAt(in _spawnState);
+        }
+
+        /// <summary>
+        /// Latches the state this pawn was bound with, and the deadline its carrier has to appear by.
+        /// </summary>
+        private void RecordSpawnState() {
+            if (_hasSpawnState) return;
+
+            _spawnState = _view.Entity.State;
+            _hasSpawnState = true;
+            _spawnPlacementDeadline = Time.time + SpawnPlacementCarrierWaitSeconds;
+        }
+
+        /// <summary>
+        /// Places the actor outright at a world-space state and hands its motion to the actor's own
+        /// integrators, then marks this entity as placed.
+        /// </summary>
+        private void PlaceAt(in PawnState world) {
+            _correctionResidual = Vector3.zero;
+            Teleport(world.Position.ToUnity());
+            transform.rotation = Quaternion.Euler(0f, world.YawDegrees, 0f);
+            SyncActorMotion(in world);
+
+            _placedForEntityId = _view.EntityId;
+            _hasSpawnState = false;
         }
 
         /// <summary>
@@ -312,6 +392,11 @@ namespace AlpineLib.Networking {
         /// train is doing. Only this owner-simulated path converts: a server-authoritative pawn is
         /// stepped by the shared motor, which knows only world space, and reporting anything else would
         /// be reporting a pose the authority cannot act on.
+        ///
+        /// A carrier the registry does not resolve back to itself is treated as no carrier at all — see
+        /// <see cref="NetCarrier.IsRegistered"/>. The side that labels a state has to ask exactly what
+        /// every side that resolves one asks, or this component puts deck-local metres on the wire under
+        /// a label nobody — the sender included — could ever invert.
         /// </remarks>
         private PawnState CaptureState() {
             bool isGrounded = _actor != null && _actor.IsGrounded;
@@ -327,8 +412,28 @@ namespace AlpineLib.Networking {
             NetCarrier carrier = _carrierSource?.CurrentCarrier;
 
             if (carrier == null) return world;
+            if (!IsCarrierUsable(carrier)) return world;
 
             return NetCarrierFrame.ToLocal(in world, carrier);
+        }
+
+        /// <summary>
+        /// Whether a carrier this pawn's game handed out may be named on the wire, reporting once per
+        /// carrier when it may not.
+        /// </summary>
+        /// <remarks>
+        /// Reported rather than passed over in silence because the failure it prevents is invisible
+        /// otherwise: the pawn goes on replicating, in world space, and the only sign that it stopped
+        /// reporting the deck it is standing on is a one-frame slide when the carrier finally registers.
+        /// </remarks>
+        private bool IsCarrierUsable(NetCarrier carrier) {
+            if (carrier.IsRegistered) return true;
+
+            if (_warnedUnusableCarriers.Add(carrier.GetInstanceID())) {
+                Debug.LogWarning($"NetActorSync::IsCarrierUsable->{name} is riding '{carrier.name}', which is not registered (id {carrier.CarrierId}); reporting this pawn in world space until it is.");
+            }
+
+            return false;
         }
 
         /// <summary>
@@ -588,7 +693,8 @@ namespace AlpineLib.Networking {
         /// <remarks>
         /// The recorded prediction goes with the world that produced it: a pawn rebound to a fresh client
         /// world would otherwise spend its first frames being pulled towards a position from the previous
-        /// session.
+        /// session. The spawn placement goes with it for the same reason — the next binding is a new
+        /// spawn and gets its own placement.
         /// </remarks>
         private void UnbindReplication() {
             if (_boundReplication == null) return;
@@ -597,6 +703,8 @@ namespace AlpineLib.Networking {
             _boundReplication = null;
             _hasPredictedState = false;
             _correctionResidual = Vector3.zero;
+            _placedForEntityId = 0u;
+            _hasSpawnState = false;
         }
     }
 }
