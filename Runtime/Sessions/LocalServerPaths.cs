@@ -82,8 +82,14 @@ namespace AlpineLib.Sessions {
         }
 
         /// <summary>Walks <paramref name="levels"/> up from the data path and appends a relative folder.</summary>
+        /// <remarks>
+        /// In the editor the data path is resolved to where it physically lives first. A Multiplayer
+        /// Play Mode virtual player runs from a clone under <c>Library/VP</c> whose <c>Assets</c> is a
+        /// link back into the real project, and the publish folder sits beside the real one, not the
+        /// clone. A player's data path is taken as written: the build step put the server beside it.
+        /// </remarks>
         private static string ResolveFromDataPath(int levels, string relativePath) {
-            string basePath = Application.dataPath;
+            string basePath = ResolveDataPath();
 
             for (int level = 0; level < levels; level++) {
                 basePath = Path.Combine(basePath, "..");
@@ -92,6 +98,13 @@ namespace AlpineLib.Sessions {
             if (string.IsNullOrEmpty(relativePath)) return Path.GetFullPath(basePath);
 
             return Path.GetFullPath(Path.Combine(basePath, relativePath));
+        }
+
+        /// <summary>The data path, followed to its physical location in the editor.</summary>
+        private static string ResolveDataPath() {
+            if (!Application.isEditor) return Application.dataPath;
+
+            return PhysicalPath.Resolve(Application.dataPath) ?? Application.dataPath;
         }
 
         /// <summary>True when this process runs on Windows.</summary>

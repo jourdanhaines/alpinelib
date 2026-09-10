@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Reflection;
-using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using AlpineLib.Sessions;
@@ -1427,7 +1426,7 @@ namespace AlpineLib.Editor {
                 RequireNoOverlap(config, sourceDirectory, blocked, sourceDirectory, blocked);
             }
 
-            string resolvedSource = ResolvePhysicalPath(sourceDirectory);
+            string resolvedSource = PhysicalPath.Resolve(sourceDirectory);
 
             if (resolvedSource == null) {
                 WarnUnfollowedLink(sourceDirectory, destination);
@@ -1442,7 +1441,7 @@ namespace AlpineLib.Editor {
         /// <summary>Compares the publish with one replaced folder as the filesystem lays the two out.</summary>
         private static void RequireResolvedSeparate(
             ServerBundleConfig config, string resolvedSource, string blocked, string sourceDirectory) {
-            string resolvedBlocked = ResolvePhysicalPath(blocked);
+            string resolvedBlocked = PhysicalPath.Resolve(blocked);
 
             if (resolvedBlocked == null) {
                 WarnUnfollowedLink(sourceDirectory, blocked);
@@ -1480,70 +1479,6 @@ namespace AlpineLib.Editor {
                 "publish would be copied into itself or deleted with the previous bundle. Build the player outside " +
                 "the publish folder, or publish outside the build folder.");
         }
-
-        /// <summary>
-        /// A path as the filesystem lays it out, every link followed, or null when it cannot be asked.
-        /// </summary>
-        /// <remarks>
-        /// The path need not exist — the destination does not on a first build — so the walk climbs to
-        /// the deepest folder that does exist, resolves that, and puts the rest back on the end. A link
-        /// anywhere above the leaf moves the leaf just as surely as one at it, which is why the whole
-        /// path is resolved rather than its last component.
-        /// </remarks>
-        private static string ResolvePhysicalPath(string path) {
-            string fullPath = Path.GetFullPath(path);
-
-            if (Directory.Exists(fullPath)) return ResolvePhysicalDirectory(fullPath);
-
-            string parent = Path.GetDirectoryName(fullPath);
-            if (string.IsNullOrEmpty(parent)) return fullPath;
-
-            string resolvedParent = ResolvePhysicalPath(parent);
-            if (resolvedParent == null) return null;
-
-            return Path.Combine(resolvedParent, Path.GetFileName(fullPath));
-        }
-
-        /// <summary>
-        /// An existing directory's physical location, or null when this runtime cannot report one.
-        /// </summary>
-        /// <remarks>
-        /// <para>
-        /// <c>realpath(3)</c> follows every component of the path, ancestors included, which is the
-        /// question being asked. It is reached through libc because the .NET 6 link API answers for the
-        /// last component only and the editor's scripting runtime does not have it at all. The path is
-        /// marshalled as UTF-8 bytes so a project living under a non-ASCII path is not mangled by the
-        /// default charset, and the buffer <c>realpath(NULL)</c> allocates is freed.
-        /// </para>
-        /// <para>
-        /// Deliberately not the working directory: <c>chdir(2)</c> is process-global, so every other
-        /// thread in the editor — an in-flight import, a launched process inheriting the directory —
-        /// would resolve its own relative paths against the publish folder for as long as it was set.
-        /// Windows has no libc, so the call fails there and the comparison of the paths as written is
-        /// that platform's answer, as it already was.
-        /// </para>
-        /// </remarks>
-        private static string ResolvePhysicalDirectory(string directory) {
-            try {
-                IntPtr resolved = ResolveRealPath(Encoding.UTF8.GetBytes(directory + "\0"), IntPtr.Zero);
-                if (resolved == IntPtr.Zero) return null;
-
-                try {
-                    return Marshal.PtrToStringUTF8(resolved);
-                } finally {
-                    FreeRealPath(resolved);
-                }
-            } catch (Exception) {
-                // No libc, or no such entry point: the written comparison is the answer on that platform.
-                return null;
-            }
-        }
-
-        [DllImport("libc", EntryPoint = "realpath")]
-        private static extern IntPtr ResolveRealPath(byte[] path, IntPtr resolved);
-
-        [DllImport("libc", EntryPoint = "free")]
-        private static extern void FreeRealPath(IntPtr pointer);
 
         /// <summary>A full path that always ends in a separator, so one folder cannot prefix another.</summary>
         private static string WithTrailingSeparator(string path) {
