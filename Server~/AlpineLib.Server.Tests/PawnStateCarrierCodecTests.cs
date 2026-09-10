@@ -1,6 +1,8 @@
+using System.Collections.Generic;
 using System.Numerics;
 using AlpineLib.Netcode.Protocol;
 using AlpineLib.Netcode.Replication;
+using AlpineLib.Netcode.Replication.Messages;
 using Xunit;
 
 namespace AlpineLib.Server.Tests {
@@ -92,6 +94,46 @@ namespace AlpineLib.Server.Tests {
             Assert.Equal(state.Velocity, relabelled.Velocity);
             Assert.Equal(state.YawDegrees, relabelled.YawDegrees);
             Assert.Equal(state.Flags, relabelled.Flags);
+        }
+
+        /// <summary>
+        /// Every message that carries a pose nests <see cref="PawnState"/> whole, so the carrier travels
+        /// on all of them or on none. Cheap insurance against a message that one day writes the fields
+        /// out by hand and drops the newest one.
+        /// </summary>
+        [Fact]
+        public void TheMessagesThatCarryAPoseCarryItsFrameToo() {
+            PawnState onADeck = OnCarrier(9);
+
+            Assert.Equal(onADeck.CarrierId, RoundTripMessage(new SpawnEntity(1u, 0, 3, AuthorityMode.OwnerClient, in onADeck)).State.CarrierId);
+            Assert.Equal(onADeck.CarrierId, RoundTripMessage(new OwnerPawnUpdate(1u, 5u, in onADeck)).State.CarrierId);
+            Assert.Equal(onADeck.CarrierId, RoundTripMessage(new AuthorityCorrection(1u, 5u, 4u, in onADeck)).State.CarrierId);
+
+            var snapshot = new Snapshot(5u, new List<EntitySnapshotRecord> { new EntitySnapshotRecord(1u, in onADeck) });
+
+            Assert.Equal(onADeck.CarrierId, RoundTripMessage(snapshot).Records[0].State.CarrierId);
+        }
+
+        private static PawnState OnCarrier(ushort carrierId) {
+            return new PawnState(
+                new Vector3(0.5f, 0f, 2.25f),
+                45f,
+                new Vector3(0f, 0f, 1.5f),
+                PawnState.PackFlags(WireLocomotion.Walk, false, true),
+                carrierId);
+        }
+
+        private static TMessage RoundTripMessage<TMessage>(TMessage message) where TMessage : INetMessage, new() {
+            var buffer = new byte[512];
+            var writer = new NetWriter(buffer);
+            message.Serialize(ref writer);
+
+            var reader = new NetReader(buffer, 0, writer.Written);
+            var decoded = new TMessage();
+            decoded.Deserialize(ref reader);
+
+            Assert.Equal(0, reader.Remaining);
+            return decoded;
         }
 
         private static PawnState RoundTrip(in PawnState state) {

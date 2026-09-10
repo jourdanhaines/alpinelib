@@ -33,9 +33,10 @@ namespace AlpineLib.Netcode.Replication {
     /// that carrier rather than its motion through the world. A pawn walking a moving train's deck is
     /// then replicated as a short, slow walk on a stationary floor, which is what the deck's riders
     /// actually see, instead of as a sixty-metre-a-second sprint the validator would reject and the
-    /// interpolator would smear. Carriers must be rigid and unit-scale: the conversion is a plain
-    /// rotate-and-translate, so a scaled or deforming carrier would change the pawn's size along with
-    /// its frame.
+    /// interpolator would smear. Carriers must be rigid, unit-scale and no more than pitched: the
+    /// conversion is a plain rotate-and-translate, so a scaled or deforming carrier would hand the server
+    /// a stretched displacement to measure against an unscaled gait ceiling, and a banked one would stop
+    /// the replicated yaw meaning the heading every consumer reads it as.
     /// </para>
     /// </remarks>
     public struct PawnState : INetMessage {

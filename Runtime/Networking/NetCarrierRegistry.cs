@@ -35,7 +35,7 @@ namespace AlpineLib.Networking {
             if (carrier == null) return false;
 
             if (CarriersById.TryGetValue(carrier.CarrierId, out NetCarrier existing) && existing != carrier) {
-                Debug.LogError($"NetCarrierRegistry::Register->Carrier id {carrier.CarrierId} is already held by '{existing.name}'; '{carrier.name}' will not be resolvable and its riders will be posed against the wrong object.");
+                Debug.LogError($"NetCarrierRegistry::Register->Carrier id {carrier.CarrierId} is already held by '{existing.name}'; '{carrier.name}' will not be resolvable and its riders will be posed against the wrong object. It does not retry: the id stays unresolvable for the rest of the session even if '{existing.name}' later frees it.");
                 return false;
             }
 
@@ -63,8 +63,13 @@ namespace AlpineLib.Networking {
         }
 
         /// <summary>Empties the registry before the first scene of a play session loads.</summary>
+        /// <remarks>
+        /// Private because the subsystem-registration hook is its only legitimate caller: every live
+        /// carrier would go on believing it is registered, so nothing would ever re-register and every
+        /// rider in the scene would fall back to world space.
+        /// </remarks>
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
-        public static void Reset() {
+        private static void Reset() {
             CarriersById.Clear();
         }
     }

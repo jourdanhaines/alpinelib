@@ -28,12 +28,16 @@ namespace AlpineLib.Netcode.Replication {
     /// <b>The trust boundary at a frame change.</b> Displacement only means anything when both states
     /// share an origin, so the tick a pawn boards or leaves a carrier is accepted unmeasured: the
     /// numbers either side are metres from different points, and subtracting them would read a step onto
-    /// a train fifty metres down the track as a fifty-metre teleport. That is a real, bounded hole — a
-    /// client can relabel its frame once per tick to buy one free move — and it is taken deliberately,
-    /// because the alternative is rejecting every legitimate boarding. What it cannot buy is speed:
-    /// every tick that keeps the same carrier is validated exactly as before, in that carrier's frame,
-    /// where the gait ceiling is the pawn's own walking pace and the carrier's motion is not part of the
-    /// measurement at all.
+    /// a train fifty metres down the track as a fifty-metre teleport. That is a real hole, and it is not
+    /// one free move — it is one <em>unmeasured</em> move, of any size, and repeated on every tick it is
+    /// unbounded travel at no speed the server ever sees. It is taken deliberately, because the
+    /// alternative is rejecting every legitimate boarding, but it is bounded by frequency rather than by
+    /// distance: a change is only honoured when the caller says it has not honoured one for this pawn
+    /// within <see cref="CarrierSwitchCooldownSeconds"/>, and one arriving sooner is rejected outright. Frequency is the only thing the server can judge here — it
+    /// does not know where any carrier is, so it cannot subtract two origins however much it would like
+    /// to. What the hole cannot buy, either way, is speed: every tick that keeps the same carrier is
+    /// validated exactly as before, in that carrier's frame, where the gait ceiling is the pawn's own
+    /// walking pace and the carrier's motion is not part of the measurement at all.
     /// </para>
     /// </remarks>
     public sealed class MovementValidator {
@@ -50,6 +54,14 @@ namespace AlpineLib.Netcode.Replication {
         /// </summary>
         public const float RejectDistanceRatio = 3f;
 
+        /// <summary>
+        /// Shortest time between two honoured carrier changes for one pawn. Long enough that repeating
+        /// the frame-change trick costs an order of magnitude in travel; short enough that a real
+        /// boarding never notices, including the awkward one — walking across a coupler from one car to
+        /// the next, which is two frame changes in quick succession.
+        /// </summary>
+        public const float CarrierSwitchCooldownSeconds = 0.25f;
+
         private readonly NetConfig config;
 
         public MovementValidator(NetConfig config) {
@@ -60,15 +72,51 @@ namespace AlpineLib.Netcode.Replication {
         public NetConfig Config => config;
 
         /// <summary>
+        /// <see cref="CarrierSwitchCooldownSeconds"/> in server ticks, rounded up, never less than one.
+        /// </summary>
+        /// <remarks>
+        /// Expressed here rather than at the call site so the policy and the constant it comes from stay
+        /// in one place; the caller owns the per-entity clock because this class is stateless and shared
+        /// by every pawn in the session.
+        /// </remarks>
+        public uint CarrierSwitchCooldownTicks =>
+            (uint)Math.Max(1, (int)Math.Ceiling(CarrierSwitchCooldownSeconds * config.ServerTickRate));
+
+        /// <summary>
+        /// Judges one reported move, honouring any carrier change it carries.
+        /// </summary>
+        /// <remarks>
+        /// The overload without the frequency gate, for callers that hold no per-entity history — a
+        /// first report, or a test asking only what the distance rule makes of a move.
+        /// </remarks>
+        public MovementVerdict Validate(ushort prefabId, in PawnState previous, in PawnState next, float deltaSeconds) {
+            return Validate(prefabId, in previous, in next, deltaSeconds, true);
+        }
+
+        /// <summary>
         /// Judges one reported move.
         /// </summary>
         /// <param name="prefabId">Selects the movement profile; an unknown id validates nothing.</param>
         /// <param name="previous">The state the server currently holds.</param>
         /// <param name="next">The state the owning client reported.</param>
         /// <param name="deltaSeconds">Time between the two, as the server measured it.</param>
-        public MovementVerdict Validate(ushort prefabId, in PawnState previous, in PawnState next, float deltaSeconds) {
+        /// <param name="carrierChangeAllowed">
+        /// Whether this pawn's cooldown since its last honoured frame change has expired. False rejects a
+        /// change outright, which holds the previous state — carrier included — so the pawn stays
+        /// self-consistent and the client is told.
+        /// </param>
+        public MovementVerdict Validate(
+            ushort prefabId,
+            in PawnState previous,
+            in PawnState next,
+            float deltaSeconds,
+            bool carrierChangeAllowed) {
             if (previous.CarrierId != next.CarrierId) {
                 // Two origins, no displacement to measure; see the trust-boundary note on the type.
+                if (!carrierChangeAllowed) {
+                    return MovementVerdict.Reject(in previous, 0f, 0f);
+                }
+
                 return MovementVerdict.Accept(in next, 0f, 0f);
             }
 

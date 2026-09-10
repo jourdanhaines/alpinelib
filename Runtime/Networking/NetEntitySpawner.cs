@@ -302,10 +302,7 @@ namespace AlpineLib.Networking {
             HandleEntityDespawned(entity.Id);
 
             bool isOwned = _boundReplication.IsOwned(entity);
-            Vector3 position = entity.State.Position.ToUnity();
-            Quaternion rotation = Quaternion.Euler(0f, entity.State.YawDegrees, 0f);
-
-            GameObject instance = Instantiate(prefab, position, rotation);
+            GameObject instance = InstantiateAtReportedPose(prefab, entity);
             NetEntityView view = ResolveView(instance);
 
             view.Bind(entity, isOwned);
@@ -316,6 +313,27 @@ namespace AlpineLib.Networking {
             if (entity.Kind != EntityKind.Pawn) return;
 
             PossessPawn(instance, isOwned);
+        }
+
+        /// <summary>
+        /// Instantiates the view where the entity's reported state actually puts it, resolving a carrier
+        /// frame before any of its numbers are treated as a place.
+        /// </summary>
+        /// <remarks>
+        /// A pawn riding a carrier reports metres from that carrier's deck. Instantiating those raw drops
+        /// a rejoining rider near the world origin and lets its character controller resolve a spawn
+        /// against whatever happens to be standing there, a frame before its driver corrects it.
+        /// When the carrier is not loaded yet there is no world pose to place it at, so the prefab keeps
+        /// its own authored transform and the entity's driver places it on the first sample whose carrier
+        /// resolves. That is the simplest option that heals itself: instantiating the view disabled would
+        /// leave nothing running on it to notice the carrier arriving.
+        /// </remarks>
+        private GameObject InstantiateAtReportedPose(GameObject prefab, NetEntity entity) {
+            if (!NetCarrierFrame.TryToWorld(entity.State, out PawnState world)) {
+                return Instantiate(prefab, prefab.transform.position, prefab.transform.rotation);
+            }
+
+            return Instantiate(prefab, world.Position.ToUnity(), Quaternion.Euler(0f, world.YawDegrees, 0f));
         }
 
         /// <summary>

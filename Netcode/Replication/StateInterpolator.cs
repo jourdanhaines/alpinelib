@@ -185,7 +185,6 @@ namespace AlpineLib.Netcode.Replication {
                 AdoptOutputCarrier(newest.State.CarrierId);
                 state = Extrapolate(in newest, renderSeconds - newest.Seconds);
                 ExtrapolatedSamples++;
-                wasExtrapolating = true;
                 return true;
             }
 
@@ -414,7 +413,15 @@ namespace AlpineLib.Netcode.Replication {
         /// in world space while the platform under it is drawn sliding on — but the state handed back
         /// still reports the raw velocity.
         /// </summary>
+        /// <remarks>
+        /// The extrapolation debt is raised here, next to the output position it is measured against, so
+        /// it cannot be separated from it by a later edit to <see cref="Sample"/> — the flag has to be
+        /// set after <see cref="AdoptOutputCarrier"/> has had its chance to clear it, and a caller that
+        /// has to remember that is a caller that will forget.
+        /// </remarks>
         private PawnState Extrapolate(in TimedSample newest, double aheadSeconds) {
+            wasExtrapolating = true;
+
             if (aheadSeconds <= 0.0) {
                 LastOutputPosition = newest.State.Position;
                 return newest.State;

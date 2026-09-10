@@ -15,12 +15,51 @@ namespace AlpineLib.Networking {
     /// <see cref="NetExecutionOrder.Carriers"/> for exactly that reason.
     /// </para>
     /// <para>
-    /// <b>Rigid, unit-scale carriers only.</b> The conversion is the transform's own rotate-and-translate
-    /// and nothing else; a scaled carrier would resize the pawn's coordinates along with its frame, and a
-    /// deforming one has no single frame to convert into.
+    /// <b>Rigid, unit-scale, upright-or-pitched carriers only.</b> Both directions are rotation and
+    /// translation only — never <c>TransformPoint</c>, which folds the carrier's scale into the position
+    /// while a velocity rotated by the same transform keeps world units, and hands the server a scaled
+    /// displacement to measure against an unscaled gait ceiling. <see cref="NetCarrier"/> refuses to
+    /// register a scaled object for that reason. Yaw is read off <c>eulerAngles.y</c>, which is the exact
+    /// heading for a yaw-then-pitch rotation — a graded track is fine — and stops being the intuitive
+    /// heading once a carrier banks.
+    /// </para>
+    /// <para>
+    /// A null carrier means world space in both directions, but they are not symmetric about it:
+    /// <see cref="ToLocal"/> hands the state back unrelabelled, because a pawn its game reports no
+    /// carrier for is already a world-frame state, while <see cref="ToWorld"/> relabels to
+    /// <see cref="PawnState.WorldCarrierId"/>, because its caller has just decided to treat the numbers
+    /// as world space and the label must say so.
     /// </para>
     /// </remarks>
     public static class NetCarrierFrame {
+        /// <summary>
+        /// Puts a sampled or corrected state into world space, resolving the carrier it names through
+        /// <see cref="NetCarrierRegistry"/>.
+        /// </summary>
+        /// <remarks>
+        /// The one entry point every consumer of an inbound state goes through, so that no reader can
+        /// mistake deck-local metres for a place in the world. Failure is reported rather than papered
+        /// over: a state naming a carrier this client has not loaded yet — the window between a join's
+        /// first snapshot and the consist being built, or a car streamed out mid-session — has no world
+        /// pose at all, and the caller must hold what it already had instead of writing the deck-local
+        /// numbers into a transform.
+        /// </remarks>
+        /// <returns>False when the state named a carrier no loaded object answers to.</returns>
+        public static bool TryToWorld(in PawnState state, out PawnState world) {
+            if (!state.IsCarrierRelative) {
+                world = state;
+                return true;
+            }
+
+            if (!NetCarrierRegistry.TryResolve(state.CarrierId, out NetCarrier carrier)) {
+                world = state;
+                return false;
+            }
+
+            world = ToWorld(in state, carrier);
+            return true;
+        }
+
         /// <summary>
         /// Expresses a world-space state in a carrier's frame: where the pawn stands on the deck, which
         /// way it faces relative to the carrier, and how fast it is moving <em>across</em> the deck.
@@ -34,8 +73,9 @@ namespace AlpineLib.Networking {
             if (carrier == null) return world;
 
             Transform frame = carrier.transform;
-            Vector3 position = frame.InverseTransformPoint(world.Position.ToUnity());
-            Vector3 velocity = frame.InverseTransformDirection(world.Velocity.ToUnity() - carrier.Velocity);
+            Quaternion intoFrame = Quaternion.Inverse(frame.rotation);
+            Vector3 position = intoFrame * (world.Position.ToUnity() - frame.position);
+            Vector3 velocity = intoFrame * (world.Velocity.ToUnity() - carrier.Velocity);
             float yaw = WrapDegrees(world.YawDegrees - frame.eulerAngles.y);
 
             return new PawnState(position.ToNumerics(), yaw, velocity.ToNumerics(), world.Flags, carrier.CarrierId);
@@ -56,8 +96,9 @@ namespace AlpineLib.Networking {
             if (carrier == null) return local.WithCarrier(PawnState.WorldCarrierId);
 
             Transform frame = carrier.transform;
-            Vector3 position = frame.TransformPoint(local.Position.ToUnity());
-            Vector3 velocity = frame.TransformDirection(local.Velocity.ToUnity());
+            Quaternion outOfFrame = frame.rotation;
+            Vector3 position = frame.position + outOfFrame * local.Position.ToUnity();
+            Vector3 velocity = outOfFrame * local.Velocity.ToUnity();
             float yaw = WrapDegrees(local.YawDegrees + frame.eulerAngles.y);
 
             return new PawnState(position.ToNumerics(), yaw, velocity.ToNumerics(), local.Flags, PawnState.WorldCarrierId);

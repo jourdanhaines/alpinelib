@@ -20,7 +20,9 @@ namespace AlpineLib.Networking {
     /// Ids are the game's to assign and must agree across every peer in a session, because they travel on
     /// the wire in place of the object itself. Authoring one in the inspector suits a carrier that is part
     /// of the scene; a carrier spawned from a server-driven manifest takes its id through
-    /// <see cref="SetId"/> instead. Zero is reserved for "world space" and is never a valid carrier.
+    /// <see cref="SetId"/> instead. Zero is reserved for "world space" on the wire, so here it means
+    /// <em>unassigned</em>: a carrier holding zero simply is not registered and waits, silently, for the
+    /// id its game will give it — and <c>SetId(0)</c> withdraws one.
     /// </para>
     /// <para>
     /// The velocity published here is measured, not authored: one frame's world-space position delta
@@ -32,7 +34,14 @@ namespace AlpineLib.Networking {
     /// </remarks>
     [DefaultExecutionOrder(NetExecutionOrder.Carriers)]
     public class NetCarrier : MonoBehaviour {
-        [Tooltip("Session-wide id riders name in their replicated state. Must match on every peer; zero is reserved for world space.")]
+        /// <summary>
+        /// How far each axis of the lossy scale may sit from one and still count as unit scale. Wide
+        /// enough to absorb the float error of a deep transform hierarchy, narrow enough that an authored
+        /// 0.99 is not mistaken for it.
+        /// </summary>
+        public const float ScaleTolerance = 1e-3f;
+
+        [Tooltip("Session-wide id riders name in their replicated state. Must match on every peer; leave at zero for a carrier whose id is assigned at runtime.")]
         [SerializeField] private ushort carrierId;
 
         private Vector3 _previousPosition;
@@ -56,7 +65,7 @@ namespace AlpineLib.Networking {
         /// Re-registering rather than merely storing matters because the registry is keyed by id: leaving
         /// the old key in place would resolve every rider still naming it to a carrier that no longer
         /// answers to that number. A carrier that is not currently enabled simply keeps the new id until
-        /// it registers.
+        /// it registers, and setting zero withdraws it entirely.
         /// </remarks>
         public void SetId(ushort id) {
             if (carrierId == id) return;
@@ -101,19 +110,44 @@ namespace AlpineLib.Networking {
         }
 
         /// <summary>
-        /// Publishes this carrier under its current id, refusing the reserved zero.
+        /// Publishes this carrier under its current id, once it has one and if its scale allows.
         /// </summary>
         /// <remarks>
-        /// An unassigned id is reported rather than registered because zero means "world space" on the
-        /// wire: registering under it would let a rider ask for the world and be handed a train.
+        /// Zero is the unassigned state and is passed over in silence, not reported: a carrier spawned
+        /// from a prefab enables before whatever builds it hands out ids, so an error here would fire
+        /// once per car on every scene load and mean nothing. <see cref="SetId"/> registers it when the
+        /// real id arrives.
         /// </remarks>
         private void Register() {
-            if (carrierId == PawnState.WorldCarrierId) {
-                Debug.LogError($"NetCarrier::Register->{name} has no carrier id; zero is reserved for world space and this carrier will not be resolvable.");
-                return;
-            }
+            if (carrierId == PawnState.WorldCarrierId) return;
+
+            if (!HasUnitScale()) return;
 
             _isRegistered = NetCarrierRegistry.Register(this);
+        }
+
+        /// <summary>
+        /// Whether this object's world scale is close enough to one to be a frame, reporting it when it
+        /// is not.
+        /// </summary>
+        /// <remarks>
+        /// Refusing rather than registering anyway is the safer failure: a scaled frame replicates
+        /// positions in scaled units and velocities in world ones, so the server measures a stretched
+        /// displacement against an unscaled gait ceiling and clamps an honest walk every tick — a
+        /// carrier that rubber-bands its riders is much harder to recognise than one whose riders stay
+        /// in world space with an error in the log.
+        /// </remarks>
+        private bool HasUnitScale() {
+            Vector3 scale = transform.lossyScale;
+
+            if (Mathf.Abs(scale.x - 1f) <= ScaleTolerance
+                && Mathf.Abs(scale.y - 1f) <= ScaleTolerance
+                && Mathf.Abs(scale.z - 1f) <= ScaleTolerance) {
+                return true;
+            }
+
+            Debug.LogError($"NetCarrier::HasUnitScale->{name} has a lossy scale of {scale}; carrier frames are unit-scale only and this carrier will not be registered.");
+            return false;
         }
     }
 }

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using AlpineLib.Actors;
 using AlpineLib.Actors.Locomotion;
 using AlpineLib.DI;
@@ -79,6 +80,7 @@ namespace AlpineLib.Networking {
         private Vector3 _correctionResidual;
         private PawnState _predictedState;
         private bool _hasPredictedState;
+        private readonly HashSet<ushort> _warnedCarrierIds = new HashSet<ushort>();
 
         /// <summary>
         /// True while this pawn is actually being replicated: bound to an entity this client owns inside
@@ -136,7 +138,10 @@ namespace AlpineLib.Networking {
             _characterController = GetComponent<CharacterController>();
             _locomotion = GetComponent<LocomotionSystem>();
             _crouch = GetComponent<CrouchSystem>();
-            TryGetComponent(out _carrierSource);
+
+            // Matched to the codebase's other interface lookup. TryGetComponent's silent false would
+            // quietly demote this pawn to world-space replication with nothing in the log to say so.
+            _carrierSource = GetComponent<INetCarrierSource>();
         }
 
         /// <remarks>
@@ -155,6 +160,12 @@ namespace AlpineLib.Networking {
             UnbindReplication();
         }
 
+        /// <remarks>
+        /// The server-authoritative send stays here, in the <c>Update</c> phase, because it is an
+        /// <em>intent</em>: the input is what the player asked for this frame and the prediction that
+        /// answers it must be recorded before <see cref="FollowPrediction"/> converges the actor onto it,
+        /// in the same phase, on the same frame.
+        /// </remarks>
         private void Update() {
             DecayCorrectionResidual();
 
@@ -164,8 +175,43 @@ namespace AlpineLib.Networking {
             if (!_view.IsBound || !_view.IsOwned) return;
 
             BindReplication(replication);
-            AccumulateAndSend(replication);
+
+            if (_view.Authority != AuthorityMode.OwnerClient) {
+                AccumulateAndSend(replication);
+            }
+
             FollowPrediction();
+        }
+
+        /// <summary>
+        /// The owner-simulated send, deferred to the end of the frame so it reports where the pawn
+        /// actually finished it.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// An owner-simulated pawn reports a measured pose, not an intent, and a game carries its riders
+        /// last: a platform rider applies the deck's travel in its own <c>LateUpdate</c>, after the brain
+        /// has moved the actor and before the actor settles. Sampling in <c>Update</c> would read the
+        /// transform from before this frame's carry while reading the carrier's transform from after it,
+        /// and <see cref="NetCarrierFrame.ToLocal"/> would subtract one frame of carrier travel out of
+        /// the rider's deck position — half a metre at a thirty-metre-a-second consist and sixty frames,
+        /// a full metre at thirty, and it moves with the frame rate.
+        /// </para>
+        /// <para>
+        /// This component's execution order already puts it after the actor's own <c>LateUpdate</c> and
+        /// after any rider carrying the pawn, so by here the transform, the actor's measured velocity and
+        /// the carrier's pose are all this frame's.
+        /// </para>
+        /// </remarks>
+        private void LateUpdate() {
+            ClientReplication replication = ResolveReplication();
+
+            if (replication == null) return;
+            if (!_view.IsBound || !_view.IsOwned) return;
+            if (_view.Authority != AuthorityMode.OwnerClient) return;
+
+            BindReplication(replication);
+            AccumulateAndSend(replication);
         }
 
         /// <summary>
@@ -423,29 +469,50 @@ namespace AlpineLib.Networking {
         /// send, all three axes of it: it is the client world's best account of where the pawn now is,
         /// and seeding the residual with the whole error means the target starts exactly where the actor
         /// already stands, so nothing moves on the frame the packet lands.
+        ///
+        /// A correction for a pawn on a carrier comes back in that carrier's frame — the validator's
+        /// clamp preserves the frame it measured in — so it is converted before a single number is
+        /// treated as a place. One whose carrier this client cannot resolve is dropped whole: the next
+        /// tick produces another, while applying it would teleport a rider off a moving train to
+        /// wherever the deck's origin coordinates happen to land in the world.
         /// </remarks>
         private void HandleAuthorityCorrected(NetEntity entity, PawnState state) {
             if (entity == null || !_view.IsBound || entity.Id != _view.EntityId) return;
 
-            if (applyPredictedYaw) {
-                transform.rotation = Quaternion.Euler(0f, state.YawDegrees, 0f);
+            if (!NetCarrierFrame.TryToWorld(in state, out PawnState world)) {
+                WarnOnceForCarrier(state.CarrierId);
+                return;
             }
 
-            _predictedState = state;
+            if (applyPredictedYaw) {
+                transform.rotation = Quaternion.Euler(0f, world.YawDegrees, 0f);
+            }
+
+            _predictedState = world;
             _hasPredictedState = true;
 
-            Vector3 corrected = state.Position.ToUnity();
+            Vector3 corrected = world.Position.ToUnity();
             Vector3 error = transform.position - corrected;
 
             if (!CanSmoothCorrection(error)) {
                 _correctionResidual = Vector3.zero;
                 Teleport(corrected);
-                SyncActorMotion(in state);
+                SyncActorMotion(in world);
                 return;
             }
 
             _correctionResidual = error;
-            SyncActorMotion(in state);
+            SyncActorMotion(in world);
+        }
+
+        /// <summary>
+        /// Reports an unresolvable carrier once per id, so a missing carrier is visible in the log
+        /// without a pawn's own frame rate burying it.
+        /// </summary>
+        private void WarnOnceForCarrier(ushort carrierId) {
+            if (!_warnedCarrierIds.Add(carrierId)) return;
+
+            Debug.LogWarning($"NetActorSync::WarnOnceForCarrier->{name} was corrected on carrier {carrierId}, which no loaded carrier answers to; the correction was dropped and the pawn keeps its pose.");
         }
 
         /// <summary>

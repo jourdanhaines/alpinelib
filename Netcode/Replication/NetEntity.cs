@@ -39,6 +39,7 @@ namespace AlpineLib.Netcode.Replication {
             AuxId = auxId;
             state = initialState;
             LastDirtyTick = 0u;
+            LastCarrierChangeTick = 0u;
             LastAcknowledgedInputSequence = 0u;
             HighestReceivedInputSequence = 0u;
             StarvedTicks = 0;
@@ -78,6 +79,18 @@ namespace AlpineLib.Netcode.Replication {
 
         /// <summary>Tick at which the state last changed. Zero means it has not moved since it spawned.</summary>
         public uint LastDirtyTick { get; private set; }
+
+        /// <summary>
+        /// Tick at which this entity's carrier last changed. Zero means it has never changed frame, and
+        /// the first change is therefore always honoured.
+        /// </summary>
+        /// <remarks>
+        /// A frame change is the one move the server accepts without measuring it, so how often one is
+        /// honoured is the only limit it can put on that trick — see the trust-boundary note on
+        /// <see cref="MovementValidator"/>. The clock lives here because the validator is stateless and
+        /// shared by every pawn in the session, and this is the only per-entity place there is.
+        /// </remarks>
+        public uint LastCarrierChangeTick { get; set; }
 
         /// <summary>
         /// The owner's input sequence this state accounts for. Rides on every correction so the owner's

@@ -526,13 +526,31 @@ namespace AlpineLib.Netcode.Replication {
         /// Takes an owner's claimed state for an owner-authoritative pawn, judges it, and corrects the
         /// owner when the claim did not survive judgement.
         /// </summary>
+        /// <remarks>
+        /// The per-entity carrier clock is kept here rather than inside the validator, which is stateless
+        /// and shared by every pawn: this is where an entity and the current tick are both in hand. A
+        /// change that survives is stamped, and one that arrives inside the cooldown comes back as a
+        /// rejection — the previous state, previous frame and all — which the owner is told about like
+        /// any other, so repeats are visible through <see cref="OnMovementViolation"/> rather than free.
+        /// </remarks>
         public void HandleOwnerPawnUpdate(in OwnerPawnUpdate message, PeerHandle sender) {
             if (!TryResolveOwnedEntity(message.EntityId, sender, AuthorityMode.OwnerClient, out NetEntity entity)) {
                 return;
             }
 
             float deltaSeconds = ElapsedSince(entity.LastDirtyTick);
-            MovementVerdict verdict = validator.Validate(entity.PrefabId, entity.State, message.State, deltaSeconds);
+            ushort heldCarrierId = entity.State.CarrierId;
+            bool carrierChangeAllowed = IsCarrierChangeAllowed(entity, message.State.CarrierId);
+            MovementVerdict verdict = validator.Validate(
+                entity.PrefabId,
+                entity.State,
+                message.State,
+                deltaSeconds,
+                carrierChangeAllowed);
+
+            if (verdict.ResolvedState.CarrierId != heldCarrierId) {
+                entity.LastCarrierChangeTick = currentTick;
+            }
 
             entity.ApplyState(verdict.ResolvedState, currentTick);
             entity.LastAcknowledgedInputSequence = message.ClientTick;
@@ -543,6 +561,22 @@ namespace AlpineLib.Netcode.Replication {
 
             OnMovementViolation?.Invoke(entity, verdict);
             SendCorrection(entity, sender);
+        }
+
+        /// <summary>
+        /// Whether this pawn may change frame now: it either is not changing, has never changed, or last
+        /// changed at least <see cref="MovementValidator.CarrierSwitchCooldownTicks"/> ago.
+        /// </summary>
+        private bool IsCarrierChangeAllowed(NetEntity entity, ushort claimedCarrierId) {
+            if (entity.State.CarrierId == claimedCarrierId || entity.LastCarrierChangeTick == 0u) {
+                return true;
+            }
+
+            uint elapsedTicks = currentTick > entity.LastCarrierChangeTick
+                ? currentTick - entity.LastCarrierChangeTick
+                : 0u;
+
+            return elapsedTicks >= validator.CarrierSwitchCooldownTicks;
         }
 
         /// <summary>

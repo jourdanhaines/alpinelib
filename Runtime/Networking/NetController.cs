@@ -38,8 +38,10 @@ namespace AlpineLib.Networking {
     /// is put back into world space through the carrier the state names, once per frame, because the
     /// carrier has moved since the snapshot was taken and the rider must be drawn on the deck as it is
     /// now — not where the deck was when the packet left. A state naming a carrier this client cannot
-    /// resolve is drawn as if its numbers were world space: wrong, and visibly so, but a pawn standing
-    /// at the origin is a better failure than a pawn that vanishes.
+    /// resolve yet — the window between a join's first snapshot and the consist being built, or a car
+    /// streamed out mid-session — leaves the pawn exactly where it already stood. Holding a stale pose
+    /// for a few frames is invisible; drawing deck-local metres as world coordinates would put every
+    /// rider on a train near the world origin and snap them back, on every single join.
     /// </para>
     /// </remarks>
     [DefaultExecutionOrder(NetExecutionOrder.PawnDrivers)]
@@ -120,38 +122,39 @@ namespace AlpineLib.Networking {
         /// Places the pawn at a reported pose outright. Used for the keyframe that follows a rejoin and
         /// for any caller holding an authoritative pose outside the interpolated stream.
         /// </summary>
+        /// <remarks>
+        /// A pose whose carrier is not loaded is not a pose, so nothing is placed and the pawn keeps
+        /// what it had. The interpolated stream will place it the moment the carrier registers.
+        /// </remarks>
         public void SnapTo(in PawnState state) {
             if (_character == null) return;
 
-            PawnState world = ResolveWorldFrame(in state);
+            if (!TryResolveWorldFrame(in state, out PawnState world)) return;
 
             _character.transform.position = world.Position.ToUnity();
             _character.transform.rotation = Quaternion.Euler(0f, world.YawDegrees, 0f);
         }
 
         /// <summary>
-        /// Puts a sampled state into world space, resolving the carrier it names.
+        /// Puts a sampled state into world space, warning once per unresolvable carrier id.
         /// </summary>
         /// <remarks>
-        /// An unresolvable carrier is warned about once per id per controller and then treated as world
-        /// space. Warning every frame would bury the log under a pawn's own frame rate, and the id is the
-        /// useful part: it names the carrier the scene is missing.
+        /// The conversion itself lives on <see cref="NetCarrierFrame"/> so that every consumer of an
+        /// inbound state resolves the same way; what is local to a controller is the warning, which is
+        /// throttled per id because a pawn's own frame rate would otherwise bury the log.
         /// </remarks>
-        private PawnState ResolveWorldFrame(in PawnState state) {
-            if (!state.IsCarrierRelative) return state;
-
-            if (NetCarrierRegistry.TryResolve(state.CarrierId, out NetCarrier carrier)) {
-                return NetCarrierFrame.ToWorld(in state, carrier);
-            }
+        /// <returns>False when the state named a carrier no loaded object answers to.</returns>
+        private bool TryResolveWorldFrame(in PawnState state, out PawnState world) {
+            if (NetCarrierFrame.TryToWorld(in state, out world)) return true;
 
             WarnOnceForCarrier(state.CarrierId);
-            return state.WithCarrier(PawnState.WorldCarrierId);
+            return false;
         }
 
         private void WarnOnceForCarrier(ushort carrierId) {
             if (!_warnedCarrierIds.Add(carrierId)) return;
 
-            Debug.LogWarning($"NetController::WarnOnceForCarrier->{name} sampled a state on carrier {carrierId}, which no loaded carrier answers to; drawing its numbers as world space.");
+            Debug.LogWarning($"NetController::WarnOnceForCarrier->{name} sampled a state on carrier {carrierId}, which no loaded carrier answers to; holding the pawn's last pose until it registers.");
         }
 
         /// <remarks>
@@ -178,7 +181,8 @@ namespace AlpineLib.Networking {
             if (!replication.SampleRemote(_view.EntityId, out PawnState sampled)) return;
 
             bool wasCarrierRelative = sampled.IsCarrierRelative;
-            PawnState state = ResolveWorldFrame(in sampled);
+
+            if (!TryResolveWorldFrame(in sampled, out PawnState state)) return;
 
             // A pawn standing on a mover drawn off the interpolation timeline (the local player is
             // riding it, so the platform renders at the predicted tick) must be re-anchored by the same
