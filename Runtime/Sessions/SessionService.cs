@@ -168,6 +168,12 @@ namespace AlpineLib.Sessions {
     /// <c>Update</c>, after <see cref="INetworkService"/> has pumped the transports. Both live on the app
     /// root, and this one is installed after it, which is what puts them in that order.
     /// </para>
+    /// <para>
+    /// Local-process hosting is the one mode where leaving does not end everybody's session. The server
+    /// is a process, not a piece of this client, so a host who leaves while other players are still in
+    /// detaches it and lets it run on; only quitting, being destroyed, or leaving alone stops it. See
+    /// <see cref="TearDownSession"/>.
+    /// </para>
     /// </remarks>
     public class SessionService : MonoBehaviour, ISessionService {
         [Header("Hosting")]
@@ -330,6 +336,7 @@ namespace AlpineLib.Sessions {
         private bool _isTearDownPending;
         private bool _hasWarnedOverrideIgnored;
         private bool _isLocalServerStarting;
+        private bool _isShuttingDown;
 
         /// <remarks>
         /// Declared on the concrete type rather than the interface, matching the library's other
@@ -539,6 +546,10 @@ namespace AlpineLib.Sessions {
         }
 
         private void OnDestroy() {
+            // Set before the teardown, so a session with guests still in it is stopped rather than
+            // detached: the application is going away and nothing would be left to reap the server.
+            _isShuttingDown = true;
+
             TearDownSession(SessionEndReason.HostClosed);
 
             // Disposed rather than stopped: the launcher holds editor and quit hooks that would keep it
@@ -665,10 +676,33 @@ namespace AlpineLib.Sessions {
         /// than out from under a session in progress.
         /// </remarks>
         private void AdoptConfiguredLocalServer() {
-            if (_launchedServerConfig != localServer) DropLocalServer();
+            if (!TryDropSupersededLocalServer()) return;
 
             _localServer ??= new LocalServerLauncher(localServer);
             _launchedServerConfig = localServer;
+        }
+
+        /// <summary>
+        /// Drops a launcher built for a config that is no longer the current one, and reports whether
+        /// the caller may now build a launcher for the current one.
+        /// </summary>
+        /// <remarks>
+        /// The deferral <see cref="ConfigureLocalServer"/> makes has to hold here too. Hosting is
+        /// re-callable, so a second Host with a session already live reaches this with the old config
+        /// still launched — and dropping the launcher then kills the server that session is on, which is
+        /// the very thing the deferral exists to prevent. A busy launcher keeps serving its own config
+        /// until it is idle, and says so once rather than swapping silently.
+        /// </remarks>
+        private bool TryDropSupersededLocalServer() {
+            if (_launchedServerConfig == localServer) return true;
+
+            if (!IsLocalServerBusy()) {
+                DropLocalServer();
+                return true;
+            }
+
+            Debug.LogWarning("SessionService::TryDropSupersededLocalServer->A local server is still running on the previous config; reusing it and applying the new config once it is idle.");
+            return false;
         }
 
         /// <summary>
@@ -1026,8 +1060,19 @@ namespace AlpineLib.Sessions {
         /// in-process server — and returns the process to offline. Safe to call when there is nothing
         /// to drop.
         /// </summary>
+        /// <remarks>
+        /// A launched server is the one thing that is not always dropped. When the player hosting one
+        /// walks out of a session other people are still in, killing it would end their game as well, so
+        /// it is detached instead and left to the idle exit it was started with. Everything else — the
+        /// application quitting, this service being destroyed, a host who was the last one in — still
+        /// stops it, because there is nobody left for it to serve.
+        /// </remarks>
         private void TearDownSession(SessionEndReason reason) {
             _isTearDownPending = false;
+
+            // Read before the session client goes: the member list is the only thing that knows whether
+            // anyone is left behind, and it is the first casualty of the teardown below.
+            bool detachLocalServer = ShouldDetachLocalServer();
 
             if (_sessionClient != null) {
                 UnsubscribeFromSessionClient();
@@ -1060,7 +1105,56 @@ namespace AlpineLib.Sessions {
 
             // After the shutdown, not before: the client's disconnect should reach a server that is
             // still listening, so it can retire the session rather than notice a socket going quiet.
-            _localServer?.Stop();
+            ReleaseLocalServer(detachLocalServer);
+        }
+
+        /// <summary>
+        /// True when the server this build launched must outlive the session being torn down.
+        /// </summary>
+        /// <remarks>
+        /// The host is only the player who happened to press the button; the server is where everyone
+        /// else's game lives. Leaving a session that still has other members in it must therefore leave
+        /// the process running — the guests carry on, and the server's own idle exit reaps it once the
+        /// last of them goes. Shutting the application down is the opposite case and is excluded here:
+        /// nothing is left to keep the process company, and the detach would leak it.
+        /// </remarks>
+        private bool ShouldDetachLocalServer() {
+            if (_isShuttingDown) return false;
+            if (hostingMode != SessionHostingMode.LocalServerProcess) return false;
+            if (_localServer == null || !_localServer.IsRunning) return false;
+
+            return CountOtherMembers() > 0;
+        }
+
+        /// <summary>How many people other than this player are still on the session roster.</summary>
+        /// <remarks>
+        /// Counted rather than read off <c>Members.Count</c>, because a leave can be answered with a
+        /// roster the leaver is already off: "one member left, and it is not me" has to read as a
+        /// session worth keeping the server alive for, not as an empty one.
+        /// </remarks>
+        private int CountOtherMembers() {
+            SessionMember localMember = _sessionClient?.LocalMember;
+            int others = 0;
+
+            foreach (SessionMember member in Members) {
+                if (member == localMember) continue;
+
+                others++;
+            }
+
+            return others;
+        }
+
+        /// <summary>Ends the session's hold on a launched server, by detaching it or by stopping it.</summary>
+        private void ReleaseLocalServer(bool detach) {
+            if (_localServer == null) return;
+
+            if (detach) {
+                _localServer.Detach();
+                return;
+            }
+
+            _localServer.Stop();
         }
 
         private string ResolveProfileId() {

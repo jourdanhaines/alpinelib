@@ -17,6 +17,14 @@ namespace AlpineLib.Sessions {
     /// readiness line, and a launcher that cannot have this one retries on an ephemeral port, so the
     /// value never has to be reserved or kept unique across two editors on one machine.
     /// </para>
+    /// <para>
+    /// Stopping is two-stage, and <see cref="idleExitSeconds"/> is the third. A stop asks the server to
+    /// shut itself down and waits <see cref="stopGraceSeconds"/> before killing it, so the guests still
+    /// on it are told the host closed the session instead of timing out. A host who leaves a session
+    /// other players are in does not stop the server at all — it is detached and left to its own idle
+    /// exit — so a build that offers hosting must keep <see cref="idleExitSeconds"/> non-zero or a
+    /// detached server has nothing left to reap it.
+    /// </para>
     /// </remarks>
     [CreateAssetMenu(fileName = "LocalServerConfig", menuName = "AlpineLib/Networking/Local Server Config")]
     public class LocalServerConfig : ScriptableObject {
@@ -35,6 +43,13 @@ namespace AlpineLib.Sessions {
         /// timeout for a server that was about to answer.
         /// </remarks>
         public const float MinimumReadyTimeoutSeconds = 1f;
+
+        /// <summary>Ceiling on the stop grace, in seconds.</summary>
+        /// <remarks>
+        /// A stop happens while the player watches a menu that has already said goodbye, so a budget
+        /// longer than this reads as the game having hung rather than as a server being polite.
+        /// </remarks>
+        public const float MaximumStopGraceSeconds = 10f;
 
         [Header("Executable")]
         // Name the server binary itself, not a script that forks it: on Windows only the launched
@@ -58,6 +73,9 @@ namespace AlpineLib.Sessions {
         [Min(0)]
         [Tooltip("Seconds with no players after which the server exits on its own, so a crashed client leaves nothing behind.")]
         public int idleExitSeconds = 30;
+        [Min(0)]
+        [Tooltip("Seconds the server is given to close its sessions after a stop request before it is killed outright.")]
+        public float stopGraceSeconds = 2f;
 
         /// <summary>The preferred port, forced into the range a socket can actually bind.</summary>
         public int ClampedPreferredPort() {
@@ -70,6 +88,19 @@ namespace AlpineLib.Sessions {
         /// <summary>The idle-exit budget, never negative.</summary>
         public int ClampedIdleExitSeconds() {
             return idleExitSeconds < 0 ? 0 : idleExitSeconds;
+        }
+
+        /// <summary>The grace given to a stop request before the kill, in milliseconds.</summary>
+        /// <remarks>
+        /// Zero is a legitimate answer and means "kill it now": a project whose server has no shutdown
+        /// work to do should not pay a wait on every leave. Anything above the cap is a stop the player
+        /// reads as a hang, so it is clamped rather than honoured.
+        /// </remarks>
+        public int ClampedStopGraceMilliseconds() {
+            if (stopGraceSeconds <= 0f) return 0;
+            if (stopGraceSeconds > MaximumStopGraceSeconds) return (int)(MaximumStopGraceSeconds * 1000f);
+
+            return (int)(stopGraceSeconds * 1000f);
         }
 
         /// <summary>The readiness budget actually waited out, floor applied.</summary>

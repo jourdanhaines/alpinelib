@@ -1,6 +1,8 @@
 using System;
+using System.ComponentModel;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using AlpineLib.Netcode.Transport;
@@ -35,6 +37,11 @@ namespace AlpineLib.Sessions {
     /// three are skipped by a crash. Each try lives in its own <see cref="LocalServerAttempt"/>, so a
     /// superseded attempt can only ever reap the process it started itself.
     /// </para>
+    /// <para>
+    /// The one ending that is not a kill is <see cref="Detach"/>, for a host who walks out of a session
+    /// other players are still in. It hands the server over to its own idle exit and forgets it, so
+    /// every hook above finds nothing to reap and the guests keep the game they were in.
+    /// </para>
     /// </remarks>
     public sealed class LocalServerLauncher : IDisposable {
         /// <summary>Marker opening the server's readiness line. Mirrors the server's own contract.</summary>
@@ -47,6 +54,11 @@ namespace AlpineLib.Sessions {
         private const int MinPort = 1;
         private const int MaxPort = 65535;
         private const int EphemeralPort = 0;
+
+        /// <summary><c>X_OK</c>: the mode bit <c>access(2)</c> is asked about.</summary>
+        private const int ExecutePermission = 1;
+
+        private static volatile bool _isAccessApiUsable = true;
 
         private readonly LocalServerConfig _config;
         private readonly object _gate = new object();
@@ -136,6 +148,28 @@ namespace AlpineLib.Sessions {
             attempt?.Stop();
         }
 
+        /// <summary>
+        /// Lets go of the running server without killing it, and forgets it for good.
+        /// </summary>
+        /// <remarks>
+        /// For the host who leaves a session other players are still in: the server process <em>is</em>
+        /// their session, so stopping it ends their game. Nothing reaps a detached server afterwards —
+        /// not this launcher, not the quit and play-mode hooks, which now have nothing to reach — so the
+        /// server's own idle-exit budget is what ends it once the last guest goes. A launcher that has
+        /// detached is reusable: the next start simply spawns a new server.
+        /// </remarks>
+        public void Detach() {
+            LocalServerAttempt attempt;
+
+            lock (_gate) {
+                attempt = _attempt;
+                _attempt = null;
+                _endpoint = NetEndpoint.None;
+            }
+
+            attempt?.Detach();
+        }
+
         /// <inheritdoc />
         public void Dispose() {
             if (_isDisposed) return;
@@ -215,14 +249,36 @@ namespace AlpineLib.Sessions {
         }
 
         /// <summary>Spawns the server with stdout and stderr redirected, replacing anything still running.</summary>
+        /// <remarks>
+        /// A <c>setsid</c> that will not exec — the wrong architecture, a shadowing file in a
+        /// project-local <c>bin</c> — costs group reaping and must not cost the host, so the spawn is
+        /// retried directly rather than predicted. Predicting it cannot be done: the execute bit is
+        /// checked before this, and an executable file can still fail to run.
+        /// </remarks>
         private LocalServerAttempt StartAttempt(string executablePath, int port) {
             Stop();
 
             ProcessStartInfo startInfo = BuildStartInfo(executablePath, port, out bool leadsOwnProcessGroup);
-            var attempt = new LocalServerAttempt(startInfo, leadsOwnProcessGroup);
 
-            // Published before it is started so a concurrent Stop can reach it; the attempt makes its
-            // own Start a no-op if that stop wins the race.
+            if (!leadsOwnProcessGroup) return PublishAndStart(startInfo, false);
+
+            try {
+                return PublishAndStart(startInfo, true);
+            } catch (Win32Exception exception) {
+                Debug.LogWarning($"LocalServerLauncher::StartAttempt->Could not run the server through '{startInfo.FileName}' ({exception.Message}); launching it directly and giving up process-group reaping.");
+            }
+
+            return PublishAndStart(BuildDirectStartInfo(executablePath, port), false);
+        }
+
+        /// <summary>Publishes an attempt so a concurrent stop can reach it, then starts it.</summary>
+        /// <remarks>
+        /// The publish comes first on purpose; the attempt makes its own start a no-op if that stop
+        /// wins the race.
+        /// </remarks>
+        private LocalServerAttempt PublishAndStart(ProcessStartInfo startInfo, bool leadsOwnProcessGroup) {
+            var attempt = new LocalServerAttempt(startInfo, leadsOwnProcessGroup, _config.ClampedStopGraceMilliseconds());
+
             lock (_gate) {
                 _attempt = attempt;
             }
@@ -297,18 +353,32 @@ namespace AlpineLib.Sessions {
         }
 
         private ProcessStartInfo BuildStartInfo(string executablePath, int port, out bool leadsOwnProcessGroup) {
-            var startInfo = new ProcessStartInfo {
+            ProcessStartInfo startInfo = BuildBaseStartInfo();
+
+            leadsOwnProcessGroup = AppendCommand(startInfo, executablePath);
+            AppendArguments(startInfo, port);
+
+            return startInfo;
+        }
+
+        /// <summary>The same launch with no <c>setsid</c> in front of it, for when that one will not run.</summary>
+        private ProcessStartInfo BuildDirectStartInfo(string executablePath, int port) {
+            ProcessStartInfo startInfo = BuildBaseStartInfo();
+
+            startInfo.FileName = executablePath;
+            AppendArguments(startInfo, port);
+
+            return startInfo;
+        }
+
+        private ProcessStartInfo BuildBaseStartInfo() {
+            return new ProcessStartInfo {
                 WorkingDirectory = LocalServerPaths.ResolveServerDirectory(_config),
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             };
-
-            leadsOwnProcessGroup = AppendCommand(startInfo, executablePath);
-            AppendArguments(startInfo, port);
-
-            return startInfo;
         }
 
         /// <summary>
@@ -341,7 +411,7 @@ namespace AlpineLib.Sessions {
             return true;
         }
 
-        /// <summary>The full path to <c>setsid</c>, or null when this host does not ship one.</summary>
+        /// <summary>The full path to a runnable <c>setsid</c>, or null when this host does not ship one.</summary>
         /// <remarks>
         /// Resolved to a path rather than left to <c>Process.Start</c>'s own PATH search so that "no
         /// <c>setsid</c> here" is answered before the spawn, while there is still a choice to make.
@@ -365,7 +435,31 @@ namespace AlpineLib.Sessions {
 
             string candidate = Path.Combine(directory, SetsidFileName);
 
-            return File.Exists(candidate) ? candidate : null;
+            if (!File.Exists(candidate)) return null;
+
+            return IsExecutable(candidate) ? candidate : null;
+        }
+
+        /// <summary>True when this host can actually run the file, not merely see it.</summary>
+        /// <remarks>
+        /// "There is a file called <c>setsid</c> on PATH" is not the question. One without an execute
+        /// bit, or one the player has no permission for, would otherwise turn an unrelated file into a
+        /// failed host — where answering "no" here costs only group reaping. A libc that will not bind
+        /// answers "no" for the rest of the run for the same reason: the safe reading of an unknown is
+        /// the one that still launches the server.
+        /// </remarks>
+        private static bool IsExecutable(string path) {
+            if (!_isAccessApiUsable) return false;
+
+            try {
+                return CheckAccessNative(path, ExecutePermission) == 0;
+            } catch (DllNotFoundException) {
+                _isAccessApiUsable = false;
+            } catch (EntryPointNotFoundException) {
+                _isAccessApiUsable = false;
+            }
+
+            return false;
         }
 
         /// <remarks>
@@ -448,5 +542,12 @@ namespace AlpineLib.Sessions {
             Stop();
         }
 #endif
+
+        /// <remarks>
+        /// Only ever reached on POSIX: the Windows branch of <see cref="AppendCommand"/> returns before
+        /// <c>setsid</c> is looked for at all, so the binding is never evaluated there.
+        /// </remarks>
+        [DllImport("libc", EntryPoint = "access", CharSet = CharSet.Ansi, SetLastError = true)]
+        private static extern int CheckAccessNative(string path, int mode);
     }
 }
