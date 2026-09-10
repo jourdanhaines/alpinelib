@@ -117,12 +117,25 @@ namespace AlpineLib.Sessions {
         /// and the network service's client — have been built or torn down.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// The three are created together over one connection and dropped together, and they are
         /// exposed as properties rather than announced, so every consumer that needed to know had to
         /// reference-compare them in its own <c>Update</c>. This is that comparison, done once. It
         /// carries no payload on purpose: whichever of the three a listener cares about, it re-reads it
         /// from the service inside the handler, and any of them may be null (a teardown raises this
         /// too).
+        /// </para>
+        /// <para>
+        /// It fires twice per connection, and the sequence is what a listener has to plan around. The
+        /// first raise is the build: the three objects exist, but the connection has not been dialled,
+        /// so <c>Claims.LocalPeerId</c> and <c>Replication.LocalPeerId</c> are both -1 and no question
+        /// of the form "is this mine" has a true answer yet. The second is the adoption: the server has
+        /// answered the handshake and put this client on a roster, the identity behind all three is now
+        /// real, and any locally held slot has been replayed as a grant. Take references on the first
+        /// and read ownership on the second — or, better, take ownership from
+        /// <c>ClientClaims.OnClaimGranted</c> and replication's own events rather than from
+        /// <c>LocalPeerId</c> at all.
+        /// </para>
         /// </remarks>
         event Action OnSessionResourcesChanged;
 
@@ -266,6 +279,20 @@ namespace AlpineLib.Sessions {
         public NetEndpoint HostEndpoint => IsHostEndpointLive() ? _hostEndpoint : NetEndpoint.None;
 
         /// <summary>
+        /// The game's rule about which claim slots a session hosted in this process will answer for, or
+        /// null to accept every slot number.
+        /// </summary>
+        /// <remarks>
+        /// Only <see cref="SessionHostingMode.ListenHost"/> reads it, and only when the front desk is
+        /// stood up, so it has to be set before the first host. The other two modes get their rule from
+        /// the server process instead, through <c>ISessionModuleFactory.BuildClaimValidator</c>; this is
+        /// the same delegate, and a game with an authority rule should install it in both places or its
+        /// rule applies in one hosting mode and not the other. Exposed on the concrete type rather than
+        /// the interface because only whoever composes the app root has a rule to hand over.
+        /// </remarks>
+        public Func<ushort, PeerHandle, ServerClaimRegistry, bool> ClaimValidator { get; set; }
+
+        /// <summary>
         /// Where the next <see cref="HostSessionAsync"/> puts its server. Settable so an app root or a
         /// development menu can pick a mode without a second config asset.
         /// </summary>
@@ -354,6 +381,7 @@ namespace AlpineLib.Sessions {
         private bool _hasWarnedOverrideIgnored;
         private bool _isLocalServerStarting;
         private bool _isShuttingDown;
+        private int _adoptedLocalPeerId = ClientClaims.FreeHolderPeerId;
 
         /// <remarks>
         /// Declared on the concrete type rather than the interface, matching the library's other
@@ -624,7 +652,8 @@ namespace AlpineLib.Sessions {
                 CurrentCollisionWorld(),
                 pawnPrefabId: spawn != null ? spawn.pawnPrefabId : SpawnPlacementConfig.DefaultPawnPrefabId,
                 pawnAuthority: spawn != null ? spawn.pawnAuthority : AuthorityMode.Server,
-                placement: spawn != null ? spawn.ToPlacement() : new RingSpawnPlacement());
+                placement: spawn != null ? spawn.ToPlacement() : new RingSpawnPlacement(),
+                isClaimAllowed: ClaimValidator);
 
             return LoopbackEndpoint();
         }
@@ -883,6 +912,7 @@ namespace AlpineLib.Sessions {
 
             _replication = new ClientReplication(client, _netConfig, CurrentCollisionWorld());
             _claims = new ClientClaims(client);
+            _adoptedLocalPeerId = ClientClaims.FreeHolderPeerId;
 
             RaiseSessionResourcesChanged();
         }
@@ -1114,7 +1144,10 @@ namespace AlpineLib.Sessions {
         /// </summary>
         /// <remarks>
         /// The peer id is only known once the server has answered the auth request and put us on a
-        /// roster, which is why this is re-checked on every state change rather than done once.
+        /// roster, which is why this is re-checked on every state change rather than done once. The
+        /// first time it resolves to a real id, <c>OnSessionResourcesChanged</c> is raised a second
+        /// time: the three objects a listener took references to on the build are only answerable about
+        /// ownership from this moment on, and nothing else announces it.
         /// </remarks>
         private void AdoptLocalPeerId() {
             if (_sessionClient == null) return;
@@ -1130,6 +1163,11 @@ namespace AlpineLib.Sessions {
             if (_claims != null) {
                 _claims.LocalPeerId = localMember.PeerId;
             }
+
+            if (localMember.PeerId == _adoptedLocalPeerId) return;
+
+            _adoptedLocalPeerId = localMember.PeerId;
+            RaiseSessionResourcesChanged();
         }
 
         /// <summary>
@@ -1169,6 +1207,7 @@ namespace AlpineLib.Sessions {
 
             _replication?.Dispose();
             _replication = null;
+            _adoptedLocalPeerId = ClientClaims.FreeHolderPeerId;
 
             _frontDesk?.Close(reason);
             _frontDesk = null;

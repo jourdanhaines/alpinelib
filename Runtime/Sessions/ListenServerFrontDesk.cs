@@ -50,6 +50,7 @@ namespace AlpineLib.Sessions {
         private readonly ushort _pawnPrefabId;
         private readonly AuthorityMode _pawnAuthority;
         private readonly ISpawnPlacement _spawnPlacement;
+        private readonly Func<ushort, PeerHandle, ServerClaimRegistry, bool> _isClaimAllowed;
 
         private CollisionWorld _collisionWorld;
         private SessionHost _host;
@@ -75,6 +76,17 @@ namespace AlpineLib.Sessions {
         /// Where arriving players appear. Null falls back to a ring around the origin, which is what a
         /// scene with no authored spawn points gets.
         /// </param>
+        /// <param name="isClaimAllowed">
+        /// The game's rule about which slots this session will answer for, in the shape
+        /// <c>ServerClaimRegistry</c> takes. Null accepts every slot number, which is what a game with
+        /// no authority rule of its own gets.
+        /// </param>
+        /// <remarks>
+        /// A dedicated server gets its rule from <c>ISessionModuleFactory.BuildClaimValidator</c>, which
+        /// a listen host has no module factory to ask. Passing the same delegate here is what keeps the
+        /// three hosting modes differing only in where the endpoint comes from: without it a game's
+        /// authority rule would silently not apply when the same players host in-process.
+        /// </remarks>
         public ListenServerFrontDesk(
             NetServer server,
             SessionConfigData config,
@@ -83,7 +95,8 @@ namespace AlpineLib.Sessions {
             CollisionWorld collisionWorld,
             ushort pawnPrefabId,
             AuthorityMode pawnAuthority,
-            ISpawnPlacement placement) {
+            ISpawnPlacement placement,
+            Func<ushort, PeerHandle, ServerClaimRegistry, bool> isClaimAllowed = null) {
             _server = server ?? throw new ArgumentNullException(nameof(server));
             _config = config ?? throw new ArgumentNullException(nameof(config));
             _netConfig = netConfig ?? throw new ArgumentNullException(nameof(netConfig));
@@ -91,6 +104,7 @@ namespace AlpineLib.Sessions {
             _pawnPrefabId = pawnPrefabId;
             _pawnAuthority = pawnAuthority;
             _spawnPlacement = placement ?? new RingSpawnPlacement();
+            _isClaimAllowed = isClaimAllowed;
             _authDesk = new SessionAuthDesk(server, validator ?? new AnonymousAuthValidator());
 
             _authDesk.RegisterHandlers(server.Router);
@@ -235,7 +249,7 @@ namespace AlpineLib.Sessions {
             );
             _replication.AttachToRouter();
 
-            _claims = new ServerClaimRegistry(_server, ResolveSessionPeers);
+            _claims = new ServerClaimRegistry(_server, ResolveSessionPeers, _isClaimAllowed);
             _claims.AttachToRouter();
 
             // The constructor installs the world but spawns nothing: entities for the scene's movers are

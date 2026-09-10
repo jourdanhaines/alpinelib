@@ -57,8 +57,13 @@ namespace AlpineLib.Server.Sessions {
         /// ("one driver per train") can read <c>registry.Holders</c> to answer. It must not mutate the
         /// registry. A refused request is answered with <c>ClaimDenied</c>, so refusing is not silence.
         /// </para>
+        /// <para>
+        /// This governs the sessions of a server process, which is not every session of the game: a
+        /// listen host runs no module factory at all. A game whose rule must hold in that mode too sets
+        /// the same delegate on <c>SessionService.ClaimValidator</c>, which the in-process front desk
+        /// passes to its registry.
+        /// </para>
         /// </remarks>
         Func<ushort, PeerHandle, ServerClaimRegistry, bool> BuildClaimValidator(SessionHost host) => null;
-
     }
 }
