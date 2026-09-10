@@ -2,10 +2,13 @@
 
 A UPM package of reusable gameplay systems for Unity 6000.0+: dependency injection, tagged
 stats, needs, anatomical injuries, melee combat, projectiles, skills, equipment, passive
-progression, AI perception, pointer input, spawning, camera rigs, an input facade, menu screens
-and an application bootstrap. Runtime code
+progression, AI perception, pointer input, spawning, camera rigs, an input facade, menu screens,
+an application bootstrap, and client/server netcode with sessions, chat and a dedicated server.
+Runtime code
 lives in the `FluxInteractive.AlpineLib` assembly under the
-`AlpineLib.*` namespaces; editor tooling lives in `FluxInteractive.AlpineLib.Editor`. The package
+`AlpineLib.*` namespaces; editor tooling lives in `FluxInteractive.AlpineLib.Editor`. Netcode and
+chat live in engine-free assemblies of their own — see
+[Netcode, sessions and dedicated server](#netcode-sessions-and-dedicated-server). The package
 depends on the Universal Render Pipeline (17.0.0) because the visibility overlay shader,
 `AlpineLib/VisibilityDarken`, is URP-only — as is the material fading in `VisibilityOccludable` —
 and on the Input System (1.19.0), which `AlpineLib.Input` is a facade over.
@@ -57,6 +60,65 @@ consuming project's next compile.
 | `AlpineLib.Animation` | Animator parameter hashes shared by the actor systems (see the contract below), plus a helper that re-rolls a blend tree index whenever a watched parameter crosses a threshold, so idles vary, `ExpressionSystem`, which fires face-expression triggers (auto-blink plus a scripted `Play`) on a masked expressions layer, and `IdleVariationSystem`, which fires a random variation trigger (optionally paired with an expression) after a random stretch of genuine idleness. | `AnimatorParameters`, `AnimateRandomIndex`, `ExpressionSystem`, `IdleVariationSystem`, `IdleVariation` |
 | `AlpineLib.Utilities` | Weighted random selection over any read-only list. | `WeightedRandom` |
 | `AlpineLib.Editor` | Editor tooling. `BootSceneLoader` redirects play mode to a designated boot scene (`AlpineLib/Editor/Play From Boot Scene`). `RegenerateProjectFiles` syncs the external script editor's project files on demand or after every script reload, for scripts added outside Unity. `AssetValidator` is a batch-mode integrity gate over prefabs, ScriptableObjects and build scenes: `-batchmode -quit -executeMethod AlpineLib.Editor.AssetValidator.ValidateAll`. `BodySystemEditor` adds a play-mode inspector showing injuries, bleed rate breakdown and condition progress per body part. | `BootSceneLoader`, `RegenerateProjectFiles`, `AssetValidator`, `BodySystemEditor` |
+
+## Netcode, sessions and dedicated server
+
+A client/server stack, not a peer mesh and not a listen server: even a player who hosts from the menu
+starts a real server process and then connects to it like anybody else. The simulation is engine-free
+so the same sources run inside Unity and inside a headless .NET process — that is the whole reason the
+transport, protocol and session layers live outside the runtime assembly.
+
+### Assemblies
+
+| Assembly / folder | Namespace | What it provides | Key types |
+| --- | --- | --- | --- |
+| `Netcode/` → `FluxInteractive.AlpineLib.Netcode` (netstandard2.1, no `UnityEngine`) | `AlpineLib.Netcode.*` | The wire. LiteNetLib transport behind `INetTransport`, a `MessageRouter` over one byte of message id, `NetReader`/`NetWriter` and quantization, clock sync, and the two facades a game holds — `NetClient` and `NetServer`. `MessageIdBudget` is the whole-protocol view of which ids the library has spoken for and which band (136–191) a game may author in; the id map is a permanent wire contract, so a retired id stays reserved. | `NetClient`, `NetServer`, `MessageRouter`, `MessageIdBudget`, `NetConfig`, `NetProtocol`, `NetReader`, `NetWriter`, `NetClock` |
+| `Netcode/Replication/` | `AlpineLib.Netcode.Replication` | Entities, snapshots and prediction. `PawnMotor` is the shared character step; the owning client predicts with it and the server re-runs it, `MovementValidator` judging the result. Remote entities are smoothed by `StateInterpolator` over an `InterpolationTimeline`. `PawnState` carries a **carrier id**: a pawn standing on a moving deck replicates its position *relative to that carrier* rather than in world space, so a rider on a train moving 30 m/s is judged, interpolated and corrected on the one metre a second it is actually responsible for. | `ServerReplication`, `ClientReplication`, `NetEntity`, `PawnMotor`, `PawnState`, `PawnInput`, `MovementValidator`, `StateInterpolator`, `PredictionBuffer` |
+| `Netcode/Replication/StateChannel/` | `AlpineLib.Netcode.Replication` | A generic replicated dictionary for game state that is not a pawn — a train's velocity, a door's angle, a score. The server publishes records under a game-owned message id; the channel sends keyframes to a joiner and deltas to everyone else, chunked to fit a datagram, so a late arrival is caught up without the steady stream paying for it. | `ServerStateChannel<T>`, `ClientStateChannel<T>`, `StateChannelRecord`, `StateChannelEnvelope` |
+| `Netcode/Sessions/` | `AlpineLib.Netcode.Sessions` | The front desk. Create or join a session by six-character join code, a roster with an owner, phases, rejoin and late-load policies, ownership transfer when the owner leaves, and anonymous auth behind `IAuthProvider`/`IAuthValidator`. `SessionClient` is what a client holds; `SessionHost` is what a server runs. | `SessionClient`, `SessionHost`, `ISessionFrontDesk`, `SessionConfigData`, `SessionProfileData`, `LobbySnapshot`, `JoinCodeGenerator`, `SessionEndReason` |
+| `Netcode/Sessions/Claims/` | `AlpineLib.Netcode.Sessions.Claims` | Server-arbitrated exclusive slots: one player at a time may hold a lever, a turret, a workbench. The server owns the map and broadcasts every change; clients read `ClientClaims` and never assume a grant. A slot is a `ushort` the game derives however it likes, and everything a holder is entitled to do is checked against the map on the server. | `ServerClaimRegistry`, `ClientClaims` |
+| `Netcode/Sessions/Spawning/` | `AlpineLib.Netcode.Sessions.Spawning` | Where a joining player's pawn appears: an authored list (`ListSpawnPlacement`) or a ring around the origin (`RingSpawnPlacement`), both behind `ISpawnPlacement`, with `SpawnGroundProbe` dropping the seat onto the collision world's floor. `SessionPawnSpawner` gives each member a body as they arrive and takes it back when they go. | `SessionPawnSpawner`, `ISpawnPlacement`, `ListSpawnPlacement`, `RingSpawnPlacement`, `SpawnGroundProbe` |
+| `Netcode/Collision/` | `AlpineLib.Netcode.Collision` | The engine-free collision world both ends step against: planes, boxes, spheres and capsules in a 2 m XZ grid, plus translation-only movers whose pose is a pure function of the sim tick. Scenes are authored in Unity, baked by `AlpineLib/Editor/Export Scene Geometry` into a `.geo` blob the server reads from `config/geometry/`, and resolved on the client through a `SceneGeometryRegistry`. Same bytes, same arithmetic, so ramps, walls, step-ups and platform rides resolve identically. | `CollisionWorld`, `CollisionGrid`, `CollisionResolver`, `SceneGeometry`, `SceneGeometryCodec`, `MoverDefinition` |
+| `Runtime/Collision/` | `AlpineLib.Collision` | Authoring for the above. `NetStaticGeometry` and `NetMover` mark what the bake picks up, `SceneGeometryAsset` is the baked blob as a Unity asset, `SceneGeometryRegistry` maps a scene name to one, and `NetMoverView` draws a mover at the pose the sim computes rather than one animated beside it. | `NetStaticGeometry`, `NetMover`, `NetMoverView`, `SceneGeometryAsset`, `SceneGeometryRegistry` |
+| `Chat/` → `FluxInteractive.AlpineLib.Chat` (netstandard2.1, no `UnityEngine`) | `AlpineLib.Chat` | Channels, identities, a delivery ledger, rate limiting and a filter chain, behind `IChatProvider` so a game can swap the transport. Rides one envelope message id, kept in its own assembly so a game that wants no chat links none of it. | `ChatServerService`, `IChatProvider`, `LiteNetChatProvider`, `ChatChannelId`, `IChatFilter`, `TokenBucket` |
+| `Runtime/Networking/` | `AlpineLib.Networking` | The Unity side of replication. `NetworkService` owns the client/server facades and the mode; `NetEntityView` marks a replicated object and `NetEntitySpawner` instantiates them from an append-only `NetPrefabRegistry` (a row's index is its prefab id on the wire). `NetActorSync` walks the visible `Actor` toward the predicted pose, `NetController` possesses a remote pawn, and `PossessionGate` disables the local-only behaviours — input reader, controller, interactor — on a pawn that is not ours, which is why those components ship *authored disabled* on a prefab. `NetCarrier` gives a moving deck the session-wide id riders name, `NetCarrierRegistry` resolves it, and `NetCarrierFrame` converts between the two frames. | `NetworkService`, `NetEntityView`, `NetEntitySpawner`, `NetActorSync`, `NetController`, `PossessionGate`, `NetCarrier`, `NetCarrierRegistry`, `NetPrefabRegistry`, `NetworkConfig` |
+| `Runtime/Sessions/` | `AlpineLib.Sessions` | The Unity side of sessions and hosting. `SessionConfig` is the single asset that says how a build networks — transport tuning, session rules, lobby, matches, matchmaking, prefab registry, spawn placement — and the same asset reaches three places: the client that loads it, the server that reads it as exported JSON, and every joining client that receives the session half in `JoinAccepted`. `SessionService` drives create/join/leave and the scene flow; `LocalServerLauncher` starts the bundled server for a player who hosts, reading its `[ready] port=N` line off stdout; `ServerBundleConfig` says which published build to carry into a player build. | `SessionConfig`, `SessionService`, `SessionSceneFlow`, `LocalServerLauncher`, `LocalServerConfig`, `LocalServerPaths`, `ServerBundleConfig`, `MatchmakingConfig`, `SpawnPlacementConfig` |
+| `Server~/` (net10.0, excluded from Unity by the `~`) | `AlpineLib.Server` | The dedicated server host a game builds its own executable on: `AlpineServerHost` (Generic Host, argument parsing, `[ready]` line, idle shutdown), `GameLoopService` (fixed tick, snapshot rate, `GameThreadInbox` for off-thread work), `SessionRegistry`/`SessionEntry` (one live session each, front desk, claims, spawner, chat adapter), and `SessionConfigLoader` binding the exported `session-config.json`. A game plugs in through `ISessionModuleFactory`/`ISessionModule`. | `AlpineServerHost`, `ServerHostBuilder`, `GameLoopService`, `SessionRegistry`, `SessionEntry`, `ISessionModule`, `ISessionModuleFactory`, `SessionConfigLoader` |
+| `Editor/` | `AlpineLib.Editor` | `SessionConfigExporter` flattens a `SessionConfig` into the server's JSON (`AlpineLib/Editor/Export Session Config`, or `Export(config, path)` from a build script). `SceneGeometryExporter` bakes the `.geo` blob. `SessionConfigValidator` checks the assets, `ServerBundleBuildStep` copies a published server into a player build, and `ServerAddressOverrideWindow` points a build at another server without touching the asset. | `SessionConfigExporter`, `SceneGeometryExporter`, `SessionConfigValidator`, `ServerBundleBuildStep`, `ServerAddressOverrideWindow` |
+
+### How a game builds a server on `Server~`
+
+`Server~` is a folder Unity ignores and `dotnet` does not, which is what lets one repository hold both
+sides. A game adds its own console project referencing `Server~/AlpineLib.Server`, plus a
+netstandard2.1 project compiling whatever simulation sources the Unity client also compiles — that
+shared assembly is the only guarantee both ends step the same arithmetic.
+
+1. **`Program.cs`** hands `AlpineServerHost` the command line and attaches a module factory:
+   `--port`, `--config`, `--idle-exit-seconds` and `--max-sessions` are parsed for you, and the host
+   prints exactly one machine-readable line, `[ready] port=N`, once the socket is bound. With
+   `--port 0` that is the port the OS actually gave, which is how a launcher finds a server it started.
+2. **`ISessionModuleFactory`** registers the game's own message ids on the router once, and builds one
+   `ISessionModule` per live session. The module is ticked by the game loop and is where the game's
+   authoritative state lives; it publishes through a `ServerStateChannel<T>` and reads claims off the
+   entry's `ServerClaimRegistry`.
+3. **Configuration** is exported from the editor rather than hand-written: `SessionConfigExporter`
+   writes `config/session-config.json` from the same `SessionConfig` asset the client runs on, and a
+   game's own exporter writes whatever else its scenes hold beside it. Both are read at startup and a
+   missing or malformed one is fatal, deliberately — a server that came up without them would accept
+   connections and then publish nothing, which reads to a player as a frozen world and no log line.
+4. **Publishing** is a self-contained single file into `Build/Server/<rid>` with `config/` beside it.
+   `ServerBundleConfig` names that root and one runtime identifier per platform, and
+   `ServerBundleBuildStep` copies the matching folder into a player build so a hosting player has a
+   server to start; in the editor `LocalServerConfig.editorServerDirectory` points at the same place.
+
+### The session, end to end
+
+A player who hosts: `SessionService` asks `LocalServerLauncher` for a server, which starts the bundled
+executable on port 0 and waits for its `[ready]` line; the client then connects to `127.0.0.1:<that
+port>`, creates a session and is handed a join code. A friend types the address and the code and joins
+the same session on the same process. Both are ordinary clients — the host has no special path — so a
+session that outlives its host simply transfers ownership, and the launcher's idle window stops an
+orphaned server once everybody has gone.
 
 ## Animator contract
 
