@@ -413,6 +413,18 @@ namespace AlpineLib.Netcode.Replication {
             return TryGetMoverRenderOffset(in state, RenderTick(), out offset);
         }
 
+        /// <summary>True when this state's numbers cannot be probed against the shared collision world.</summary>
+        /// <remarks>
+        /// A carrier-relative state is metres from a deck's origin, and the mover probe reads world
+        /// space. It would resolve to whatever happens to sit at those coordinates in the scene — usually
+        /// nothing, occasionally a different platform — so the honest answer is that there is no offset
+        /// to apply. Nor is one wanted: a carrier's rider is drawn by following the carrier itself, which
+        /// is already where its own view puts it.
+        /// </remarks>
+        private static bool IsUnprobeable(in PawnState state) {
+            return state.IsCarrierRelative;
+        }
+
         /// <summary>
         /// The probe behind <see cref="TryGetMoverRenderOffset(in PawnState, out Vector3)"/> with the
         /// tick made explicit, so tests can ask about a state without steering the clock.
@@ -421,6 +433,10 @@ namespace AlpineLib.Netcode.Replication {
             offset = Vector3.Zero;
 
             if (moverRenderOffsetsByIndex.Count == 0 || !state.IsGrounded) {
+                return false;
+            }
+
+            if (IsUnprobeable(in state)) {
                 return false;
             }
 

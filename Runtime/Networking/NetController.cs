@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using AlpineLib.Actors;
 using AlpineLib.Actors.Locomotion;
 using AlpineLib.DI;
@@ -30,6 +31,15 @@ namespace AlpineLib.Networking {
     /// integrators stand down while this brain possesses it (see
     /// <see cref="Controller.DrivesPawnExternally"/>); the animator is fed from the wire state instead
     /// of from displacement.
+    /// </para>
+    /// <para>
+    /// <b>Carrier frames are resolved here.</b> A pawn riding a train replicates in that train's local
+    /// frame, so the sampled state is metres from a deck's origin rather than the world's. Every sample
+    /// is put back into world space through the carrier the state names, once per frame, because the
+    /// carrier has moved since the snapshot was taken and the rider must be drawn on the deck as it is
+    /// now — not where the deck was when the packet left. A state naming a carrier this client cannot
+    /// resolve is drawn as if its numbers were world space: wrong, and visibly so, but a pawn standing
+    /// at the origin is a better failure than a pawn that vanishes.
     /// </para>
     /// </remarks>
     [DefaultExecutionOrder(NetExecutionOrder.PawnDrivers)]
@@ -68,6 +78,7 @@ namespace AlpineLib.Networking {
         private CrouchSystem _crouch;
         private ISessionService _sessionService;
         private INetworkService _networkService;
+        private readonly HashSet<ushort> _warnedCarrierIds = new HashSet<ushort>();
 
         /// <inheritdoc />
         public override void Possess(Actor character) {
@@ -112,8 +123,35 @@ namespace AlpineLib.Networking {
         public void SnapTo(in PawnState state) {
             if (_character == null) return;
 
-            _character.transform.position = state.Position.ToUnity();
-            _character.transform.rotation = Quaternion.Euler(0f, state.YawDegrees, 0f);
+            PawnState world = ResolveWorldFrame(in state);
+
+            _character.transform.position = world.Position.ToUnity();
+            _character.transform.rotation = Quaternion.Euler(0f, world.YawDegrees, 0f);
+        }
+
+        /// <summary>
+        /// Puts a sampled state into world space, resolving the carrier it names.
+        /// </summary>
+        /// <remarks>
+        /// An unresolvable carrier is warned about once per id per controller and then treated as world
+        /// space. Warning every frame would bury the log under a pawn's own frame rate, and the id is the
+        /// useful part: it names the carrier the scene is missing.
+        /// </remarks>
+        private PawnState ResolveWorldFrame(in PawnState state) {
+            if (!state.IsCarrierRelative) return state;
+
+            if (NetCarrierRegistry.TryResolve(state.CarrierId, out NetCarrier carrier)) {
+                return NetCarrierFrame.ToWorld(in state, carrier);
+            }
+
+            WarnOnceForCarrier(state.CarrierId);
+            return state.WithCarrier(PawnState.WorldCarrierId);
+        }
+
+        private void WarnOnceForCarrier(ushort carrierId) {
+            if (!_warnedCarrierIds.Add(carrierId)) return;
+
+            Debug.LogWarning($"NetController::WarnOnceForCarrier->{name} sampled a state on carrier {carrierId}, which no loaded carrier answers to; drawing its numbers as world space.");
         }
 
         /// <remarks>
@@ -137,13 +175,17 @@ namespace AlpineLib.Networking {
 
             if (replication == null) return;
             if (ReleaseIfLocallyOwned(replication)) return;
-            if (!replication.SampleRemote(_view.EntityId, out PawnState state)) return;
+            if (!replication.SampleRemote(_view.EntityId, out PawnState sampled)) return;
+
+            bool wasCarrierRelative = sampled.IsCarrierRelative;
+            PawnState state = ResolveWorldFrame(in sampled);
 
             // A pawn standing on a mover drawn off the interpolation timeline (the local player is
             // riding it, so the platform renders at the predicted tick) must be re-anchored by the same
             // offset, or it trails across the deck by the interpolation delay's worth of travel. Only
-            // the drawn position moves; velocity, yaw and flags stay the sampled ones.
-            if (replication.TryGetMoverRenderOffset(in state, out System.Numerics.Vector3 moverOffset)) {
+            // the drawn position moves; velocity, yaw and flags stay the sampled ones. A carrier's rider
+            // is already anchored to the carrier's own transform, so the mover probe has nothing to add.
+            if (!wasCarrierRelative && replication.TryGetMoverRenderOffset(in state, out System.Numerics.Vector3 moverOffset)) {
                 state.Position += moverOffset;
             }
 

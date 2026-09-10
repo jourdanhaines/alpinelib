@@ -14,6 +14,12 @@ namespace AlpineLib.Networking {
         public const int NetworkService = -100;
 
         /// <summary>
+        /// Carriers publish their pose and measured velocity ahead of the pawn drivers, so a rider
+        /// converting into or out of a carrier's frame reads this frame's carrier, never the last one's.
+        /// </summary>
+        public const int Carriers = 40;
+
+        /// <summary>
         /// Pawn drivers run after default-order scripts — player controllers among them — so they
         /// consume this frame's intent and the freshest clock.
         /// </summary>

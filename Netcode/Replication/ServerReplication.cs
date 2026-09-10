@@ -35,6 +35,16 @@ namespace AlpineLib.Netcode.Replication {
     /// on the wire regardless.
     /// </para>
     /// <para>
+    /// <b>The simulated pawn is a world-space pawn.</b> Everything on the server-authority stepping path
+    /// — <see cref="PawnMotor"/>, the collision world it steps against, the mover poses, the snapshot
+    /// records built from the result — is expressed in world metres. A carrier-relative state therefore
+    /// has no meaning here, and <see cref="SpawnEntity(ushort, int, AuthorityMode, EntityKind, ushort, in PawnState)"/>
+    /// refuses one outright rather than letting the motor step a deck-local position against world
+    /// geometry and produce a pawn that walks through the floor. Carrier frames belong to
+    /// <see cref="AuthorityMode.OwnerClient"/> pawns, whose states this world stores and validates but
+    /// never simulates.
+    /// </para>
+    /// <para>
     /// <b>Threading.</b> Everything here runs on the thread that calls <see cref="Tick"/> — the Unity
     /// main thread on a listen host, the fixed-step loop thread on the dedicated server. Message handlers
     /// are invoked from inside the transport poll on that same thread, so no locking is needed and none
@@ -185,6 +195,12 @@ namespace AlpineLib.Netcode.Replication {
             EntityKind kind,
             ushort auxId,
             in PawnState initialState) {
+            if (authority == AuthorityMode.Server && initialState.IsCarrierRelative) {
+                throw new ArgumentException(
+                    "A server-simulated entity must spawn in world space; carrier-relative states are only meaningful for owner-simulated pawns.",
+                    nameof(initialState));
+            }
+
             NetEntity entity = registry.Create(prefabId, ownerPeerId, authority, kind, auxId, in initialState);
 
             if (kind == EntityKind.Pawn) {
@@ -386,6 +402,12 @@ namespace AlpineLib.Netcode.Replication {
                 }
             }
         }
+
+        /// <summary>
+        /// The tick this world last stepped, so a session module ticking alongside it stamps its own
+        /// state with the same number the pawns were published under.
+        /// </summary>
+        public uint CurrentTick => currentTick;
 
         /// <summary>
         /// One pump of the world: simulate every tick that has elapsed, then publish on the snapshot and

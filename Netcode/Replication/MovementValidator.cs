@@ -24,6 +24,17 @@ namespace AlpineLib.Netcode.Replication {
     /// let a client sprint for a tick and relabel it as a crouch on arrival; taking only the old one
     /// would punish the honest tick where a player starts sprinting.
     /// </para>
+    /// <para>
+    /// <b>The trust boundary at a frame change.</b> Displacement only means anything when both states
+    /// share an origin, so the tick a pawn boards or leaves a carrier is accepted unmeasured: the
+    /// numbers either side are metres from different points, and subtracting them would read a step onto
+    /// a train fifty metres down the track as a fifty-metre teleport. That is a real, bounded hole — a
+    /// client can relabel its frame once per tick to buy one free move — and it is taken deliberately,
+    /// because the alternative is rejecting every legitimate boarding. What it cannot buy is speed:
+    /// every tick that keeps the same carrier is validated exactly as before, in that carrier's frame,
+    /// where the gait ceiling is the pawn's own walking pace and the carrier's motion is not part of the
+    /// measurement at all.
+    /// </para>
     /// </remarks>
     public sealed class MovementValidator {
         /// <summary>
@@ -56,6 +67,11 @@ namespace AlpineLib.Netcode.Replication {
         /// <param name="next">The state the owning client reported.</param>
         /// <param name="deltaSeconds">Time between the two, as the server measured it.</param>
         public MovementVerdict Validate(ushort prefabId, in PawnState previous, in PawnState next, float deltaSeconds) {
+            if (previous.CarrierId != next.CarrierId) {
+                // Two origins, no displacement to measure; see the trust-boundary note on the type.
+                return MovementVerdict.Accept(in next, 0f, 0f);
+            }
+
             MovementProfile profile = config.GetMovementProfile(prefabId);
 
             if (profile == null || deltaSeconds <= 0f) {
@@ -116,7 +132,7 @@ namespace AlpineLib.Netcode.Replication {
                 next.Position.Y,
                 previous.Position.Z + travel.Z * scale);
 
-            return new PawnState(position, next.YawDegrees, next.Velocity, next.Flags);
+            return new PawnState(position, next.YawDegrees, next.Velocity, next.Flags, next.CarrierId);
         }
     }
 }

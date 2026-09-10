@@ -32,6 +32,15 @@ namespace AlpineLib.Netcode.Replication {
     /// by comparison, never by "iterate until it stops changing".
     /// </para>
     /// <para>
+    /// <b>World frame, always.</b> Every number in and out of a step is world space, and a
+    /// <see cref="PawnState.CarrierId"/> is neither read nor written here. The collision world, the mover
+    /// poses and the gravity vector all share that one origin, so stepping a carrier-relative state
+    /// would resolve deck-local metres against world geometry — the pawn would appear wherever those
+    /// coordinates happen to land in the scene. Converting between a carrier's frame and the world is
+    /// the caller's job, on either side of a step; the motor is deliberately kept ignorant that carriers
+    /// exist at all so its determinism argument stays a claim about arithmetic alone.
+    /// </para>
+    /// <para>
     /// The velocity model is blunt on the ground and inertial in the air, matching the engine-side actor:
     /// grounded velocity snaps to the gait's top speed, airborne velocity steers toward the commanded
     /// direction at <see cref="MovementProfile.AirAcceleration"/> and keeps its momentum when input is

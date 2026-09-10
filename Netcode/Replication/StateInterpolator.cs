@@ -51,6 +51,15 @@ namespace AlpineLib.Netcode.Replication {
     /// a ping-pong turnaround the tangent lags the reversal by one sample. The error is at most one tick
     /// of platform travel and is gone with the next sample.
     /// </para>
+    /// <para>
+    /// <b>Frames are never blended across.</b> A sample carrying a <see cref="PawnState.CarrierId"/>
+    /// measures a different origin from its neighbour, so interpolating a boarding step would draw the
+    /// pawn somewhere between a world metre and a deck metre — a position on no surface at all. When the
+    /// bracketing pair disagree about the frame the newer sample is handed back whole, which costs one
+    /// snapshot of smoothing at the instant of a board or a step-off and nothing at all in between.
+    /// Carry-augmented tangents and extrapolation carry are likewise off for carrier-relative samples:
+    /// the carrier's motion is already outside their numbers, and adding it would apply the ride twice.
+    /// </para>
     /// </remarks>
     public sealed class StateInterpolator {
         /// <summary>Samples held per entity: about two seconds of history at the default snapshot rate.</summary>
@@ -85,6 +94,8 @@ namespace AlpineLib.Netcode.Replication {
         private Vector3 recoveryOffset;
         private double lastRenderSeconds;
         private bool hasRendered;
+        private ushort lastOutputCarrierId;
+        private bool hasOutputCarrier;
 
         /// <summary>Creates an interpolator using the tick rate from configuration.</summary>
         public StateInterpolator(NetConfig config)
@@ -163,6 +174,7 @@ namespace AlpineLib.Netcode.Replication {
             TimedSample newest = SampleAt(count - 1);
 
             if (renderSeconds <= oldest.Seconds) {
+                AdoptOutputCarrier(oldest.State.CarrierId);
                 state = oldest.State;
                 wasExtrapolating = false;
                 recoveryOffset = Vector3.Zero;
@@ -170,6 +182,7 @@ namespace AlpineLib.Netcode.Replication {
             }
 
             if (renderSeconds >= newest.Seconds) {
+                AdoptOutputCarrier(newest.State.CarrierId);
                 state = Extrapolate(in newest, renderSeconds - newest.Seconds);
                 ExtrapolatedSamples++;
                 wasExtrapolating = true;
@@ -177,6 +190,7 @@ namespace AlpineLib.Netcode.Replication {
             }
 
             PawnState spline = InterpolateAcross(renderSeconds);
+            AdoptOutputCarrier(spline.CarrierId);
             state = BlendBackFromExtrapolation(in spline, deltaSeconds);
             return true;
         }
@@ -188,6 +202,29 @@ namespace AlpineLib.Netcode.Replication {
             wasExtrapolating = false;
             recoveryOffset = Vector3.Zero;
             hasRendered = false;
+            hasOutputCarrier = false;
+            lastOutputCarrierId = PawnState.WorldCarrierId;
+        }
+
+        /// <summary>
+        /// Records the frame the output has just moved into, dropping any extrapolation debt when it
+        /// changed.
+        /// </summary>
+        /// <remarks>
+        /// The recovery offset is a displacement measured in whichever frame produced it. Paying a
+        /// world-space metre back onto a deck-local pose — or the reverse — would drag the pawn across
+        /// the carrier for the whole smoothing window, so a frame change discards the debt instead of
+        /// carrying it over.
+        /// </remarks>
+        private void AdoptOutputCarrier(ushort carrierId) {
+            if (hasOutputCarrier && lastOutputCarrierId == carrierId) {
+                return;
+            }
+
+            hasOutputCarrier = true;
+            lastOutputCarrierId = carrierId;
+            wasExtrapolating = false;
+            recoveryOffset = Vector3.Zero;
         }
 
         private void Append(uint tick, in PawnState state) {
@@ -246,6 +283,12 @@ namespace AlpineLib.Netcode.Replication {
                     continue;
                 }
 
+                if (earlier.State.CarrierId != later.State.CarrierId) {
+                    // A boarding or a step-off falls between these two: the newer frame is the one the pawn
+                    // is now in, and there is no meaningful pose between two different origins.
+                    return later.State;
+                }
+
                 Vector3 outgoingTangent = later.State.Velocity + CarryVelocityAt(in later);
 
                 Vector3 rawIncomingVelocity = later.State.Velocity;
@@ -269,6 +312,12 @@ namespace AlpineLib.Netcode.Replication {
         /// </summary>
         private Vector3 CarryVelocityAt(in TimedSample sample) {
             if (CarryWorld == null || !sample.State.IsGrounded) {
+                return Vector3.Zero;
+            }
+
+            // A carrier-relative sample has already had its ride removed; the probe would read a world
+            // position out of local numbers and hand back a second helping of the same motion.
+            if (sample.State.IsCarrierRelative) {
                 return Vector3.Zero;
             }
 
@@ -324,7 +373,7 @@ namespace AlpineLib.Netcode.Replication {
             Vector3 velocity = Vector3.Lerp(later.State.Velocity, rawIncomingVelocity, normalized);
             float yaw = LerpYaw(earlier.State.YawDegrees, later.State.YawDegrees, normalized);
 
-            return new PawnState(position, yaw, velocity, later.State.Flags);
+            return new PawnState(position, yaw, velocity, later.State.Flags, later.State.CarrierId);
         }
 
         /// <summary>
@@ -376,7 +425,12 @@ namespace AlpineLib.Netcode.Replication {
             Vector3 position = newest.State.Position + projectionVelocity * clampedAhead;
             LastOutputPosition = position;
 
-            return new PawnState(position, newest.State.YawDegrees, newest.State.Velocity, newest.State.Flags);
+            return new PawnState(
+                position,
+                newest.State.YawDegrees,
+                newest.State.Velocity,
+                newest.State.Flags,
+                newest.State.CarrierId);
         }
 
         /// <summary>The position handed out by the most recent sample, extrapolated or not.</summary>

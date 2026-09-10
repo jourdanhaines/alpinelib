@@ -70,6 +70,7 @@ namespace AlpineLib.Networking {
         private CharacterController _characterController;
         private LocomotionSystem _locomotion;
         private CrouchSystem _crouch;
+        private INetCarrierSource _carrierSource;
         private INetworkService _networkService;
         private ISessionService _sessionService;
         private ClientReplication _boundReplication;
@@ -135,6 +136,7 @@ namespace AlpineLib.Networking {
             _characterController = GetComponent<CharacterController>();
             _locomotion = GetComponent<LocomotionSystem>();
             _crouch = GetComponent<CrouchSystem>();
+            TryGetComponent(out _carrierSource);
         }
 
         /// <remarks>
@@ -255,17 +257,32 @@ namespace AlpineLib.Networking {
             return Vector3.ClampMagnitude(commanded, 1f).ToPlanarNumerics();
         }
 
-        /// <summary>Reads the actor's current pose as an authoritative state, for owner-simulated pawns.</summary>
+        /// <summary>
+        /// Reads the actor's current pose as an authoritative state, for owner-simulated pawns.
+        /// </summary>
+        /// <remarks>
+        /// A pawn whose game reports a carrier is captured in that carrier's frame instead of the
+        /// world's, so what leaves the wire is the metre a second it is walking rather than the forty the
+        /// train is doing. Only this owner-simulated path converts: a server-authoritative pawn is
+        /// stepped by the shared motor, which knows only world space, and reporting anything else would
+        /// be reporting a pose the authority cannot act on.
+        /// </remarks>
         private PawnState CaptureState() {
             bool isGrounded = _actor != null && _actor.IsGrounded;
             bool isCrouching = _crouch != null && _crouch.IsCrouching;
             byte flags = PawnState.PackFlags(ResolveGait(), isCrouching, isGrounded);
 
-            return new PawnState(
+            var world = new PawnState(
                 transform.position.ToNumerics(),
                 transform.eulerAngles.y,
                 _actor != null ? _actor.Velocity.ToNumerics() : Numerics.Vector3.Zero,
                 flags);
+
+            NetCarrier carrier = _carrierSource?.CurrentCarrier;
+
+            if (carrier == null) return world;
+
+            return NetCarrierFrame.ToLocal(in world, carrier);
         }
 
         /// <summary>

@@ -25,6 +25,18 @@ namespace AlpineLib.Netcode.Replication {
     /// prediction can compare like with like: a client that predicted in full precision and compares
     /// against a wire-rounded authoritative state would see a correction on every single tick.
     /// </para>
+    /// <para>
+    /// <b>Frame of reference.</b> With <see cref="CarrierId"/> at <see cref="WorldCarrierId"/> — the
+    /// overwhelmingly common case — every number here is world space. When it is non-zero,
+    /// <see cref="Position"/>, <see cref="YawDegrees"/> and <see cref="Velocity"/> are expressed in the
+    /// local frame of the carrier that id names, and the velocity is the pawn's own motion relative to
+    /// that carrier rather than its motion through the world. A pawn walking a moving train's deck is
+    /// then replicated as a short, slow walk on a stationary floor, which is what the deck's riders
+    /// actually see, instead of as a sixty-metre-a-second sprint the validator would reject and the
+    /// interpolator would smear. Carriers must be rigid and unit-scale: the conversion is a plain
+    /// rotate-and-translate, so a scaled or deforming carrier would change the pawn's size along with
+    /// its frame.
+    /// </para>
     /// </remarks>
     public struct PawnState : INetMessage {
         /// <summary>Mask covering the three gait bits.</summary>
@@ -36,15 +48,23 @@ namespace AlpineLib.Netcode.Replication {
         /// <summary>Bit 4: the pawn is standing on ground.</summary>
         public const byte GroundedBit = 0b0001_0000;
 
-        /// <summary>Creates a fully specified state.</summary>
-        public PawnState(Vector3 position, float yawDegrees, Vector3 velocity, byte flags) {
+        /// <summary>The carrier id meaning "these numbers are world space".</summary>
+        public const ushort WorldCarrierId = 0;
+
+        /// <summary>Creates a world-frame state.</summary>
+        public PawnState(Vector3 position, float yawDegrees, Vector3 velocity, byte flags)
+            : this(position, yawDegrees, velocity, flags, WorldCarrierId) { }
+
+        /// <summary>Creates a state in the frame of a named carrier; see the frame note on the type.</summary>
+        public PawnState(Vector3 position, float yawDegrees, Vector3 velocity, byte flags, ushort carrierId) {
             Position = position;
             YawDegrees = yawDegrees;
             Velocity = velocity;
             Flags = flags;
+            CarrierId = carrierId;
         }
 
-        /// <summary>World position in metres.</summary>
+        /// <summary>Position in metres, in the frame <see cref="CarrierId"/> names.</summary>
         public Vector3 Position { get; set; }
 
         /// <summary>Facing around the up axis, in degrees. Not normalised until it is written.</summary>
@@ -55,6 +75,15 @@ namespace AlpineLib.Netcode.Replication {
 
         /// <summary>Packed locomotion bits; see the layout note on the type.</summary>
         public byte Flags { get; set; }
+
+        /// <summary>
+        /// The carrier whose local frame this state is expressed in, or <see cref="WorldCarrierId"/> for
+        /// world space. See the frame note on the type.
+        /// </summary>
+        public ushort CarrierId { get; set; }
+
+        /// <summary>True when this state is measured against a carrier rather than the world.</summary>
+        public bool IsCarrierRelative => CarrierId != WorldCarrierId;
 
         /// <summary>The gait in bits 0-2.</summary>
         public WireLocomotion Locomotion => (WireLocomotion)(Flags & LocomotionMask);
@@ -85,6 +114,12 @@ namespace AlpineLib.Netcode.Replication {
                 return false;
             }
 
+            // Two frames, two meanings: identical numbers against different carriers are different poses,
+            // and calling them equal would let a boarding or a step-off go unsent.
+            if (left.CarrierId != right.CarrierId) {
+                return false;
+            }
+
             return IsClose(left.Position, right.Position, PositionEpsilon)
                 && IsClose(left.Velocity, right.Velocity, NetQuantization.VelocityTolerance)
                 && IsCloseAngle(left.YawDegrees, right.YawDegrees, NetQuantization.YawToleranceDegrees);
@@ -107,7 +142,16 @@ namespace AlpineLib.Netcode.Replication {
 
         /// <summary>Returns the same state with a rebuilt flags byte.</summary>
         public PawnState WithFlags(WireLocomotion locomotion, bool isCrouching, bool isGrounded) {
-            return new PawnState(Position, YawDegrees, Velocity, PackFlags(locomotion, isCrouching, isGrounded));
+            return new PawnState(Position, YawDegrees, Velocity, PackFlags(locomotion, isCrouching, isGrounded), CarrierId);
+        }
+
+        /// <summary>
+        /// Returns the same numbers relabelled as belonging to another frame. Nothing is converted — this
+        /// is how a caller that has already done the maths stamps the result, and how an unresolvable
+        /// carrier is downgraded to world space.
+        /// </summary>
+        public PawnState WithCarrier(ushort carrierId) {
+            return new PawnState(Position, YawDegrees, Velocity, Flags, carrierId);
         }
 
         /// <summary>
@@ -120,15 +164,21 @@ namespace AlpineLib.Netcode.Replication {
                 Position,
                 NetQuantization.QuantizeYaw(YawDegrees),
                 NetQuantization.QuantizeVelocity(Velocity),
-                Flags);
+                Flags,
+                CarrierId);
         }
 
         /// <inheritdoc />
+        /// <remarks>
+        /// The carrier id goes last so the frame is appended to the layout every older build already
+        /// knew, rather than shifting it.
+        /// </remarks>
         public void Serialize(ref NetWriter writer) {
             writer.WriteVector3(Position);
             writer.WriteQuantizedYaw(YawDegrees);
             writer.WriteQuantizedVelocity(Velocity);
             writer.WriteByte(Flags);
+            writer.WriteUShort(CarrierId);
         }
 
         /// <inheritdoc />
@@ -137,6 +187,7 @@ namespace AlpineLib.Netcode.Replication {
             YawDegrees = reader.ReadQuantizedYaw();
             Velocity = reader.ReadQuantizedVelocity();
             Flags = reader.ReadByte();
+            CarrierId = reader.ReadUShort();
         }
 
         private static bool IsClose(Vector3 left, Vector3 right, float epsilon) {
