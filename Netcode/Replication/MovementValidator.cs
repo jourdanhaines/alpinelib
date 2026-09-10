@@ -63,10 +63,11 @@ namespace AlpineLib.Netcode.Replication {
     /// nothing validates, so the wire is the only ceiling: <c>NetQuantization</c> clamps each axis to
     /// 127.996 m/s, a planar 181.02 m/s, which at the tolerance multiplier over one tick plus slack times
     /// <see cref="RejectDistanceRatio"/> is 27.30 m per repeat and 81.88 m for the three that fit a
-    /// window. At the eight bursts a second <see cref="ResyncBurstTicks"/> allows that is 655 m/s of free
-    /// travel — sitting behind eight charged teleports a second that are each unbounded in distance, so
-    /// the tail is strictly dominated by the thing that opens it and cannot be had without a charged,
-    /// violation-raising opener. Against the sprint gait alone the same repeat carries under a metre,
+    /// window. At the 7.5 bursts a second <see cref="ResyncBurstTicks"/> allows at 30 Hz that is 655 m/s
+    /// of free tail — sitting behind charged teleports that are each unbounded in distance, so the tail
+    /// is strictly dominated by the thing that opens it and cannot be had without a charged,
+    /// violation-raising opener. Measured all in, opener and tail at the same wire-ceiling claim size,
+    /// the hardest flood carries about 820 m/s. Against the sprint gait alone the same repeat carries under a metre,
     /// which is the size of the prize for a velocity sanity check on the claim that opens a burst.
     /// </para>
     /// <para>

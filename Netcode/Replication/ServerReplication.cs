@@ -663,12 +663,24 @@ namespace AlpineLib.Netcode.Replication {
         /// arriving on it cannot be the last one carried on.
         /// </summary>
         /// <remarks>
-        /// <see cref="NetEntity.LastDirtyTick"/> is the right stamp to read: every accepted, clamped or
-        /// refused claim writes the resolved state through <c>ApplyState</c>, so equality means this tick
-        /// already produced a pose. It is deliberately not extended to the charged path — that one is
-        /// bounded by <see cref="MovementValidator.MaxCarrierSwitchesPerWindow"/> whatever the arrival
-        /// pattern — nor to ordinary measured updates, where two sends bunching into one tick interval is
-        /// something jitter does to an honest client and each of them is measured anyway.
+        /// <para>
+        /// <see cref="NetEntity.LastDirtyTick"/> is the right stamp to read: every claim that moves the
+        /// pawn writes the resolved state through <c>ApplyState</c>, which stamps only when the pose
+        /// changed, so equality means this tick already produced a pose. It is deliberately not extended
+        /// to the charged path — that one is bounded by
+        /// <see cref="MovementValidator.MaxCarrierSwitchesPerWindow"/> whatever the arrival pattern, and
+        /// all of that budget may land inside a single tick — nor to ordinary measured updates, where two
+        /// sends bunching into one tick interval is something jitter does to an honest client and each
+        /// of them is measured anyway.
+        /// </para>
+        /// <para>
+        /// The stamp is written by any claim that moved the pawn, not only a resync, so inside an open
+        /// burst it is asymmetric: a measured update earlier in the tick refuses the first flagged send
+        /// of that tick, while a flagged send earlier leaves a later measured one to be judged as usual.
+        /// The refusal falls to the measured verdict, which is the safe direction, and the next tick
+        /// clears it. A refused claim writes the held state back and stamps nothing, so it does not
+        /// spend the tick's one adoption: attempts per tick are unlimited, adoptions are one.
+        /// </para>
         /// </remarks>
         private bool HasMovedThisTick(NetEntity entity) {
             return currentTick == entity.LastDirtyTick;

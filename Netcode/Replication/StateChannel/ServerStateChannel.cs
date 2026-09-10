@@ -156,11 +156,12 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         /// ticked and published with — <c>NetServer.Tick</c>, the value handed to
         /// <see cref="Tick(uint, float)"/> — because the client orders a retirement against a state by
         /// comparing the two numbers, and numbers from two counters do not compare. The rule is enforced
-        /// rather than trusted: a tick below the last publish, or more than one past the last tick the
-        /// channel was driven with, throws. One past is allowed because a game normally computes the
-        /// state for tick N and hands it over before pumping the channel for N. Nothing is checked until
-        /// the channel has been driven or published once, since until then there is no server tick to
-        /// check against.
+        /// rather than trusted: a tick below the last publish, or more than one past the server's counter,
+        /// throws. One past is allowed because a game normally computes the state for tick N and hands
+        /// it over before pumping the channel for N. The counter is read live as well as remembered from
+        /// the last drive, so a tick the server caught up to over a hitched frame is accepted before the
+        /// channel is pumped for it. Nothing is checked until the channel has been driven or published
+        /// once, since until then there is no server tick to check against.
         /// </para>
         /// </remarks>
         /// <exception cref="ArgumentException">
@@ -352,13 +353,18 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         /// describing a moment already on the wire, and a retirement published later would outrank it on
         /// the client for no reason the game intended. Above the next tick it is describing a moment the
         /// server has not reached, and the retirement of a subject restated at that tick could never
-        /// catch up with it. A channel neither driven nor published yet has no counter to compare with,
-        /// so the first stamp is taken on trust.
+        /// catch up with it. The ceiling is the higher of the last tick this channel was driven with and
+        /// the server's live counter: the first keeps a hand-driven channel checkable, the second stops a
+        /// hitched frame that moved the counter by several ticks from refusing the state computed for
+        /// it. A channel neither driven nor published yet has no counter to compare with, so the first
+        /// stamp is taken on trust.
         /// </remarks>
         private void GuardServerTick(uint tick) {
             if (!hasServerTick) {
                 return;
             }
+
+            uint serverTick = Math.Max(lastServerTick, server.Tick);
 
             if (tick < lastPublishedTick) {
                 throw new ArgumentException(
@@ -368,11 +374,12 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
                     + " channel is ticked with.", nameof(tick));
             }
 
-            if (tick > lastServerTick && tick - lastServerTick > 1u) {
+            if (tick > serverTick && tick - serverTick > 1u) {
                 throw new ArgumentException(
-                    "State tick " + tick.ToString() + " is past the server tick " + lastServerTick.ToString()
-                    + " this channel was last driven with. Stamp a state with the server tick it was"
-                    + " computed at, from the same counter this channel is ticked with.", nameof(tick));
+                    "State tick " + tick.ToString() + " is more than one past the server's counter at "
+                    + serverTick.ToString()
+                    + ". Stamp a state with the server tick it was computed at, from the same counter this"
+                    + " channel is ticked with.", nameof(tick));
             }
         }
 
