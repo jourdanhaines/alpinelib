@@ -1,3 +1,4 @@
+using System.IO;
 using UnityEngine;
 
 namespace AlpineLib.Sessions {
@@ -37,7 +38,7 @@ namespace AlpineLib.Sessions {
         public string windowsRuntimeIdentifier = "win-x64";
         [Tooltip("Runtime identifier folder copied beside a Linux player, e.g. linux-x64.")]
         public string linuxRuntimeIdentifier = "linux-x64";
-        [Tooltip("Runtime identifier folder copied beside a macOS player: osx-x64 for Intel, osx-arm64 for Apple silicon.")]
+        [Tooltip("Runtime identifier folder copied beside a macOS player. Must match the player's own architecture: osx-x64 for Intel, osx-arm64 for Apple silicon.")]
         public string macRuntimeIdentifier = "osx-arm64";
         [Tooltip("File name of the published server, without an extension. Checked against the launcher's.")]
         public string executableName = "Game.Server";
@@ -61,7 +62,9 @@ namespace AlpineLib.Sessions {
         /// </summary>
         /// <remarks>
         /// Composed rather than authored per platform so the three RID fields stay the only thing that
-        /// differs between platforms, and a project that moves its publish output edits one field.
+        /// differs between platforms, and a project that moves its publish output edits one field. The
+        /// separator is a forward slash on every platform on purpose: the authored value is
+        /// project-relative and platform-neutral, and Windows accepts it wherever the result is used.
         /// </remarks>
         public string ResolvePublishedDirectory(string runtimeIdentifier) {
             if (string.IsNullOrWhiteSpace(publishedServerRoot)) return string.Empty;
@@ -72,13 +75,40 @@ namespace AlpineLib.Sessions {
 
         /// <summary>
         /// The folder name the server is copied into, which has to be the one
-        /// <see cref="LocalServerPaths.ResolveServerDirectory"/> will look in at runtime.
+        /// <see cref="LocalServerPaths.ResolveServerDirectory"/> will look in at runtime, or an empty
+        /// string when the launcher names something that is not a folder name at all.
         /// </summary>
+        /// <remarks>
+        /// The empty string is a refusal, not a default. The build step replaces the folder this names,
+        /// so a value that walks out of the player's own directory — a path, a rooted path, <c>.</c> or
+        /// <c>..</c> — names something the build has no business replacing, and the player it just built
+        /// is the likeliest candidate.
+        /// </remarks>
         public string ResolveBundleFolderName() {
             if (localServer == null) return DefaultBundleFolderName;
             if (string.IsNullOrWhiteSpace(localServer.bundledServerFolderName)) return DefaultBundleFolderName;
+            if (!IsSingleFolderName(localServer.bundledServerFolderName)) return string.Empty;
 
-            return localServer.bundledServerFolderName;
+            return localServer.bundledServerFolderName.Trim();
+        }
+
+        /// <summary>
+        /// True when a name is one path segment: no separators, not rooted, and not a relative step.
+        /// </summary>
+        /// <remarks>
+        /// Both separators are rejected whatever platform this runs on. A backslash is an ordinary
+        /// filename character on Linux, so a name authored on Windows and validated on a Linux build
+        /// machine would otherwise pass there and traverse when the same project is built on Windows.
+        /// </remarks>
+        public static bool IsSingleFolderName(string folderName) {
+            if (string.IsNullOrWhiteSpace(folderName)) return false;
+
+            string trimmed = folderName.Trim();
+            if (trimmed == "." || trimmed == "..") return false;
+            if (trimmed.IndexOf('/') >= 0 || trimmed.IndexOf('\\') >= 0) return false;
+            if (Path.IsPathRooted(trimmed)) return false;
+
+            return Path.GetFileName(trimmed) == trimmed;
         }
     }
 }

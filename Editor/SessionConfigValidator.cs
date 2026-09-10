@@ -243,17 +243,41 @@ namespace AlpineLib.Editor {
         /// A disabled bundle is skipped entirely: switching the flag off is how a project states that
         /// this build ships no server, and a half-filled asset behind that flag is not a fault.
         /// </para>
+        /// <para>
+        /// Everything <c>ServerBundleBuildStep</c> refuses to build is refused here too, in the same
+        /// terms, so that authoring and building cannot give two answers about one asset — including the
+        /// count, which no single asset can see about itself.
+        /// </para>
         /// </remarks>
         private static void ValidateServerBundles(List<string> failures) {
+            var enabledPaths = new List<string>();
+
             foreach (string assetPath in FindAssetPaths("t:ServerBundleConfig")) {
                 var bundle = AssetDatabase.LoadAssetAtPath<ServerBundleConfig>(assetPath);
                 if (bundle == null) continue;
                 if (!bundle.enabled) continue;
 
+                enabledPaths.Add(assetPath);
                 ValidateBundleSource(bundle, assetPath, failures);
                 ValidateBundleLauncher(bundle, assetPath, failures);
                 ValidateBundleSessionConfig(bundle, assetPath, failures);
             }
+
+            ValidateBundleCount(enabledPaths, failures);
+        }
+
+        /// <remarks>
+        /// Two enabled bundles copy into one folder, so the build step fails rather than picking a
+        /// winner. That is knowable from the assets alone, which makes it an authoring mistake nobody
+        /// should have to start a player build to hear about.
+        /// </remarks>
+        private static void ValidateBundleCount(List<string> enabledPaths, List<string> failures) {
+            if (enabledPaths.Count < 2) return;
+
+            failures.Add(
+                $"{enabledPaths.Count} enabled ServerBundleConfig assets ({string.Join(", ", enabledPaths)}) would " +
+                "all copy into the same folder beside the player; a standalone build fails until all but one is " +
+                "deleted or disabled.");
         }
 
         /// <remarks>
@@ -303,6 +327,8 @@ namespace AlpineLib.Editor {
                 return;
             }
 
+            ValidateBundleFolderName(bundle, assetPath, failures);
+
             if (bundle.localServer.executableName == bundle.executableName) return;
 
             failures.Add(
@@ -312,8 +338,27 @@ namespace AlpineLib.Editor {
         }
 
         /// <remarks>
+        /// The bundle folder is replaced wholesale by the build step, so a name that is a path rather
+        /// than a folder name replaces whatever it reaches — <c>.</c> reaches the player that was just
+        /// built. The step refuses the same values; this is where an author hears about it.
+        /// </remarks>
+        private static void ValidateBundleFolderName(
+            ServerBundleConfig bundle, string assetPath, List<string> failures) {
+            string folderName = bundle.localServer.bundledServerFolderName;
+
+            if (string.IsNullOrWhiteSpace(folderName)) return;
+            if (ServerBundleConfig.IsSingleFolderName(folderName)) return;
+
+            failures.Add(
+                $"{assetPath}: LocalServerConfig '{bundle.localServer.name}' names its bundled server folder " +
+                $"'{folderName}', which is not a single folder name; the build step would replace something beside " +
+                "the player rather than a folder inside it.");
+        }
+
+        /// <remarks>
         /// Without a session config the bundled server runs on library defaults — a different port, a
-        /// different tick rate and a different lobby from the build standing next to it.
+        /// different tick rate and a different lobby from the build standing next to it, which is a
+        /// player that cannot host. <c>ServerBundleBuildStep</c> fails on the same state.
         /// </remarks>
         private static void ValidateBundleSessionConfig(
             ServerBundleConfig bundle, string assetPath, List<string> failures) {
