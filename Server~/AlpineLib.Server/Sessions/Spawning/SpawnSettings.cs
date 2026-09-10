@@ -45,6 +45,12 @@ namespace AlpineLib.Server.Sessions.Spawning {
         public IReadOnlyList<SpawnPoint> Points { get; set; } = NoPoints;
 
         /// <summary>
+        /// True when a list placement was asked for and no points came with it, so the ring answers in
+        /// its place. What <see cref="SessionRegistry"/> reports to the log.
+        /// </summary>
+        public bool FallsBackToRing => Placement == SpawnPlacementKind.List && (Points == null || Points.Count == 0);
+
+        /// <summary>
         /// Builds the placement these settings describe. A fresh instance every call, because a placement
         /// carries the seat counter of the one session it belongs to.
         /// </summary>
@@ -52,7 +58,8 @@ namespace AlpineLib.Server.Sessions.Spawning {
         /// <para>
         /// A list placement with no points falls back to a ring rather than throwing: an export whose
         /// points were forgotten should seat players somewhere reasonable and be visible in a log, not
-        /// stop the server from accepting anybody.
+        /// stop the server from accepting anybody. <see cref="FallsBackToRing"/> is what the front desk
+        /// reads to write that log line.
         /// </para>
         /// <para>
         /// <b>Shared repair rule.</b> A seat count below one becomes
@@ -63,7 +70,7 @@ namespace AlpineLib.Server.Sessions.Spawning {
         /// </para>
         /// </remarks>
         public ISpawnPlacement CreatePlacement() {
-            if (Placement != SpawnPlacementKind.List || Points == null || Points.Count == 0) {
+            if (Placement != SpawnPlacementKind.List || FallsBackToRing) {
                 return new RingSpawnPlacement(RingRadius, RingSeats < 1 ? RingSpawnPlacement.DefaultSeats : RingSeats);
             }
 

@@ -178,9 +178,12 @@ namespace AlpineLib.Server.GameLoop {
                 return;
             }
 
-            Volatile.Write(ref _readyPort, port);
+            // The line first, the port second. A launcher and a test both learn the port from
+            // <see cref="ReadyPort"/>, and publishing it before the line was written would let either of
+            // them act on a readiness nothing has announced yet.
             Console.Out.WriteLine(ReadinessLine.Format(port));
             Console.Out.Flush();
+            Volatile.Write(ref _readyPort, port);
         }
 
         /// <summary>
@@ -208,13 +211,13 @@ namespace AlpineLib.Server.GameLoop {
 
             while (!stoppingToken.IsCancellationRequested) {
                 long now = Stopwatch.GetTimestamp();
-                accumulatedSeconds += Stopwatch.GetElapsedTime(previousTimestamp, now).TotalSeconds;
+                double sliceSeconds = Stopwatch.GetElapsedTime(previousTimestamp, now).TotalSeconds;
                 previousTimestamp = now;
 
-                accumulatedSeconds = Math.Min(accumulatedSeconds, backlogCeiling);
+                accumulatedSeconds = Math.Min(accumulatedSeconds + sliceSeconds, backlogCeiling);
                 accumulatedSeconds = RunDueSteps(accumulatedSeconds, stepSeconds);
 
-                if (HasGoneIdle(stepSeconds)) {
+                if (HasGoneIdle(sliceSeconds)) {
                     return;
                 }
 
@@ -245,11 +248,22 @@ namespace AlpineLib.Server.GameLoop {
         /// Folds the wall-clock slice into the idle window and asks the host to stop when it has run out.
         /// </summary>
         /// <remarks>
-        /// The whole slice is counted, not the steps that were due in it: an idle server sleeps a full
-        /// step between wake-ups, so counting steps would make the window depend on the tick rate.
+        /// <para>
+        /// The measured slice is counted, not the steps that were due in it: an idle server sleeps a full
+        /// step between wake-ups and a stalled one has its backlog capped, so counting steps would make
+        /// the window depend on the tick rate and stretch across every freeze.
+        /// </para>
+        /// <para>
+        /// Only connections that have authenticated hold the process open. A socket that completed the
+        /// transport handshake and then said nothing — a crashed client's half-open link, a stale client
+        /// dialling a recycled ephemeral port — is nobody this server is up for, and counting it would
+        /// leave an abandoned local server running until the machine is rebooted. The price is that a
+        /// window shorter than a handshake could stop a client mid-authentication, which is why the
+        /// window an operator or a launcher sets is measured in tens of seconds.
+        /// </para>
         /// </remarks>
-        private bool HasGoneIdle(double stepSeconds) {
-            if (!_idleTimer.Observe(_server.Peers.Count, stepSeconds)) {
+        private bool HasGoneIdle(double sliceSeconds) {
+            if (!_idleTimer.Observe(_registry.AuthenticatedPeerCount, sliceSeconds)) {
                 return false;
             }
 

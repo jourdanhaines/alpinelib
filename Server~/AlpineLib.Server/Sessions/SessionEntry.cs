@@ -109,7 +109,7 @@ namespace AlpineLib.Server.Sessions {
 
             // Last, and with everything above already readable: a module is handed the entry it belongs to
             // so it can reach the world and the slots it is about to simulate over.
-            _module = moduleFactory?.Create(this);
+            _module = BuildModule(moduleFactory);
         }
 
         /// <summary>The session this entry is built around.</summary>
@@ -183,10 +183,38 @@ namespace AlpineLib.Server.Sessions {
 
             _disposed = true;
 
+            UnhookHostEvents();
+            _module?.Dispose();
+            DisposeOwnedParts();
+        }
+
+        /// <summary>
+        /// Asks the game for this session's module, unwinding the entry if the game refuses.
+        /// </summary>
+        /// <remarks>
+        /// A factory that throws leaves an entry nobody will ever hold, so nothing else can dispose the
+        /// chat pipeline it has already started or the host events it has already subscribed to. It
+        /// cleans up after itself and lets the throw travel on, where the front desk turns it into a
+        /// refused create rather than a stopped process.
+        /// </remarks>
+        private ISessionModule BuildModule(ISessionModuleFactory moduleFactory) {
+            try {
+                return moduleFactory?.Create(this);
+            }
+            catch (Exception) {
+                _disposed = true;
+                UnhookHostEvents();
+                DisposeOwnedParts();
+                throw;
+            }
+        }
+
+        private void UnhookHostEvents() {
             _host.OnMemberNeedsKeyframe -= HandleMemberNeedsKeyframe;
             _host.OnPhaseChanged -= HandlePhaseChanged;
+        }
 
-            _module?.Dispose();
+        private void DisposeOwnedParts() {
             _spawner.Dispose();
             _chatService.Stop();
             _chatHost.Stop();

@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using AlpineLib.Netcode.Collision;
@@ -22,7 +21,9 @@ namespace AlpineLib.Server.Tests {
     /// <remarks>
     /// The case that matters is <c>--port 0</c>. A launcher that asks for an ephemeral port has no other
     /// way to learn which one it got, so the readiness line has to carry the port the socket actually
-    /// bound and never the zero that was asked for.
+    /// bound and never the zero that was asked for. The wait is on the captured line rather than on
+    /// <c>ReadyPort</c>, because the line is what a launcher tails and the port is only the loop's own
+    /// record of it.
     /// </remarks>
     public sealed class AlpineServerHostTests {
         private const string MinimalConfig = @"{
@@ -33,26 +34,25 @@ namespace AlpineLib.Server.Tests {
         [Fact]
         public async Task AnEphemeralPortIsAnnouncedAsThePortTheSocketGot() {
             using TempConfigDirectory config = TempConfigDirectory.Create(MinimalConfig);
-            TextWriter previousOut = Console.Out;
-            StringBuilder captured = new StringBuilder();
 
             using IHost host = AlpineServerHost.Build(
                 new[] { "--port", "0", "--config", config.Path, "--idle-exit-seconds", "3" },
                 builder => builder.ConfigureLogging = QuietLogging);
 
             GameLoopService loop = FindLoop(host);
+            string announced;
 
-            try {
-                Console.SetOut(TextWriter.Synchronized(new StringWriter(captured)));
+            using (ConsoleCapture capture = ConsoleCapture.Start()) {
                 host.Start();
-                Assert.True(WaitFor(() => loop.ReadyPort > 0, 15_000), "The server never announced a port.");
-            }
-            finally {
-                Console.SetOut(previousOut);
+                Assert.True(
+                    WaitFor(() => loop.ReadyPort > 0 && capture.Contains(ReadinessLine.Format(loop.ReadyPort)), 15_000),
+                    "The server never announced a port.");
+                announced = capture.Text;
             }
 
+            Assert.True(loop.ReadyPort > 0);
             Assert.NotEqual(9050, loop.ReadyPort);
-            Assert.Contains(ReadinessLine.Format(loop.ReadyPort), captured.ToString(), StringComparison.Ordinal);
+            Assert.Contains(ReadinessLine.Format(loop.ReadyPort), announced, StringComparison.Ordinal);
 
             await host.StopAsync();
         }

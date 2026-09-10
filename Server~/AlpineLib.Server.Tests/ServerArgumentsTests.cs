@@ -116,5 +116,73 @@ namespace AlpineLib.Server.Tests {
         public void AnEmptyConfigDirectoryIsRefused() {
             Assert.Throws<ArgumentException>(() => ServerArguments.Parse(new[] { "--config", "   " }));
         }
+
+        [Fact]
+        public void TheGnuSpellingNamesTheSameThings() {
+            // An operator reaching for --config=/srv/x must not be told the flag itself is unknown.
+            ServerArguments arguments = ServerArguments.Parse(new[] {
+                "--port=9051",
+                "--config=/srv/alpine/config",
+                "--idle-exit-seconds=30",
+                "--max-sessions=4"
+            });
+
+            Assert.Equal(9051, arguments.Port);
+            Assert.Equal("/srv/alpine/config", arguments.ConfigDirectory);
+            Assert.Equal(30, arguments.IdleExitSeconds);
+            Assert.Equal(4, arguments.MaxSessions);
+        }
+
+        [Fact]
+        public void TheTwoSpellingsMixOnOneLine() {
+            ServerArguments arguments = ServerArguments.Parse(new[] { "--config=/srv/alpine", "--port", "0" });
+
+            Assert.Equal("/srv/alpine", arguments.ConfigDirectory);
+            Assert.Equal(0, arguments.Port);
+        }
+
+        [Fact]
+        public void AnAttachedValueKeepsTheRestOfAPathThatHasItsOwnEquals() {
+            ServerArguments arguments = ServerArguments.Parse(new[] { "--config=/srv/a=b/config" });
+
+            Assert.Equal("/srv/a=b/config", arguments.ConfigDirectory);
+        }
+
+        [Theory]
+        [InlineData("--config=")]
+        [InlineData("--config=   ")]
+        [InlineData("--port=")]
+        public void AnAttachedValueThatSaysNothingIsRefused(string argument) {
+            Assert.Throws<ArgumentException>(() => ServerArguments.Parse(new[] { argument }));
+        }
+
+        [Fact]
+        public void AnUnknownFlagIsNamedInFullEvenWhenItCarriesItsValue() {
+            ArgumentException error = Assert.Throws<ArgumentException>(
+                () => ServerArguments.Parse(new[] { "--verbose=1" }));
+
+            Assert.Contains("--verbose=1", error.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void AFlagWhereAValueWasExpectedNamesTheRealMistake() {
+            // Without this the config directory would silently be called "--port" and the 9051 after it
+            // would come back as the unknown argument, which sends the reader looking in the wrong place.
+            ArgumentException error = Assert.Throws<ArgumentException>(
+                () => ServerArguments.Parse(new[] { "--config", "--port", "9051" }));
+
+            Assert.Contains(ServerArguments.ConfigFlag, error.Message, StringComparison.Ordinal);
+            Assert.Contains(ServerArguments.PortFlag, error.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void ANegativeNumberIsStillAValueRatherThanAFlag() {
+            // Only the double dash means "flag". A lone minus is how a bad number arrives, and it has to
+            // reach the range check rather than being refused as a misplaced flag.
+            ArgumentException error = Assert.Throws<ArgumentException>(
+                () => ServerArguments.Parse(new[] { "--port", "-1" }));
+
+            Assert.Contains("0..65535", error.Message, StringComparison.Ordinal);
+        }
     }
 }

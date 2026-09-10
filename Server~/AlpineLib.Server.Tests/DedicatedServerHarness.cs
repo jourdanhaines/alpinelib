@@ -13,6 +13,7 @@ using AlpineLib.Server.GameLoop;
 using AlpineLib.Server.Hosting;
 using AlpineLib.Server.Sessions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -54,7 +55,9 @@ namespace AlpineLib.Server.Tests {
         private DedicatedServerHarness(
             ServerConfigBundle config,
             ServerRuntimeOptions options,
-            ISessionModuleFactory moduleFactory) {
+            ISessionModuleFactory moduleFactory,
+            Func<ServerConfigBundle, ISpawnPlacement> placementFactory,
+            ILogger<SessionRegistry> registryLogger) {
             _config = config;
             _serverTransport = new LiteNetTransport(config.Net.DisconnectTimeoutMs);
             _server = new NetServer(_serverTransport, config.Net);
@@ -65,10 +68,10 @@ namespace AlpineLib.Server.Tests {
                 new AnonymousAuthValidator(config.Session.DefaultDisplayName),
                 SceneGeometryLibrary.Empty,
                 moduleFactory,
-                SessionRegistry.CreateDefaultPlacement,
+                placementFactory,
                 options.MaxSessions,
                 ReadWallClockUnixMs,
-                NullLogger<SessionRegistry>.Instance);
+                registryLogger ?? NullLogger<SessionRegistry>.Instance);
 
             _loop = new GameLoopService(
                 _server,
@@ -113,11 +116,19 @@ namespace AlpineLib.Server.Tests {
         }
 
         /// <summary>Starts a server over a hand-built configuration and option set.</summary>
+        /// <param name="placementFactory">
+        /// Where arrivals are seated, or null for the desk's own default — which is also the only path
+        /// that reports an export whose spawn points went missing.
+        /// </param>
+        /// <param name="registryLogger">Where the desk writes, or null to throw its lines away.</param>
         public static DedicatedServerHarness Start(
             ServerConfigBundle config,
             ServerRuntimeOptions options,
-            ISessionModuleFactory moduleFactory) {
-            DedicatedServerHarness harness = new DedicatedServerHarness(config, options, moduleFactory);
+            ISessionModuleFactory moduleFactory,
+            Func<ServerConfigBundle, ISpawnPlacement> placementFactory = null,
+            ILogger<SessionRegistry> registryLogger = null) {
+            DedicatedServerHarness harness =
+                new DedicatedServerHarness(config, options, moduleFactory, placementFactory, registryLogger);
             harness.StartLoop();
             return harness;
         }

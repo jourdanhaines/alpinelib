@@ -31,6 +31,12 @@ namespace AlpineLib.Server.Sessions {
         /// A connection is leaving this session, while it is still on the roster — a graceful leave and a
         /// dropped link both arrive here, and both arrive before the session retires the member.
         /// </summary>
+        /// <remarks>
+        /// The roster still knows this peer; the front desk no longer does. The
+        /// <c>resolveEntry</c> a factory was handed in
+        /// <see cref="ISessionModuleFactory.RegisterHandlers"/> returns null for it from here on, so a
+        /// module that needs the session reaches for the entry it was created with instead.
+        /// </remarks>
         void OnPeerLeft(PeerHandle peer);
     }
 }

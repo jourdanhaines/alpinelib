@@ -16,6 +16,11 @@ namespace AlpineLib.Server.Hosting {
     /// The count is over continuous idle time, not total. One connection resets it, so a session that
     /// briefly empties between two players is not mistaken for an abandoned process.
     /// </para>
+    /// <para>
+    /// What counts as a connection is the caller's to decide, and the game loop feeds it the peers that
+    /// have authenticated rather than every socket the transport accepted — a link that completed the
+    /// handshake and then said nothing is not somebody the server is waiting for.
+    /// </para>
     /// </remarks>
     public sealed class IdleShutdownTimer {
         private readonly double _idleExitSeconds;
@@ -40,11 +45,13 @@ namespace AlpineLib.Server.Hosting {
         public double IdleExitSeconds => _idleExitSeconds;
 
         /// <summary>
-        /// Folds one step into the timer. Returns true exactly once the idle window has elapsed, and
+        /// Folds one slice into the timer. Returns true exactly once the idle window has elapsed, and
         /// keeps returning true until a peer connects — the caller stops on the first one.
         /// </summary>
-        public bool Observe(int connectedPeerCount, double deltaSeconds) {
-            if (connectedPeerCount > 0) {
+        /// <param name="activePeerCount">Connections that count as somebody being here. See the remarks.</param>
+        /// <param name="deltaSeconds">Wall-clock seconds since the last observation. Negatives are ignored.</param>
+        public bool Observe(int activePeerCount, double deltaSeconds) {
+            if (activePeerCount > 0) {
                 _idleSeconds = 0.0;
                 return false;
             }

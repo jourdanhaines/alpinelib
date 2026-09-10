@@ -5,7 +5,6 @@ using System.Threading.Tasks;
 using AlpineLib.Netcode;
 using AlpineLib.Netcode.Collision;
 using AlpineLib.Netcode.Sessions;
-using AlpineLib.Netcode.Sessions.Spawning;
 using AlpineLib.Netcode.Transport;
 using AlpineLib.Server.Configuration;
 using AlpineLib.Server.GameLoop;
@@ -171,14 +170,10 @@ namespace AlpineLib.Server.Hosting {
                 services.GetRequiredService<IAuthValidator>(),
                 services.GetRequiredService<SceneGeometryLibrary>(),
                 gameBuilder.ModuleFactory,
-                ResolvePlacementFactory(gameBuilder),
+                gameBuilder.PlacementFactory,
                 options.MaxSessions,
                 ReadWallClockUnixMs,
                 services.GetRequiredService<ILogger<SessionRegistry>>());
-        }
-
-        private static Func<ServerConfigBundle, ISpawnPlacement> ResolvePlacementFactory(ServerHostBuilder gameBuilder) {
-            return gameBuilder.PlacementFactory ?? SessionRegistry.CreateDefaultPlacement;
         }
 
         private static SceneGeometryLibrary CreateGeometryLibrary(IServiceProvider services) {

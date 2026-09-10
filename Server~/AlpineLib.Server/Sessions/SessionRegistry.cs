@@ -58,6 +58,7 @@ namespace AlpineLib.Server.Sessions {
         private readonly Dictionary<int, SessionEntry> _entryByPeerId = new Dictionary<int, SessionEntry>();
 
         private int _nextSessionNumber = 1;
+        private bool _reportedRingFallback;
         private bool _disposed;
 
         /// <summary>Wires the desk onto a server's router. The server need not be started yet.</summary>
@@ -71,7 +72,8 @@ namespace AlpineLib.Server.Sessions {
         /// </param>
         /// <param name="placementFactory">
         /// Builds a fresh placement for each session opened. Null falls back to the exported spawn
-        /// settings, which is what a game that authored a <c>spawn</c> section and nothing else wants.
+        /// settings, which is what a game that authored a <c>spawn</c> section and nothing else wants —
+        /// and which is the only path that can report an export whose points went missing.
         /// </param>
         public SessionRegistry(
             NetServer server,
@@ -89,7 +91,7 @@ namespace AlpineLib.Server.Sessions {
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _moduleFactory = moduleFactory;
-            _placementFactory = placementFactory ?? CreateDefaultPlacement;
+            _placementFactory = placementFactory ?? CreateConfiguredPlacement;
             _maxSessions = maxSessions < 1 ? 1 : maxSessions;
             _movementValidator = new MovementValidator(config.Net);
 
@@ -113,7 +115,11 @@ namespace AlpineLib.Server.Sessions {
         /// <summary>Connections that have authenticated, whether or not they are in a session.</summary>
         public int AuthenticatedPeerCount => _authDesk.AuthenticatedCount;
 
-        /// <summary>Builds the placement a bundle's spawn settings describe. The default when none is given.</summary>
+        /// <summary>Builds the placement a bundle's spawn settings describe, silently.</summary>
+        /// <remarks>
+        /// Static and logger-less so a game can call it to seat a session the shipped way without owning
+        /// a desk. The desk's own default wraps this and reports a spawn section that fell back.
+        /// </remarks>
         public static ISpawnPlacement CreateDefaultPlacement(ServerConfigBundle config) {
             if (config == null) {
                 throw new ArgumentNullException(nameof(config));
@@ -137,6 +143,14 @@ namespace AlpineLib.Server.Sessions {
             }
 
             SessionEntry entry = OpenSession(profileId);
+
+            if (entry == null) {
+                // A fault inside the game's own factory is nothing a client can act on, so it is refused
+                // the way a server with no room refuses and the detail stays in the log.
+                Deny(peer, SessionEndReason.Full);
+                return;
+            }
+
             SessionCreated created = new SessionCreated(entry.Host.SessionId, entry.Host.JoinCode);
             _server.Send(peer, SessionMessageIds.SessionCreated, in created, DeliveryClass.ReliableOrdered);
 
@@ -300,6 +314,7 @@ namespace AlpineLib.Server.Sessions {
             _server.Router.Register<ClaimRelease>(ClaimMessageIds.ClaimRelease, ReceiveClaimRelease);
         }
 
+        /// <summary>Stands a session up, or returns null when the game refused to build its half of it.</summary>
         private SessionEntry OpenSession(string profileId) {
             string joinCode = _joinCodes.Generate(IsJoinCodeTaken);
             string sessionId = "session-" + _nextSessionNumber.ToString();
@@ -308,17 +323,11 @@ namespace AlpineLib.Server.Sessions {
             SessionHost host = new SessionHost(sessionId, joinCode, _config.Session, _server);
             host.Open();
 
-            SessionEntry entry = new SessionEntry(
-                host,
-                _server,
-                _movementValidator,
-                _config.Chat,
-                _geometry,
-                _config.Spawn,
-                _placementFactory(_config),
-                _moduleFactory,
-                _clock,
-                _logger);
+            SessionEntry entry = BuildEntry(host, sessionId);
+
+            if (entry == null) {
+                return null;
+            }
 
             _entries.Add(entry);
             _entryByJoinCode.Add(joinCode, entry);
@@ -326,6 +335,62 @@ namespace AlpineLib.Server.Sessions {
             _logger.LogInformation("Opened session {SessionId} with join code {JoinCode} (profile '{ProfileId}').",
                 sessionId, joinCode, ResolveProfileId(profileId));
             return entry;
+        }
+
+        /// <summary>
+        /// Builds the entry around a session that is already open, or null when the game's own factories
+        /// threw on the way.
+        /// </summary>
+        /// <remarks>
+        /// The module and placement factories are the game's code running on the loop thread. A throw
+        /// from either would otherwise reach the loop's catch-all and stop the process, so one player's
+        /// bad create would take every other session on the box down with it. Caught here, it costs that
+        /// one create: the session opened a moment ago is closed, the entry has already unwound its own
+        /// pipeline, and every other session carries on.
+        /// </remarks>
+        private SessionEntry BuildEntry(SessionHost host, string sessionId) {
+            try {
+                return new SessionEntry(
+                    host,
+                    _server,
+                    _movementValidator,
+                    _config.Chat,
+                    _geometry,
+                    _config.Spawn,
+                    _placementFactory(_config),
+                    _moduleFactory,
+                    _clock,
+                    _logger);
+            }
+            catch (Exception error) {
+                _logger.LogError(error, "The game could not build session {SessionId}; the request was refused.", sessionId);
+                host.Close(SessionEndReason.HostClosed);
+                return null;
+            }
+        }
+
+        /// <summary>The placement a session gets when the game named no factory of its own.</summary>
+        private ISpawnPlacement CreateConfiguredPlacement(ServerConfigBundle config) {
+            ReportRingFallbackOnce(config);
+            return CreateDefaultPlacement(config);
+        }
+
+        /// <summary>
+        /// Says once that the exported spawn points went missing and the ring is seating players instead.
+        /// </summary>
+        /// <remarks>
+        /// Silence here is the worst kind of wrong: every player stood on a two-metre ring at the world
+        /// origin, which on an authored map is under the geometry, with nothing anywhere saying why. Once
+        /// per process, because it is a fault in the export rather than in the session being opened.
+        /// </remarks>
+        private void ReportRingFallbackOnce(ServerConfigBundle config) {
+            if (_reportedRingFallback || config == null || !config.Spawn.FallsBackToRing) {
+                return;
+            }
+
+            _reportedRingFallback = true;
+            _logger.LogWarning(
+                "The exported spawn section asks for a list placement and names no points; arrivals will be seated on the default ring instead.");
         }
 
         private string ResolveProfileId(string requestedProfileId) {
