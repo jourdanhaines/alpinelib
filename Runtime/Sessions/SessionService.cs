@@ -320,6 +320,7 @@ namespace AlpineLib.Sessions {
         private ClientClaims _claims;
         private ListenServerFrontDesk _frontDesk;
         private LocalServerLauncher _localServer;
+        private LocalServerConfig _launchedServerConfig;
         private CollisionWorld _collisionWorld;
         private CancellationTokenSource _hostStartSource;
         private NetEndpoint _hostEndpoint;
@@ -328,6 +329,7 @@ namespace AlpineLib.Sessions {
         private SessionEndReason _pendingTearDownReason;
         private bool _isTearDownPending;
         private bool _hasWarnedOverrideIgnored;
+        private bool _isLocalServerStarting;
 
         /// <remarks>
         /// Declared on the concrete type rather than the interface, matching the library's other
@@ -389,10 +391,34 @@ namespace AlpineLib.Sessions {
 
             localServer = config;
 
-            // The launcher captured the old config when it was built, so it cannot serve the new one:
-            // keeping it would silently launch the previous executable on the previous port.
+            // A launcher that is hosting right now is a server somebody is playing on, and dropping one
+            // means killing it. The new config is already stored, so the next host picks it up.
+            if (IsLocalServerBusy()) {
+                Debug.LogWarning("SessionService::ConfigureLocalServer->A local server is already running or starting; keeping it and applying the new config on the next host.");
+                return;
+            }
+
+            DropLocalServer();
+        }
+
+        /// <summary>True while a launcher owns a live server, or is still waiting on one to report in.</summary>
+        private bool IsLocalServerBusy() {
+            if (_localServer == null) return false;
+
+            return _isLocalServerStarting || _localServer.IsRunning;
+        }
+
+        /// <summary>
+        /// Drops the launcher, killing whatever it still owns.
+        /// </summary>
+        /// <remarks>
+        /// The launcher captured its config when it was built, so it cannot serve a replacement one:
+        /// keeping it would silently launch the previous executable on the previous port.
+        /// </remarks>
+        private void DropLocalServer() {
             _localServer?.Dispose();
             _localServer = null;
+            _launchedServerConfig = null;
         }
 
         /// <inheritdoc />
@@ -517,8 +543,7 @@ namespace AlpineLib.Sessions {
 
             // Disposed rather than stopped: the launcher holds editor and quit hooks that would keep it
             // alive past this service, and there is no session left to reuse a warm server for.
-            _localServer?.Dispose();
-            _localServer = null;
+            DropLocalServer();
             _hostStartSource?.Dispose();
             _hostStartSource = null;
 
@@ -615,8 +640,9 @@ namespace AlpineLib.Sessions {
             }
 
             WarnIfServerAddressOverrideIgnored();
+            AdoptConfiguredLocalServer();
 
-            _localServer ??= new LocalServerLauncher(localServer);
+            _isLocalServerStarting = true;
 
             try {
                 return await _localServer.StartAsync(RenewHostStartToken());
@@ -627,18 +653,41 @@ namespace AlpineLib.Sessions {
                 _hostEndpointFailure = "The local server did not start.";
                 Debug.LogError($"SessionService::StartLocalServerAsync->{exception.Message}");
                 return NetEndpoint.None;
+            } finally {
+                _isLocalServerStarting = false;
             }
+        }
+
+        /// <summary>Makes sure the launcher about to be used is the one built for the current config.</summary>
+        /// <remarks>
+        /// This is where a config swap deferred by <see cref="ConfigureLocalServer"/> actually lands: the
+        /// old launcher — and the server it is still holding — is dropped now, between sessions, rather
+        /// than out from under a session in progress.
+        /// </remarks>
+        private void AdoptConfiguredLocalServer() {
+            if (_launchedServerConfig != localServer) DropLocalServer();
+
+            _localServer ??= new LocalServerLauncher(localServer);
+            _launchedServerConfig = localServer;
         }
 
         /// <summary>
         /// Replaces the token a pending server start is cancelled by, and hands out the new one.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// Teardown is the signal this exists for. A player who presses Host and then leaves — or exits
         /// play mode, or loses the transport — must not be left watching "starting a train…" until a
         /// readiness budget nobody is waiting for runs out.
+        /// </para>
+        /// <para>
+        /// The old source is cancelled before it is disposed, because a token whose source was disposed
+        /// without ever being cancelled is not "finished" — it is permanently uncancellable, silently.
+        /// Anything still holding it, such as a superseded start's retry, has to see it end.
+        /// </para>
         /// </remarks>
         private CancellationToken RenewHostStartToken() {
+            _hostStartSource?.Cancel();
             _hostStartSource?.Dispose();
             _hostStartSource = new CancellationTokenSource();
 

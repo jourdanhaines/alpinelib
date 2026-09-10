@@ -42,16 +42,7 @@ namespace AlpineLib.Sessions {
 
         private const string ReadyPortToken = "port=";
         private const string LoopbackHost = "127.0.0.1";
-        private const string UnixShellPath = "/bin/sh";
-
-        /// <remarks>
-        /// <c>setsid</c> puts the server in a process group of its own, so the launcher can reap that
-        /// whole group rather than one pid and a server's helper processes cannot outlive it. It is not
-        /// on every host — macOS ships without it — hence the plain exec behind it; a server that ends
-        /// up sharing this process's group is killed by pid instead.
-        /// </remarks>
-        private const string UnixLaunchScript =
-            "command -v setsid >/dev/null 2>&1 && exec setsid \"$0\" \"$@\"; exec \"$0\" \"$@\"";
+        private const string SetsidFileName = "setsid";
 
         private const int MinPort = 1;
         private const int MaxPort = 65535;
@@ -108,18 +99,17 @@ namespace AlpineLib.Sessions {
 
             if (port == LocalServerAttempt.NoPort && attempt.ExitCode != 0) {
                 Debug.LogWarning($"LocalServerLauncher::StartAsync->The local server {DescribeExit(attempt.ExitCode)} before it was ready on port {preferredPort}; retrying on an ephemeral port.");
+                StopAttempt(attempt);
                 attempt = await RunAttemptAsync(executablePath, EphemeralPort, cancellationToken);
                 port = ReportedPort(attempt);
             }
 
             if (port == LocalServerAttempt.NoPort) {
-                throw new InvalidOperationException(
-                    DescribeFailure(attempt, DescribeExit(attempt.ExitCode) + " before reporting readiness"));
+                throw FailAndReap(attempt, DescribeExit(attempt.ExitCode) + " before reporting readiness");
             }
 
             if (!TryAdoptEndpoint(attempt, port, out NetEndpoint endpoint)) {
-                throw new InvalidOperationException(
-                    DescribeFailure(attempt, "was replaced by a newer launch before it was ready"));
+                throw FailAndReap(attempt, "was replaced by a newer launch before it was ready");
             }
 
             return endpoint;
@@ -228,14 +218,41 @@ namespace AlpineLib.Sessions {
         private LocalServerAttempt StartAttempt(string executablePath, int port) {
             Stop();
 
-            var attempt = new LocalServerAttempt(BuildStartInfo(executablePath, port));
+            ProcessStartInfo startInfo = BuildStartInfo(executablePath, port, out bool leadsOwnProcessGroup);
+            var attempt = new LocalServerAttempt(startInfo, leadsOwnProcessGroup);
 
+            // Published before it is started so a concurrent Stop can reach it; the attempt makes its
+            // own Start a no-op if that stop wins the race.
             lock (_gate) {
                 _attempt = attempt;
             }
 
-            attempt.Start();
+            StartOrReap(attempt);
             return attempt;
+        }
+
+        /// <summary>Starts a published attempt, reaping it in place when the spawn itself throws.</summary>
+        private void StartOrReap(LocalServerAttempt attempt) {
+            try {
+                attempt.Start();
+            } catch (Exception) {
+                StopAttempt(attempt);
+                throw;
+            }
+        }
+
+        /// <summary>Reaps a failed attempt before its failure travels out as an exception.</summary>
+        /// <remarks>
+        /// The tracked process being gone is not the same as the launch being cleaned up: a server that
+        /// forked a helper and then exited leaves that helper holding the port, and nothing else reaps
+        /// an attempt that failed on its own terms rather than on a timeout.
+        /// </remarks>
+        private InvalidOperationException FailAndReap(LocalServerAttempt attempt, string what) {
+            var failure = new InvalidOperationException(DescribeFailure(attempt, what));
+
+            StopAttempt(attempt);
+
+            return failure;
         }
 
         /// <summary>Stops one attempt, and forgets it only if it is still the live one.</summary>
@@ -279,7 +296,7 @@ namespace AlpineLib.Sessions {
                 $"LocalServerLauncher::RequireExecutablePath->No server executable at '{executablePath}'; publish the dedicated server before hosting one locally.");
         }
 
-        private ProcessStartInfo BuildStartInfo(string executablePath, int port) {
+        private ProcessStartInfo BuildStartInfo(string executablePath, int port, out bool leadsOwnProcessGroup) {
             var startInfo = new ProcessStartInfo {
                 WorkingDirectory = LocalServerPaths.ResolveServerDirectory(_config),
                 UseShellExecute = false,
@@ -288,23 +305,67 @@ namespace AlpineLib.Sessions {
                 RedirectStandardError = true
             };
 
-            AppendCommand(startInfo, executablePath);
+            leadsOwnProcessGroup = AppendCommand(startInfo, executablePath);
             AppendArguments(startInfo, port);
 
             return startInfo;
         }
 
-        /// <summary>Names the program to run, through a shell on POSIX so the server leads its own group.</summary>
-        private static void AppendCommand(ProcessStartInfo startInfo, string executablePath) {
+        /// <summary>
+        /// Names the program to run, and reports whether the launched pid will lead a process group of
+        /// its own.
+        /// </summary>
+        /// <remarks>
+        /// <c>setsid</c> is the executable, not a line of shell: a shell wrapper would have to be asked
+        /// afterwards what it decided to do, and the answer arrives too late to be trusted. Run this way
+        /// it execs in place — it forks only when its caller already leads a group, and a process .NET
+        /// spawned never does — so the pid <c>Process.Start</c> hands back is the session leader itself
+        /// and the group to reap is that same pid. A host without <c>setsid</c> — macOS ships without it
+        /// — runs the server directly and gives up group reaping rather than guessing at a group.
+        /// </remarks>
+        private static bool AppendCommand(ProcessStartInfo startInfo, string executablePath) {
             if (LocalServerPaths.IsWindows()) {
                 startInfo.FileName = executablePath;
-                return;
+                return false;
             }
 
-            startInfo.FileName = UnixShellPath;
-            startInfo.ArgumentList.Add("-c");
-            startInfo.ArgumentList.Add(UnixLaunchScript);
+            string setsidPath = ResolveSetsidPath();
+
+            if (setsidPath == null) {
+                startInfo.FileName = executablePath;
+                return false;
+            }
+
+            startInfo.FileName = setsidPath;
             startInfo.ArgumentList.Add(executablePath);
+            return true;
+        }
+
+        /// <summary>The full path to <c>setsid</c>, or null when this host does not ship one.</summary>
+        /// <remarks>
+        /// Resolved to a path rather than left to <c>Process.Start</c>'s own PATH search so that "no
+        /// <c>setsid</c> here" is answered before the spawn, while there is still a choice to make.
+        /// </remarks>
+        private static string ResolveSetsidPath() {
+            string searchPath = Environment.GetEnvironmentVariable("PATH");
+
+            if (string.IsNullOrEmpty(searchPath)) return null;
+
+            foreach (string directory in searchPath.Split(Path.PathSeparator)) {
+                string candidate = SetsidCandidate(directory);
+
+                if (candidate != null) return candidate;
+            }
+
+            return null;
+        }
+
+        private static string SetsidCandidate(string directory) {
+            if (string.IsNullOrEmpty(directory)) return null;
+
+            string candidate = Path.Combine(directory, SetsidFileName);
+
+            return File.Exists(candidate) ? candidate : null;
         }
 
         /// <remarks>
