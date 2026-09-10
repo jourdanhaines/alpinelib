@@ -37,7 +37,9 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
     /// right for a <typeparamref name="TState"/> whose encoded size varies with its contents — and
     /// packed into as many envelopes as it takes. Both cadences chunk, so a keyframe is bounded the
     /// same way a dirty broadcast is. The one thing chunking cannot rescue is a single record too big
-    /// for an empty datagram; that throws, because no amount of splitting would send it.
+    /// for an empty datagram; that throws, because no amount of splitting would send it. A dirty
+    /// publish that chunks also drops the sequencer — see <c>BroadcastDirtyRecords</c> — so a reorder
+    /// inside the burst cannot discard the chunks that went out before it.
     /// </para>
     /// <para>
     /// <b>Retirement rides the record, not a message of its own.</b> <see cref="Remove"/> puts a
@@ -55,6 +57,19 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         /// <summary>How often the full reliable keyframe goes out, in seconds.</summary>
         public const double KeyframeIntervalSeconds = 1.0;
 
+        /// <summary>
+        /// Scratch room for measuring one record — several datagrams' worth, on purpose.
+        /// </summary>
+        /// <remarks>
+        /// A record only ever outgrows an envelope because the game's state carries a string or a
+        /// variable-length list, and those overshoot by a lot rather than by a byte. Measuring into a
+        /// buffer the size of a datagram meant the answerable "subject N is too big" error only fired
+        /// inside the few bytes between the envelope budget and the datagram, and every larger record —
+        /// the shape that actually happens — came out as a raw writer overflow instead. Anything past
+        /// even this is still named, just with a lower bound for its size.
+        /// </remarks>
+        private const int MeasureBufferBytes = NetBufferPool.DefaultBufferSize * 8;
+
         private readonly NetServer server;
         private readonly Func<IReadOnlyList<PeerHandle>> peerSource;
         private readonly NetConfig config;
@@ -65,7 +80,7 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         private readonly HashSet<ushort> dirtyIds = new HashSet<ushort>();
         private readonly List<StateChannelRecord<TState>> records = new List<StateChannelRecord<TState>>();
         private readonly List<StateChannelRecord<TState>> chunk = new List<StateChannelRecord<TState>>();
-        private readonly byte[] measureBuffer = new byte[NetBufferPool.DefaultBufferSize];
+        private readonly byte[] measureBuffer = new byte[MeasureBufferBytes];
 
         private double snapshotAccumulatorSeconds;
         private double keyframeAccumulatorSeconds;
@@ -136,6 +151,12 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         /// Drops a subject and tells the session to forget it. Returns false if the channel never held
         /// it.
         /// </summary>
+        /// <remarks>
+        /// A subject <see cref="Set"/> again before the retirement has gone out is never retired on the
+        /// wire at all, so the client's memory of its tick is intact and <see cref="Set"/>'s equal-tick
+        /// rule still applies: "remove it and put this in its place" needs a newer tick than the one
+        /// the client already holds, exactly as a plain restatement does.
+        /// </remarks>
         public bool Remove(ushort id) {
             if (!entriesById.Remove(id)) {
                 return false;
@@ -171,7 +192,9 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         /// replication does it: the send rate is a bandwidth decision and the tick rate is a simulation
         /// decision, and tying them together would make one hostage to the other. Debt past one interval
         /// is dropped rather than banked, so a load hitch costs a late send and not a burst of catch-up
-        /// sends at several times the configured rate afterwards.
+        /// sends at several times the configured rate afterwards. The keyframe is a floor and not a
+        /// rate: its accumulator is reset rather than drained, so the interval between two keyframes is
+        /// one second plus whatever of a frame the crossing overshot by.
         /// </remarks>
         /// <param name="serverTick">The authoritative tick counter, from <c>NetServer.Tick</c>.</param>
         /// <param name="deltaSeconds">Wall time since the previous call, which drives the send cadences.</param>
@@ -208,7 +231,7 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
             }
 
             BuildRecords(onlyDirty: true, retireTick: tick);
-            BroadcastRecords(tick, DeliveryClass.UnreliableSequenced);
+            BroadcastDirtyRecords(tick);
             dirtyIds.Clear();
         }
 
@@ -269,6 +292,36 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
             }
         }
 
+        /// <summary>
+        /// Sends a dirty publish, dropping the sequencer as soon as it takes more than one datagram.
+        /// </summary>
+        /// <remarks>
+        /// <c>UnreliableSequenced</c> discards a packet that arrives after a later one, which is exactly
+        /// right for a publish that is one datagram: a superseded snapshot is worth nothing. It is
+        /// exactly wrong for a publish split across several, because the chunks share one publish tick
+        /// and a reorder inside the burst throws the earlier chunks away outright — every subject in
+        /// them missing that publish rather than merely arriving late. Plain <c>Unreliable</c> costs
+        /// nothing here: every record carries its own tick and the client already compares on it, so
+        /// the protection the sequencer offered was one the record tick had anyway.
+        /// </remarks>
+        private void BroadcastDirtyRecords(uint tick) {
+            IReadOnlyList<PeerHandle> targets = Peers;
+            int start = 0;
+            bool isFirstChunk = true;
+
+            while (start < records.Count) {
+                FillChunk(start);
+                start += chunk.Count;
+
+                bool isWholePublish = isFirstChunk && start >= records.Count;
+                isFirstChunk = false;
+
+                DeliveryClass delivery = isWholePublish ? DeliveryClass.UnreliableSequenced : DeliveryClass.Unreliable;
+                var message = new StateChannelEnvelope<TState>(tick, chunk);
+                server.SendToMany(targets, messageId, in message, delivery);
+            }
+        }
+
         /// <summary>Sends the built records to the whole session, split across datagram-sized envelopes.</summary>
         private void BroadcastRecords(uint tick, DeliveryClass delivery) {
             IReadOnlyList<PeerHandle> targets = Peers;
@@ -325,18 +378,31 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         /// </summary>
         private int MeasureRecord(in StateChannelRecord<TState> record) {
             var writer = new NetWriter(measureBuffer);
-            writer.WriteMessage(record);
+
+            try {
+                writer.WriteMessage(record);
+            }
+            catch (NetProtocolException) {
+                // Past even the scratch buffer: the exact size is unknown, but which subject it was and
+                // that it cannot be split are the two things the caller needs.
+                GuardRecordFits(record.Id, measureBuffer.Length, MaxRecordBytesPerEnvelope, isLowerBound: true);
+            }
+
             return writer.Written;
         }
 
-        private static void GuardRecordFits(ushort id, int recordBytes, int budget) {
+        private static void GuardRecordFits(ushort id, int recordBytes, int budget, bool isLowerBound = false) {
             if (recordBytes <= budget) {
                 return;
             }
 
+            string size = isLowerBound
+                ? "more than " + recordBytes.ToString() + " bytes"
+                : recordBytes.ToString() + " bytes";
+
             throw new InvalidOperationException(
-                "Subject " + id.ToString() + " encodes to " + recordBytes.ToString()
-                + " bytes, past the " + budget.ToString()
+                "Subject " + id.ToString() + " encodes to " + size
+                + ", past the " + budget.ToString()
                 + " an envelope has room for. Splitting cannot help a single oversized record: shrink the state.");
         }
 

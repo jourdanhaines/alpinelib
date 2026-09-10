@@ -82,6 +82,13 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         public ushort MessageId => messageId;
 
         /// <summary>The subjects held, in the order they were first heard about.</summary>
+        /// <remarks>
+        /// Eventually consistent within a publish rather than atomic across one: the server splits a
+        /// large publish into several envelopes and each is folded on its own, so a caller reading this
+        /// from inside <see cref="Updated"/> — or on a frame that lands between two chunks — sees a
+        /// partial roster. Per-subject consumers never notice; anything that treats this as a set
+        /// should read it outside the event.
+        /// </remarks>
         public IReadOnlyList<ushort> Ids => ids;
 
         /// <summary>
