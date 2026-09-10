@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Reflection;
@@ -44,17 +45,22 @@ namespace AlpineLib.Editor {
     /// different runtime identifier than the one being bundled, a publish that resolves to the same
     /// place as the destination, a missing session config, a launcher that names a different server
     /// from the bundle (or no launcher at all), and a copy that did not land everything the publish
-    /// holds. The two states that are a deliberate choice — no bundle config at all, and one whose
-    /// <c>enabled</c> flag is off — log a line and return, because a build with no server in it is an
-    /// ordinary thing to want and silence is what makes the missing <c>Server</c> folder a mystery
-    /// afterwards.
+    /// holds. The whole step runs inside one guard in <see cref="OnPostprocessBuild"/> that turns
+    /// anything else thrown into the same failure — an unreadable manifest, a publish folder the build
+    /// user cannot list, a full disk — because Unity logs any other exception and finishes the build
+    /// <c>Succeeded</c>, which ships the previous build's server beside the new player. The two states
+    /// that are a deliberate choice — no bundle config at all, and one whose <c>enabled</c> flag is off
+    /// — log a line and return, because a build with no server in it is an ordinary thing to want and
+    /// silence is what makes the missing <c>Server</c> folder a mystery afterwards.
     /// </para>
     /// <para>
-    /// <b>Nothing after the swap fails the build.</b> Once the new bundle is in place the build has
-    /// produced what it set out to produce, so the last step — removing the previous bundle's
-    /// <c>.stale</c> folder — warns and continues rather than failing a build whose output is correct.
-    /// A build interrupted mid-swap leaves the previous bundle in <c>.stale</c> with nothing at the
-    /// destination, and the next build puts it back before it clears anything.
+    /// <b>Nothing after the swap fails the build.</b> Every check is a check on the publish or on the
+    /// assembled copy, so all of them run before the rename that puts the bundle in place; once it is
+    /// there the build has produced what it set out to produce. The one step left — removing the
+    /// previous bundle's <c>.stale</c> folder — warns rather than fails, and leaves the folder alone
+    /// altogether when the publish turns out to have been living inside it, because it is then the only
+    /// copy. A build interrupted mid-swap leaves the previous bundle in <c>.stale</c> with nothing at
+    /// the destination, and the next build puts it back before it clears anything.
     /// </para>
     /// <para>
     /// Runs late (order 100) so any step that rearranges the player's own output has already finished
@@ -85,8 +91,14 @@ namespace AlpineLib.Editor {
         /// <summary>Suffix of the manifest a .NET publish writes beside its executable.</summary>
         private const string dependencyManifestSuffix = ".deps.json";
 
-        /// <summary>Longest chain of symbolic links a single path component may go through.</summary>
-        private const int maximumLinkDepth = 40;
+        /// <summary>COFF machine value of a 32-bit Intel PE file.</summary>
+        private const int peMachineX86 = 0x014C;
+
+        /// <summary>COFF machine value of a 64-bit Intel PE file.</summary>
+        private const int peMachineX64 = 0x8664;
+
+        /// <summary>COFF machine value of a 64-bit ARM PE file.</summary>
+        private const int peMachineArm64 = 0xAA64;
 
         private const string macIntelRuntimeIdentifier = "osx-x64";
         private const string macAppleSiliconRuntimeIdentifier = "osx-arm64";
@@ -106,6 +118,27 @@ namespace AlpineLib.Editor {
             if (report == null) return;
             if (report.summary.platformGroup != BuildTargetGroup.Standalone) return;
 
+            try {
+                BundleConfiguredServer(report);
+            } catch (BuildFailedException) {
+                throw;
+            } catch (Exception exception) {
+                throw new BuildFailedException(
+                    $"{logPrefix}: bundling the server failed before anything beside the player was replaced, so " +
+                    $"this build ships whatever server was there already: {exception.GetType().Name}: " +
+                    exception.Message);
+            }
+        }
+
+        /// <summary>
+        /// Copies the platform's publish, or says why this build ships no server.
+        /// </summary>
+        /// <remarks>
+        /// Split out so that <see cref="OnPostprocessBuild"/> is the two target guards and nothing but
+        /// the catch-all. Every file this step reads has to be inside that catch-all, and a body with
+        /// statements on either side of a <c>try</c> is how one of them gets left out.
+        /// </remarks>
+        private static void BundleConfiguredServer(BuildReport report) {
             ServerBundleConfig config = ResolveConfig();
             if (config == null) return;
 
@@ -208,7 +241,7 @@ namespace AlpineLib.Editor {
         /// </remarks>
         private static void RequireRuntimeIdentifierPlatform(
             ServerBundleConfig config, BuildTarget platform, string runtimeIdentifier) {
-            string named = ResolveRuntimeIdentifierPlatform(runtimeIdentifier);
+            string named = ServerBundleConfig.ResolveRuntimeIdentifierPlatform(runtimeIdentifier);
 
             if (named == null) {
                 Debug.LogWarning(
@@ -232,11 +265,11 @@ namespace AlpineLib.Editor {
             switch (platform) {
                 case BuildTarget.StandaloneWindows:
                 case BuildTarget.StandaloneWindows64:
-                    return "Windows";
+                    return ServerBundleConfig.WindowsPlatformName;
                 case BuildTarget.StandaloneLinux64:
-                    return "Linux";
+                    return ServerBundleConfig.LinuxPlatformName;
                 case BuildTarget.StandaloneOSX:
-                    return "macOS";
+                    return ServerBundleConfig.MacPlatformName;
                 default:
                     return null;
             }
@@ -281,8 +314,10 @@ namespace AlpineLib.Editor {
 
             if (expected == null) {
                 Debug.LogWarning(
-                    $"{logPrefix}: the macOS player is built for '{architecture}' but a bundle ships one server " +
-                    $"('{runtimeIdentifier}'); Macs of the other architecture need Rosetta 2 to host.");
+                    $"{logPrefix}: the macOS player is built for '{architecture}', which runs on Macs of both " +
+                    $"architectures, but a bundle ships one server ('{runtimeIdentifier}'). An " +
+                    $"'{macIntelRuntimeIdentifier}' server needs Rosetta 2 on an Apple-silicon Mac; an " +
+                    $"'{macAppleSiliconRuntimeIdentifier}' one cannot run on an Intel Mac at all.");
                 return;
             }
 
@@ -337,10 +372,7 @@ namespace AlpineLib.Editor {
             ServerBundleConfig config, string relativeSource, BuildTarget platform) {
             string sourceDirectory = ResolveProjectPath(relativeSource);
 
-            if (Directory.Exists(sourceDirectory)
-                && Directory.GetFileSystemEntries(sourceDirectory).Length > 0) {
-                return sourceDirectory;
-            }
+            if (HasContent(sourceDirectory)) return sourceDirectory;
 
             throw new BuildFailedException(
                 $"{logPrefix}: '{config.name}' publishes '{platform}' from '{relativeSource}', which does not exist " +
@@ -355,16 +387,17 @@ namespace AlpineLib.Editor {
         /// <para>
         /// The folder's own name proves nothing: the publish path is composed from the runtime
         /// identifier, so comparing the last segment back to it compares a string to itself. What does
-        /// prove it is what the publish says about itself. A .NET publish writes
-        /// <c>&lt;executable&gt;.deps.json</c> beside the executable, and its <c>runtimeTarget.name</c>
-        /// ends in <c>/&lt;rid&gt;</c> whenever the publish was made for one — that string is the answer.
+        /// prove it is what the publish says about itself, and it says it twice — in the
+        /// <c>.deps.json</c> a framework-dependent publish writes, whose <c>runtimeTarget.name</c> ends
+        /// in <c>/&lt;rid&gt;</c>, and in the header of the file the launcher starts.
         /// </para>
         /// <para>
-        /// A single-file publish leaves no manifest on disk (it is embedded in the executable), so the
-        /// fallback is the executable's own first four bytes, which name the operating system it was
-        /// built for and nothing else. Unidentifiable is refused rather than trusted: this step is about
-        /// to ship the folder as the server a player launches, and something that is neither ELF, PE nor
-        /// Mach-O is not one on any standalone platform.
+        /// Either reading on its own is enough, because a real publish can be missing either: a
+        /// single-file publish embeds its manifest in the executable, and the file the launcher starts
+        /// can be a wrapper script rather than the apphost. A reading that <em>contradicts</em> the
+        /// identifier fails the build whatever the other one said, and a folder where neither reading
+        /// says anything is refused as well — this step is about to ship it as the server a player
+        /// launches.
         /// </para>
         /// </remarks>
         private static void RequirePublishedRuntimeIdentifier(
@@ -373,37 +406,73 @@ namespace AlpineLib.Editor {
             string runtimeIdentifier,
             string relativeSource,
             BuildTarget platform) {
-            string fileName = ResolveExecutableFileName(config, platform);
-            string published = ReadPublishedRuntimeIdentifier(sourceDirectory, fileName);
+            string manifestPath = ResolveDependencyManifest(config, sourceDirectory, relativeSource);
+            string published = manifestPath == null ? null : ReadPublishedRuntimeIdentifier(manifestPath);
+            bool manifestAgrees = published != null
+                && string.Equals(published, runtimeIdentifier, StringComparison.OrdinalIgnoreCase);
 
-            if (published == null) {
-                RequirePublishedExecutableFormat(config, sourceDirectory, fileName, runtimeIdentifier, relativeSource);
-                return;
+            if (published != null && !manifestAgrees) {
+                throw new BuildFailedException(
+                    $"{logPrefix}: '{config.name}' bundles '{relativeSource}' as its '{runtimeIdentifier}' server, " +
+                    $"but '{Path.GetFileName(manifestPath)}' in that folder says it was published for " +
+                    $"'{published}'. That server cannot run beside this player. Publish the runtime identifier the " +
+                    "asset names, or correct the asset.");
             }
 
-            if (string.Equals(published, runtimeIdentifier, StringComparison.OrdinalIgnoreCase)) return;
-
-            throw new BuildFailedException(
-                $"{logPrefix}: '{config.name}' bundles '{relativeSource}' as its '{runtimeIdentifier}' server, but " +
-                $"'{fileName}{dependencyManifestSuffix}' in that folder says it was published for '{published}'. " +
-                "That server cannot run beside this player. Publish the runtime identifier the asset names, or " +
-                "correct the asset.");
+            RequirePublishedExecutableIdentity(
+                config, sourceDirectory, runtimeIdentifier, relativeSource, platform, manifestAgrees);
         }
 
         /// <summary>
-        /// The runtime identifier a publish's dependency manifest records, or null when there is none to
-        /// read.
+        /// The one dependency manifest a publish root holds, or null when it holds none.
         /// </summary>
         /// <remarks>
-        /// Null covers three states that all mean the same thing to the caller: no manifest (a
-        /// single-file publish), a manifest this cannot parse, and a portable publish whose
-        /// <c>runtimeTarget.name</c> carries a framework but no runtime identifier.
+        /// Found by its extension rather than by name, because the manifest is named after the assembly
+        /// and not after the file the launcher starts: a Windows publish writes
+        /// <c>&lt;assembly&gt;.deps.json</c> beside <c>&lt;assembly&gt;.exe</c>, so looking it up by the
+        /// launched file's name would never find it — and Windows, whose two runtime identifiers share a
+        /// magic number and a file name, is the platform with least else to go on. A publish root holds
+        /// exactly one; two mean two applications were published into one folder, which is not a publish
+        /// of anything in particular.
         /// </remarks>
-        private static string ReadPublishedRuntimeIdentifier(string sourceDirectory, string executableFileName) {
-            string manifestPath = Path.Combine(sourceDirectory, executableFileName + dependencyManifestSuffix);
+        private static string ResolveDependencyManifest(
+            ServerBundleConfig config, string sourceDirectory, string relativeSource) {
+            List<string> manifests = FindDependencyManifests(sourceDirectory);
 
-            if (!File.Exists(manifestPath)) return null;
+            if (manifests.Count == 0) return null;
+            if (manifests.Count == 1) return Path.Combine(sourceDirectory, manifests[0]);
 
+            throw new BuildFailedException(
+                $"{logPrefix}: '{config.name}' bundles '{relativeSource}', which holds {manifests.Count} " +
+                $"'{dependencyManifestSuffix}' manifests ({string.Join(", ", manifests)}); two applications were " +
+                "published into one folder, so there is no telling which runtime identifier it holds. Publish each " +
+                "server into a folder of its own.");
+        }
+
+        /// <summary>The names of every dependency manifest directly inside a publish root, in order.</summary>
+        private static List<string> FindDependencyManifests(string sourceDirectory) {
+            var manifests = new List<string>();
+
+            foreach (string filePath in Directory.GetFiles(sourceDirectory)) {
+                string fileName = Path.GetFileName(filePath);
+                if (!fileName.EndsWith(dependencyManifestSuffix, StringComparison.OrdinalIgnoreCase)) continue;
+
+                manifests.Add(fileName);
+            }
+
+            manifests.Sort(StringComparer.Ordinal);
+            return manifests;
+        }
+
+        /// <summary>
+        /// The runtime identifier a dependency manifest records, or null when it records none.
+        /// </summary>
+        /// <remarks>
+        /// Null covers two states that mean the same thing to the caller: a manifest this cannot parse,
+        /// and a portable publish whose <c>runtimeTarget.name</c> carries a framework but no runtime
+        /// identifier.
+        /// </remarks>
+        private static string ReadPublishedRuntimeIdentifier(string manifestPath) {
             Match match = Regex.Match(
                 File.ReadAllText(manifestPath),
                 "\"runtimeTarget\"\\s*:\\s*\\{[^}]*\"name\"\\s*:\\s*\"([^\"]*)\"",
@@ -419,41 +488,179 @@ namespace AlpineLib.Editor {
             return targetName.Substring(separatorIndex + 1);
         }
 
-        /// <summary>Refuses an executable whose binary format is not the one the runtime identifier names.</summary>
-        private static void RequirePublishedExecutableFormat(
+        /// <summary>
+        /// Checks the launched file's own header against the runtime identifier, as far as it can say.
+        /// </summary>
+        /// <remarks>
+        /// A header naming another operating system fails the build whatever the manifest said: the two
+        /// disagreeing is a folder somebody assembled by hand. A header that says nothing is a wrapper
+        /// script or a hand-written launcher, which is a legal thing to aim the launcher at, so it is
+        /// refused only when no manifest confirmed the identifier either. A publish holding no such file
+        /// at all is left to <see cref="RequireBundledExecutable"/>, which names that state.
+        /// </remarks>
+        private static void RequirePublishedExecutableIdentity(
             ServerBundleConfig config,
             string sourceDirectory,
-            string executableFileName,
             string runtimeIdentifier,
-            string relativeSource) {
+            string relativeSource,
+            BuildTarget platform,
+            bool manifestAgrees) {
+            string executableFileName = ResolveExecutableFileName(config, platform);
             string executablePath = Path.Combine(sourceDirectory, executableFileName);
 
             if (!File.Exists(executablePath)) return;
 
-            string format = ReadExecutableFormat(executablePath);
-            string expected = ResolveRuntimeIdentifierPlatform(runtimeIdentifier);
-
-            if (format == null) {
-                throw new BuildFailedException(
-                    $"{logPrefix}: '{config.name}' bundles '{relativeSource}', whose '{executableFileName}' carries " +
-                    $"no '{dependencyManifestSuffix}' manifest and is not an executable of any standalone platform " +
-                    "(its first bytes are neither ELF, PE nor Mach-O), so there is no telling what it was published " +
-                    "for. Publish the server with the .NET SDK rather than assembling the folder by hand.");
-            }
+            string expected = ServerBundleConfig.ResolveRuntimeIdentifierPlatform(runtimeIdentifier);
 
             if (expected == null) {
                 Debug.LogWarning(
                     $"{logPrefix}: '{config.name}' names the runtime identifier '{runtimeIdentifier}', which this " +
-                    $"step does not recognise, so bundling a {format} executable for it is taken on trust.");
+                    "step does not recognise, so what the publish holds is taken on trust.");
                 return;
             }
 
-            if (string.Equals(format, expected, StringComparison.Ordinal)) return;
+            string format = ReadExecutableFormat(executablePath);
+
+            if (format == null) {
+                RequireManifestWhereBytesAreSilent(config, executableFileName, relativeSource, manifestAgrees);
+                return;
+            }
+
+            if (string.Equals(format, expected, StringComparison.Ordinal)) {
+                RequireWindowsMachineMatch(
+                    config, executablePath, executableFileName, runtimeIdentifier, relativeSource, format);
+                return;
+            }
 
             throw new BuildFailedException(
                 $"{logPrefix}: '{config.name}' bundles '{relativeSource}' as its '{runtimeIdentifier}' server, but " +
                 $"'{executableFileName}' there is a {format} executable rather than a {expected} one. That server " +
                 "cannot run beside this player. Publish the runtime identifier the asset names, or correct the asset.");
+        }
+
+        /// <summary>
+        /// Accepts a launched file whose first bytes identify nothing, if a manifest identified the
+        /// folder.
+        /// </summary>
+        /// <remarks>
+        /// A wrapper script that sets a library path before starting the apphost is an ordinary server
+        /// layout, and <see cref="LocalServerLauncher"/> starts whatever the launcher config names
+        /// without caring what it is. The manifest beside it is what says the folder is the publish it
+        /// claims to be; with no manifest either, nothing in the folder does, and shipping it would be a
+        /// guess.
+        /// </remarks>
+        private static void RequireManifestWhereBytesAreSilent(
+            ServerBundleConfig config, string executableFileName, string relativeSource, bool manifestAgrees) {
+            if (manifestAgrees) {
+                Debug.LogWarning(
+                    $"{logPrefix}: '{config.name}' launches '{executableFileName}' from '{relativeSource}', whose " +
+                    "first bytes are neither ELF, PE nor Mach-O — a wrapper script, most likely. The publish's " +
+                    $"'{dependencyManifestSuffix}' manifest confirms the runtime identifier, so it is bundled as it " +
+                    "stands.");
+                return;
+            }
+
+            throw new BuildFailedException(
+                $"{logPrefix}: '{config.name}' bundles '{relativeSource}', which carries no " +
+                $"'{dependencyManifestSuffix}' manifest naming a runtime identifier and whose " +
+                $"'{executableFileName}' is not an executable of any standalone platform (its first bytes are " +
+                "neither ELF, PE nor Mach-O), so nothing in the folder says what it was published for. Publish the " +
+                "server with the .NET SDK rather than assembling the folder by hand.");
+        }
+
+        /// <summary>
+        /// Refuses a Windows publish built for another processor.
+        /// </summary>
+        /// <remarks>
+        /// <c>win-x64</c> and <c>win-arm64</c> are both PE files with the same file name, so the magic
+        /// number says exactly the same thing about a server that cannot start. The COFF header's
+        /// machine field is what tells them apart, and for a single-file publish — no manifest on disk —
+        /// it is the only thing that can.
+        /// </remarks>
+        private static void RequireWindowsMachineMatch(
+            ServerBundleConfig config,
+            string executablePath,
+            string executableFileName,
+            string runtimeIdentifier,
+            string relativeSource,
+            string format) {
+            if (!string.Equals(format, ServerBundleConfig.WindowsPlatformName, StringComparison.Ordinal)) return;
+
+            string expected = ResolveRuntimeIdentifierArchitecture(runtimeIdentifier);
+            if (expected == null) return;
+
+            string machine = ReadWindowsMachine(executablePath);
+            if (machine == null) return;
+            if (string.Equals(machine, expected, StringComparison.Ordinal)) return;
+
+            throw new BuildFailedException(
+                $"{logPrefix}: '{config.name}' bundles '{relativeSource}' as its '{runtimeIdentifier}' server, but " +
+                $"'{executableFileName}' there is built for {machine} rather than {expected}. Windows will not run " +
+                "it beside this player. Publish the runtime identifier the asset names, or correct the asset.");
+        }
+
+        /// <summary>The processor a runtime identifier names, or null when its last part is not one.</summary>
+        private static string ResolveRuntimeIdentifierArchitecture(string runtimeIdentifier) {
+            int separatorIndex = runtimeIdentifier.LastIndexOf('-');
+            if (separatorIndex < 0) return null;
+
+            string architecture = runtimeIdentifier.Substring(separatorIndex + 1).ToLowerInvariant();
+
+            switch (architecture) {
+                case "x86":
+                case "x64":
+                case "arm64":
+                    return architecture;
+                default:
+                    return null;
+            }
+        }
+
+        /// <summary>
+        /// The processor a PE file's COFF header names, or null when there is no header to read.
+        /// </summary>
+        /// <remarks>
+        /// The DOS stub's last field, at <c>0x3C</c>, holds the offset of the <c>PE\0\0</c> signature,
+        /// and the two bytes after that signature are the machine. Anything that does not line up — a
+        /// truncated file, an <c>MZ</c> that is a real DOS binary rather than a PE — answers nothing
+        /// rather than guessing, and the caller then trusts the magic number alone.
+        /// </remarks>
+        private static string ReadWindowsMachine(string executablePath) {
+            using (FileStream stream = File.OpenRead(executablePath)) {
+                return ResolveMachineName(ReadMachineField(stream, ReadPeHeaderOffset(stream)));
+            }
+        }
+
+        /// <summary>The offset the DOS stub gives for the PE signature, or -1 when there is no stub.</summary>
+        private static int ReadPeHeaderOffset(FileStream stream) {
+            var stub = new byte[0x40];
+
+            if (stream.Read(stub, 0, stub.Length) < stub.Length) return -1;
+
+            return stub[0x3C] | (stub[0x3D] << 8) | (stub[0x3E] << 16) | (stub[0x3F] << 24);
+        }
+
+        /// <summary>The COFF machine value at a PE signature, or -1 when the signature is not there.</summary>
+        private static int ReadMachineField(FileStream stream, int headerOffset) {
+            if (headerOffset < 0 || headerOffset > stream.Length - 6) return -1;
+
+            stream.Seek(headerOffset, SeekOrigin.Begin);
+            var header = new byte[6];
+
+            if (stream.Read(header, 0, header.Length) < header.Length) return -1;
+            if (header[0] != 0x50 || header[1] != 0x45 || header[2] != 0x00 || header[3] != 0x00) return -1;
+
+            return header[4] | (header[5] << 8);
+        }
+
+        /// <summary>The processor a COFF machine value names, or null for one .NET does not publish.</summary>
+        private static string ResolveMachineName(int machine) {
+            switch (machine) {
+                case peMachineX86: return "x86";
+                case peMachineX64: return "x64";
+                case peMachineArm64: return "arm64";
+                default: return null;
+            }
         }
 
         /// <summary>The operating system an executable's first four bytes name, or null for neither.</summary>
@@ -464,9 +671,12 @@ namespace AlpineLib.Editor {
                 if (stream.Read(header, 0, header.Length) < header.Length) return null;
             }
 
-            if (header[0] == 0x7F && header[1] == 0x45 && header[2] == 0x4C && header[3] == 0x46) return "Linux";
-            if (header[0] == 0x4D && header[1] == 0x5A) return "Windows";
-            if (IsMachOHeader(header)) return "macOS";
+            if (header[0] == 0x7F && header[1] == 0x45 && header[2] == 0x4C && header[3] == 0x46) {
+                return ServerBundleConfig.LinuxPlatformName;
+            }
+
+            if (header[0] == 0x4D && header[1] == 0x5A) return ServerBundleConfig.WindowsPlatformName;
+            if (IsMachOHeader(header)) return ServerBundleConfig.MacPlatformName;
 
             return null;
         }
@@ -484,15 +694,6 @@ namespace AlpineLib.Editor {
 
             return magic == 0xFEEDFACF || magic == 0xFEEDFACE || magic == 0xCAFEBABE || magic == 0xCAFEBABF
                 || magic == 0xCFFAEDFE || magic == 0xCEFAEDFE || magic == 0xBEBAFECA || magic == 0xBFBAFECA;
-        }
-
-        /// <summary>The operating system a runtime identifier names, or null when it names none known.</summary>
-        private static string ResolveRuntimeIdentifierPlatform(string runtimeIdentifier) {
-            if (runtimeIdentifier.StartsWith("win", StringComparison.OrdinalIgnoreCase)) return "Windows";
-            if (runtimeIdentifier.StartsWith("osx", StringComparison.OrdinalIgnoreCase)) return "macOS";
-            if (runtimeIdentifier.StartsWith("linux", StringComparison.OrdinalIgnoreCase)) return "Linux";
-
-            return null;
         }
 
         /// <summary>
@@ -538,7 +739,7 @@ namespace AlpineLib.Editor {
         /// folder is the only surviving copy of it.
         /// </remarks>
         private static void CleanUpAfterFailure(string temporary, string stale, bool swapped) {
-            TryDeleteDirectory(temporary);
+            TryDeleteDirectory(temporary, "the half-made bundle");
 
             if (!swapped) return;
             if (!Directory.Exists(stale)) return;
@@ -587,10 +788,33 @@ namespace AlpineLib.Editor {
             SwapDirectories(destination, temporary, stale);
             swapped = true;
 
-            RequireSourceIntact(config, sourceDirectory, relativeSource, destination);
-            TryDeleteDirectory(stale);
+            ClearPreviousBundle(stale, sourceDirectory, relativeSource);
 
             return geometryCount;
+        }
+
+        /// <summary>
+        /// Removes the previous bundle, unless the swap carried the publish into it.
+        /// </summary>
+        /// <remarks>
+        /// The rename that put the new bundle in place has already made the build correct, so nothing
+        /// here fails it. What it does refuse to do is delete: a publish that was living inside the
+        /// previous bundle moved with it, and the stale folder is then the only copy there is. The
+        /// overlap checks catch that shape before anything is touched wherever the two paths can be
+        /// resolved; a bind mount is where they cannot.
+        /// </remarks>
+        private static void ClearPreviousBundle(string stale, string sourceDirectory, string relativeSource) {
+            if (!Directory.Exists(stale)) return;
+
+            if (HasContent(sourceDirectory)) {
+                TryDeleteDirectory(stale, "the previous bundle");
+                return;
+            }
+
+            Debug.LogWarning(
+                $"{logPrefix}: the new bundle is in place, but the publish at '{relativeSource}' went with the " +
+                $"previous one, so '{stale}' is the only copy of it left and has not been removed. Publish outside " +
+                "the build folder, then delete it.");
         }
 
         /// <summary>
@@ -683,7 +907,9 @@ namespace AlpineLib.Editor {
             throw new BuildFailedException(
                 $"{logPrefix}: '{relativeSource}', copied into '{bundleDirectory}', holds no '{fileName}' for build " +
                 $"target '{platform}'; what was copied is not a server the launcher could run. Check the publish's " +
-                $"runtime identifier and the asset's executable name ('{config.executableName}').");
+                $"runtime identifier and the asset's executable name ('{config.executableName}') — and note that a " +
+                "publish made with the apphost turned off holds only the managed assembly, with no file of that " +
+                "name to launch at all.");
         }
 
         private static void RequireBundleStamp(string bundleDirectory, string relativeSource) {
@@ -939,13 +1165,38 @@ namespace AlpineLib.Editor {
         /// Building the player into the publish root, or publishing into the build folder, makes one a
         /// child of the other — which would copy a folder into itself, or delete the publish as the old
         /// bundle. <see cref="Path.GetFullPath"/> alone cannot see that: it normalises <c>.</c> and
-        /// <c>..</c> but follows no links, so a publish symlinked next to the build looks like a
-        /// perfectly separate path right up until the swap removes it.
+        /// <c>..</c> but follows no links, so the two paths are compared twice, as they are written and
+        /// as the filesystem lays them out. A link is only ever a question about overlap here: a player
+        /// built into a symlinked output folder, or a project living under a symlinked home, is an
+        /// ordinary thing to do and is not refused for it.
         /// </remarks>
         private static void RequireSeparatePaths(
             ServerBundleConfig config, string sourceDirectory, string destination) {
-            string source = WithTrailingSeparator(RequireResolvedPath(config, sourceDirectory, "publish folder"));
-            string target = WithTrailingSeparator(RequireResolvedPath(config, destination, "bundle folder"));
+            RequireNoOverlap(config, sourceDirectory, destination, sourceDirectory, destination);
+
+            string resolvedSource = ResolvePhysicalPath(sourceDirectory);
+            string resolvedDestination = ResolvePhysicalPath(destination);
+
+            if (resolvedSource == null || resolvedDestination == null) {
+                Debug.LogWarning(
+                    $"{logPrefix}: '{sourceDirectory}' or '{destination}' goes through a link this editor cannot " +
+                    "follow, so the two were compared only as they are written. A link that puts one inside the " +
+                    "other is caught when the publish is looked for again after the old bundle is cleared.");
+                return;
+            }
+
+            RequireNoOverlap(config, resolvedSource, resolvedDestination, sourceDirectory, destination);
+        }
+
+        /// <summary>Refuses two paths where either one holds the other, comparing them as given.</summary>
+        private static void RequireNoOverlap(
+            ServerBundleConfig config,
+            string first,
+            string second,
+            string sourceDirectory,
+            string destination) {
+            string source = WithTrailingSeparator(first);
+            string target = WithTrailingSeparator(second);
 
             if (!target.StartsWith(source, StringComparison.Ordinal)
                 && !source.StartsWith(target, StringComparison.Ordinal)) {
@@ -958,91 +1209,59 @@ namespace AlpineLib.Editor {
                 "publish outside the build folder.");
         }
 
-        /// <summary>The path with its symbolic link followed, failing the build when it cannot be.</summary>
-        private static string RequireResolvedPath(ServerBundleConfig config, string path, string description) {
-            string resolved = ResolveLinkedPath(path);
-
-            if (resolved != null) return resolved;
-
-            throw new BuildFailedException(
-                $"{logPrefix}: '{config.name}' names a {description}, '{path}', which goes through a symbolic link " +
-                "this editor cannot resolve, so there is no telling whether it points inside the other. Name the " +
-                "real folder instead.");
-        }
-
         /// <summary>
-        /// A path's real location, every component's links followed, or null when one cannot be read.
+        /// A path as the filesystem lays it out, every link followed, or null when it cannot be asked.
         /// </summary>
         /// <remarks>
-        /// Every component, because a link anywhere above the leaf moves the leaf just as surely: a
-        /// publish reached through <c>PublishLink/pub/linux-x64</c> ends in a perfectly ordinary
-        /// directory, and asking only about that one answers a question nobody needed the answer to.
-        /// The walk starts at the path's root and rebuilds it a segment at a time, so each link is
-        /// resolved before the next segment is appended to it.
+        /// The path need not exist — the destination does not on a first build — so the walk climbs to
+        /// the deepest folder that does exist, resolves that, and puts the rest back on the end. A link
+        /// anywhere above the leaf moves the leaf just as surely as one at it, which is why the whole
+        /// path is resolved rather than its last component.
         /// </remarks>
-        private static string ResolveLinkedPath(string path) {
+        private static string ResolvePhysicalPath(string path) {
             string fullPath = Path.GetFullPath(path);
-            string resolved = Path.GetPathRoot(fullPath) ?? string.Empty;
 
-            foreach (string segment in SplitBelowRoot(fullPath)) {
-                resolved = ResolveLinkedComponent(Path.Combine(resolved, segment));
-                if (resolved == null) return null;
-            }
+            if (Directory.Exists(fullPath)) return ResolvePhysicalDirectory(fullPath);
 
-            return resolved;
-        }
+            string parent = Path.GetDirectoryName(fullPath);
+            if (string.IsNullOrEmpty(parent)) return fullPath;
 
-        /// <summary>The segments of a full path below its root, in order.</summary>
-        private static string[] SplitBelowRoot(string fullPath) {
-            string root = Path.GetPathRoot(fullPath) ?? string.Empty;
-            var separators = new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar };
+            string resolvedParent = ResolvePhysicalPath(parent);
+            if (resolvedParent == null) return null;
 
-            return fullPath.Substring(root.Length).Split(separators, StringSplitOptions.RemoveEmptyEntries);
+            return Path.Combine(resolvedParent, Path.GetFileName(fullPath));
         }
 
         /// <summary>
-        /// One path whose last component's link chain has been followed, or null when it cannot be.
+        /// An existing directory's physical location, or null when this runtime cannot report one.
         /// </summary>
         /// <remarks>
-        /// <c>ResolveLinkTarget</c> and <c>LinkTarget</c> arrived in .NET 6, which the editor's scripting
-        /// runtime may predate, so both are reached by reflection. A runtime with neither can still tell
-        /// that a directory <em>is</em> a link, and that is what this returns nothing for: refusing an
-        /// unresolvable link is the only safe reading when the step is about to replace a folder. The
-        /// depth cap is what a link loop looks like from here.
+        /// Entering the directory and asking where that is resolves every link in the path at once,
+        /// ancestors included, because that is what a working directory is. The .NET 6 link API would
+        /// answer for the last component only and the editor's scripting runtime does not have it at
+        /// all. Windows reports the path as it was set rather than the physical one, so a junction there
+        /// falls back to the comparison of the paths as written rather than failing anything.
         /// </remarks>
-        private static string ResolveLinkedComponent(string path) {
-            string current = Path.GetFullPath(path);
+        private static string ResolvePhysicalDirectory(string directory) {
+            string previous = Directory.GetCurrentDirectory();
 
-            for (int depth = 0; depth < maximumLinkDepth; depth++) {
-                var directory = new DirectoryInfo(current);
-
-                if (!directory.Exists) return current;
-                if ((directory.Attributes & FileAttributes.ReparsePoint) == 0) return current;
-
-                string target = ReadLinkTarget(directory);
-                if (string.IsNullOrEmpty(target)) return null;
-
-                current = Path.GetFullPath(Path.IsPathRooted(target)
-                    ? target
-                    : Path.Combine(Path.GetDirectoryName(current) ?? string.Empty, target));
+            try {
+                Directory.SetCurrentDirectory(directory);
+                return Directory.GetCurrentDirectory();
+            } catch (Exception) {
+                return null;
+            } finally {
+                RestoreWorkingDirectory(previous);
             }
-
-            return null;
         }
 
-        /// <summary>The target of a symbolic link, read through whichever .NET 6 API this runtime has.</summary>
-        private static string ReadLinkTarget(DirectoryInfo directory) {
-            MethodInfo resolve = typeof(FileSystemInfo).GetMethod(
-                "ResolveLinkTarget", BindingFlags.Public | BindingFlags.Instance, null, new[] { typeof(bool) }, null);
-
-            if (resolve?.Invoke(directory, new object[] { true }) is FileSystemInfo resolved) {
-                return resolved.FullName;
+        /// <summary>Puts the process's working directory back after a path has been resolved.</summary>
+        private static void RestoreWorkingDirectory(string directory) {
+            try {
+                Directory.SetCurrentDirectory(directory);
+            } catch (Exception) {
+                // Nothing here can put it back, and every path this step works with is absolute anyway.
             }
-
-            PropertyInfo linkTarget = typeof(FileSystemInfo).GetProperty(
-                "LinkTarget", BindingFlags.Public | BindingFlags.Instance);
-
-            return linkTarget?.GetValue(directory) as string;
         }
 
         /// <summary>A full path that always ends in a separator, so one folder cannot prefix another.</summary>
@@ -1059,22 +1278,24 @@ namespace AlpineLib.Editor {
         /// Checks the publish is still there and still has something in it.
         /// </summary>
         /// <remarks>
-        /// Run after every delete this step performs. The lexical and link checks cover the shapes that
-        /// can be reasoned about; a bind mount, a hard-linked tree and a case-only difference on Windows
-        /// cannot be, and the fact worth knowing is the same in all of them — emptying something emptied
-        /// the publish too.
+        /// Run after the deletes this step performs and before it copies anything. The lexical and link
+        /// checks cover the shapes that can be reasoned about; a bind mount, a hard-linked tree and a
+        /// case-only difference on Windows cannot be, and the fact worth knowing is the same in all of
+        /// them — emptying something emptied the publish too.
         /// </remarks>
         private static void RequireSourceIntact(
             ServerBundleConfig config, string sourceDirectory, string relativeSource, string destination) {
-            if (Directory.Exists(sourceDirectory)
-                && Directory.GetFileSystemEntries(sourceDirectory).Length > 0) {
-                return;
-            }
+            if (HasContent(sourceDirectory)) return;
 
             throw new BuildFailedException(
                 $"{logPrefix}: '{config.name}' emptied a folder beside '{destination}' and that emptied the publish " +
                 $"at '{relativeSource}' as well — the two resolve to the same place. Publish outside the build " +
                 "folder.");
+        }
+
+        /// <summary>True when a directory is there and holds something.</summary>
+        private static bool HasContent(string directory) {
+            return Directory.Exists(directory) && Directory.GetFileSystemEntries(directory).Length > 0;
         }
 
         /// <summary>Copies a directory tree, returning how many files landed.</summary>
@@ -1178,13 +1399,13 @@ namespace AlpineLib.Editor {
             }
         }
 
-        /// <summary>Clears a half-made bundle without hiding the failure that produced it.</summary>
-        private static void TryDeleteDirectory(string directory) {
+        /// <summary>Clears a folder this step owns without hiding the failure that produced it.</summary>
+        private static void TryDeleteDirectory(string directory, string description) {
             try {
                 DeleteDirectory(directory);
             } catch (Exception exception) {
                 Debug.LogWarning(
-                    $"{logPrefix}: could not remove the half-made bundle at '{directory}': {exception.Message}");
+                    $"{logPrefix}: could not remove {description} at '{directory}': {exception.Message}");
             }
         }
     }

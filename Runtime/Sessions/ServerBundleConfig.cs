@@ -32,6 +32,15 @@ namespace AlpineLib.Sessions {
         /// <summary>Folder the server is copied into when no launcher config names one.</summary>
         public const string DefaultBundleFolderName = "Server";
 
+        /// <summary>The name this library uses for Windows when it talks about runtime identifiers.</summary>
+        public const string WindowsPlatformName = "Windows";
+
+        /// <summary>The name this library uses for Linux when it talks about runtime identifiers.</summary>
+        public const string LinuxPlatformName = "Linux";
+
+        /// <summary>The name this library uses for macOS when it talks about runtime identifiers.</summary>
+        public const string MacPlatformName = "macOS";
+
         [Header("Source")]
         [Tooltip("Project-relative root the server publishes into. Each platform's publish is a runtime-identifier folder beneath it.")]
         public string publishedServerRoot = "Build/Server";
@@ -91,6 +100,30 @@ namespace AlpineLib.Sessions {
             if (!IsSingleFolderName(localServer.bundledServerFolderName)) return string.Empty;
 
             return localServer.bundledServerFolderName.Trim();
+        }
+
+        /// <summary>
+        /// The operating system a runtime identifier is for, or null when it names none this library
+        /// knows.
+        /// </summary>
+        /// <remarks>
+        /// It lives on the config rather than on either caller because two of them ask it:
+        /// <c>ServerBundleBuildStep</c>, which refuses a publish built for another operating system,
+        /// and <c>SessionConfigValidator</c>, which refuses the asset that would ask for one. One state
+        /// cannot have two answers depending on who looked. Only the three standalone families are
+        /// recognised; anything else is a runtime identifier this library has nothing to say about, and
+        /// the callers take it on trust rather than guessing.
+        /// </remarks>
+        public static string ResolveRuntimeIdentifierPlatform(string runtimeIdentifier) {
+            if (string.IsNullOrWhiteSpace(runtimeIdentifier)) return null;
+
+            string trimmed = runtimeIdentifier.Trim();
+
+            if (trimmed.StartsWith("win", StringComparison.OrdinalIgnoreCase)) return WindowsPlatformName;
+            if (trimmed.StartsWith("osx", StringComparison.OrdinalIgnoreCase)) return MacPlatformName;
+            if (trimmed.StartsWith("linux", StringComparison.OrdinalIgnoreCase)) return LinuxPlatformName;
+
+            return null;
         }
 
         /// <summary>

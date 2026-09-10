@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using AlpineLib.Actors;
 using AlpineLib.Actors.Locomotion;
@@ -295,9 +296,12 @@ namespace AlpineLib.Editor {
                 failures.Add($"{assetPath}: ServerBundleConfig is enabled but names no server executable.");
             }
 
-            ValidateRuntimeIdentifierShape(bundle.windowsRuntimeIdentifier, "Windows", assetPath, failures);
-            ValidateRuntimeIdentifierShape(bundle.linuxRuntimeIdentifier, "Linux", assetPath, failures);
-            ValidateRuntimeIdentifierShape(bundle.macRuntimeIdentifier, "macOS", assetPath, failures);
+            ValidateRuntimeIdentifier(
+                bundle.windowsRuntimeIdentifier, ServerBundleConfig.WindowsPlatformName, assetPath, failures);
+            ValidateRuntimeIdentifier(
+                bundle.linuxRuntimeIdentifier, ServerBundleConfig.LinuxPlatformName, assetPath, failures);
+            ValidateRuntimeIdentifier(
+                bundle.macRuntimeIdentifier, ServerBundleConfig.MacPlatformName, assetPath, failures);
 
             if (HasAnyRuntimeIdentifier(bundle)) return;
 
@@ -307,18 +311,49 @@ namespace AlpineLib.Editor {
         }
 
         /// <remarks>
+        /// One field per platform, each checked for the two things that are wrong about it no matter
+        /// what any machine has published: a value that is not one folder name, and a value for another
+        /// operating system. Both fail the build step too — an empty field does not, because a project
+        /// that ships one platform leaves the other two blank on purpose.
+        /// </remarks>
+        private static void ValidateRuntimeIdentifier(
+            string runtimeIdentifier, string platform, string assetPath, List<string> failures) {
+            if (string.IsNullOrWhiteSpace(runtimeIdentifier)) return;
+
+            ValidateRuntimeIdentifierShape(runtimeIdentifier, platform, assetPath, failures);
+            ValidateRuntimeIdentifierPlatform(runtimeIdentifier, platform, assetPath, failures);
+        }
+
+        /// <remarks>
         /// A runtime identifier is one folder beneath the publish root, so the same rules that stop the
         /// bundle folder walking out of the player's directory stop this walking out of the publish
         /// root. The build step refuses the same values.
         /// </remarks>
         private static void ValidateRuntimeIdentifierShape(
             string runtimeIdentifier, string platform, string assetPath, List<string> failures) {
-            if (string.IsNullOrWhiteSpace(runtimeIdentifier)) return;
             if (ServerBundleConfig.IsSingleFolderName(runtimeIdentifier)) return;
 
             failures.Add(
                 $"{assetPath}: ServerBundleConfig names '{runtimeIdentifier}' as its {platform} runtime identifier, " +
                 "which is not a single folder name; the publish root holds one folder per runtime identifier.");
+        }
+
+        /// <remarks>
+        /// Each field is labelled with the platform it is for, so another platform's value typed into it
+        /// is an authoring slip and nothing else — and one nothing else can catch, because the publish
+        /// folder is named after the field. <c>ServerBundleBuildStep</c> fails the build on it; this is
+        /// where an author hears about it without starting one.
+        /// </remarks>
+        private static void ValidateRuntimeIdentifierPlatform(
+            string runtimeIdentifier, string platform, string assetPath, List<string> failures) {
+            string named = ServerBundleConfig.ResolveRuntimeIdentifierPlatform(runtimeIdentifier);
+
+            if (named == null) return;
+            if (string.Equals(named, platform, StringComparison.Ordinal)) return;
+
+            failures.Add(
+                $"{assetPath}: ServerBundleConfig names '{runtimeIdentifier}' as its {platform} runtime identifier, " +
+                $"but that identifier is {named}; a {named} server cannot run beside a {platform} player.");
         }
 
         private static bool HasAnyRuntimeIdentifier(ServerBundleConfig bundle) {
