@@ -313,7 +313,14 @@ namespace AlpineLib.Netcode.Replication {
         /// Reports a locally simulated state for an owned pawn in
         /// <see cref="AuthorityMode.OwnerClient"/>. The server will judge it and may send it back changed.
         /// </summary>
-        public void SubmitOwnerPawnState(uint entityId, in PawnState state) {
+        /// <param name="entityId">The owned pawn being reported.</param>
+        /// <param name="state">The pose the caller measured this tick.</param>
+        /// <param name="isResync">
+        /// True when this is the first report after the caller stopped sending or placed the pawn itself,
+        /// so the server accepts it unmeasured out of the frame-change budget rather than measuring it
+        /// against a pose from before the gap; see <see cref="OwnerPawnUpdate.ResyncFlag"/>.
+        /// </param>
+        public void SubmitOwnerPawnState(uint entityId, in PawnState state, bool isResync = false) {
             NetEntity entity = GetEntity(entityId);
 
             if (entity == null || !IsPawn(entity) || !IsOwned(entity) || entity.Authority != AuthorityMode.OwnerClient) {
@@ -322,7 +329,8 @@ namespace AlpineLib.Netcode.Replication {
 
             entity.ApplyState(state, client.Clock.EstimatedServerTick);
 
-            var message = new OwnerPawnUpdate(entityId, client.Clock.EstimatedServerTick, in state);
+            byte flags = isResync ? OwnerPawnUpdate.ResyncFlag : (byte)0;
+            var message = new OwnerPawnUpdate(entityId, client.Clock.EstimatedServerTick, flags, in state);
             client.Send(ReplicationMessageIds.OwnerPawnUpdate, in message, DeliveryClass.UnreliableSequenced);
         }
 

@@ -15,7 +15,11 @@ namespace AlpineLib.Netcode.Protocol {
         /// Bump this whenever the wire layout of any message changes in a way old builds cannot read.
         /// There is exactly one version number in the system; nothing else carries its own.
         /// </summary>
-        public const ushort Version = 4;
+        /// <remarks>
+        /// 5 — <c>OwnerPawnUpdate</c> gained a flags byte between the client tick and the state, so a
+        /// version-4 client's update reads as a corrupt pose against a version-5 server.
+        /// </remarks>
+        public const ushort Version = 5;
 
         private const uint Fnv1aOffsetBasis = 2166136261u;
         private const uint Fnv1aPrime = 16777619u;

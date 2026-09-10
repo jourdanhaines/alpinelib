@@ -73,9 +73,10 @@ namespace AlpineLib.Networking {
         /// <remarks>
         /// Long enough to cover a join whose first keyframe arrives before the scene's carriers have
         /// registered, short enough that a pawn is never left standing at its prefab's authored transform
-        /// for a noticeable part of a session. What happens at the end of it is a fall back to the
-        /// authority's <em>current</em> pose, never a placement at the spawn state's deck-local numbers;
-        /// see <see cref="PlaceOnExpiredSpawnDeferral"/>.
+        /// for a noticeable part of a session. What happens at the end of it is a holding position at the
+        /// authority's <em>current</em> pose, or no placement at all when even that names a carrier
+        /// nobody can resolve — never a placement at the spawn state's deck-local numbers, and never the
+        /// end of the deferral; see <see cref="PlaceOnExpiredSpawnDeferral"/>.
         /// </remarks>
         public const float SpawnPlacementCarrierWaitSeconds = 5f;
 
@@ -97,7 +98,8 @@ namespace AlpineLib.Networking {
         private PawnState _spawnState;
         private bool _hasSpawnState;
         private float _spawnPlacementDeadline;
-        private bool _hasWarnedUnplaceableSpawn;
+        private bool _hasHandledSpawnDeferralExpiry;
+        private bool _needsResync;
         private readonly HashSet<ushort> _warnedCarrierIds = new HashSet<ushort>();
         private readonly HashSet<int> _warnedUnusableCarriers = new HashSet<int>();
 
@@ -244,28 +246,37 @@ namespace AlpineLib.Networking {
         /// still cannot be resolved.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// The spawn state's numbers are metres from a deck's origin, so placing the pawn at them as world
         /// space drops it within a few metres of the world origin — the very failure this placement exists
         /// to remove, reached deliberately instead of by accident. The authority's current state is the
         /// better answer whenever it is world-frame: a pawn with no carrier to name has spent the whole
         /// wait reporting world space and having it adopted, so that pose is a real place. When it is
         /// still carrier-relative there is nothing here anyone can turn into a position — the capture side
-        /// withholds rather than inventing one — so the deferral continues, warning once, and a carrier
-        /// that registers late still heals the pawn on the next frame.
+        /// withholds rather than inventing one — so nothing is placed at all.
+        /// </para>
+        /// <para>
+        /// <b>Neither branch closes the deferral.</b> What the expiry produces is a holding position, not
+        /// a decision: a consist that finishes building a frame after the wait, a streamed-in carrier, a
+        /// host that spawned late all still register eventually, and the pawn is then placed properly on
+        /// its deck through <see cref="NetCarrierFrame.TryToWorld"/> like any other. This runs once per
+        /// binding — a holding position re-taken every frame would fight the actor's own movement — and
+        /// says which of the two happened in the log.
+        /// </para>
         /// </remarks>
         private void PlaceOnExpiredSpawnDeferral() {
+            if (_hasHandledSpawnDeferralExpiry) return;
+
+            _hasHandledSpawnDeferralExpiry = true;
             PawnState current = _view.Entity.State;
 
-            if (!current.IsCarrierRelative) {
-                Debug.LogWarning($"NetActorSync::PlaceOnExpiredSpawnDeferral->{name} spawned on carrier {_spawnState.CarrierId}, which never registered; placing entity {_view.EntityId} at the authority's current world pose instead.");
-                PlaceAt(in current);
+            if (current.IsCarrierRelative) {
+                Debug.LogError($"NetActorSync::PlaceOnExpiredSpawnDeferral->{name} is still carrier-relative on carrier {current.CarrierId}, which no loaded carrier answers to; entity {_view.EntityId} keeps its current pose and the placement waits for that carrier.");
                 return;
             }
 
-            if (_hasWarnedUnplaceableSpawn) return;
-
-            _hasWarnedUnplaceableSpawn = true;
-            Debug.LogError($"NetActorSync::PlaceOnExpiredSpawnDeferral->{name} is still carrier-relative on carrier {current.CarrierId}, which no loaded carrier answers to; entity {_view.EntityId} keeps its current pose and the placement waits for that carrier.");
+            Debug.LogWarning($"NetActorSync::PlaceOnExpiredSpawnDeferral->{name} spawned on carrier {_spawnState.CarrierId}, which never registered; entity {_view.EntityId} holds the authority's current world pose until that carrier appears.");
+            MoveTo(in current);
         }
 
         /// <summary>
@@ -284,17 +295,32 @@ namespace AlpineLib.Networking {
         }
 
         /// <summary>
-        /// Places the actor outright at a world-space state and hands its motion to the actor's own
-        /// integrators, then marks this entity as placed.
+        /// Places the actor outright at a world-space state and closes the spawn placement for this
+        /// entity, so it happens exactly once.
         /// </summary>
+        /// <remarks>
+        /// The next update is flagged as a resync: this displacement is the client's own doing and the
+        /// authority is still holding whatever pose the pawn talked it into while it stood at the
+        /// spawner's fallback, so the first report from here is measured against a state that has nothing
+        /// to do with it. See <see cref="Netcode.Replication.Messages.OwnerPawnUpdate.ResyncFlag"/>.
+        /// </remarks>
         private void PlaceAt(in PawnState world) {
+            MoveTo(in world);
+
+            _placedForEntityId = _view.EntityId;
+            _hasSpawnState = false;
+            _needsResync = true;
+        }
+
+        /// <summary>
+        /// Moves the actor to a world-space state and hands its motion to the actor's own integrators,
+        /// deciding nothing about the placement itself.
+        /// </summary>
+        private void MoveTo(in PawnState world) {
             _correctionResidual = Vector3.zero;
             Teleport(world.Position.ToUnity());
             transform.rotation = Quaternion.Euler(0f, world.YawDegrees, 0f);
             SyncActorMotion(in world);
-
-            _placedForEntityId = _view.EntityId;
-            _hasSpawnState = false;
         }
 
         /// <summary>
@@ -349,11 +375,7 @@ namespace AlpineLib.Networking {
 
         private void SendSample(ClientReplication replication) {
             if (_view.Authority == AuthorityMode.OwnerClient) {
-                if (!TryCaptureState(out PawnState captured)) return;
-
-                ApplyDeferredJump();
-                replication.SubmitOwnerPawnState(_view.EntityId, captured);
-                FlushQueuedJump(replication);
+                SendOwnerSample(replication);
                 return;
             }
 
@@ -362,6 +384,41 @@ namespace AlpineLib.Networking {
             PawnState predicted = replication.SubmitInput(_view.EntityId, in input);
             FlushQueuedJump(replication);
             ApplyPredictedState(in predicted);
+        }
+
+        /// <summary>
+        /// The owner-simulated send: reports the pose when there is a truthful one to report, and plays
+        /// this tick's latched jump either way.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// <b>The jump is never gated on the report.</b> What <see cref="TryCaptureState"/> withholds is
+        /// this pawn's <em>position</em>, not the things that happen to it: the impulse is local, the
+        /// player pressed the button, and swallowing it would freeze the one input that ends the
+        /// withhold — breaking ground contact is what makes a game let go of a carrier it cannot name.
+        /// The impulse and its announcement go together or not at all, or the latch is left set to fire a
+        /// stale jump minutes later.
+        /// </para>
+        /// <para>
+        /// The first report after a withheld silence, and the first after a spawn placement, carry
+        /// <see cref="Netcode.Replication.Messages.OwnerPawnUpdate.ResyncFlag"/>: the authority is still
+        /// holding a pose from before the gap, and measuring the resumption against it rejects an honest
+        /// rider and snaps them back the whole distance their game carried them.
+        /// </para>
+        /// </remarks>
+        private void SendOwnerSample(ClientReplication replication) {
+            bool hasState = TryCaptureState(out PawnState captured);
+
+            ApplyDeferredJump();
+
+            if (hasState) {
+                replication.SubmitOwnerPawnState(_view.EntityId, captured, _needsResync);
+                _needsResync = false;
+            } else {
+                _needsResync = true;
+            }
+
+            FlushQueuedJump(replication);
         }
 
         /// <summary>
@@ -439,6 +496,10 @@ namespace AlpineLib.Networking {
         /// second is what the server sees as a movement violation every single tick, so neither is sent.
         /// See <see cref="IsCarrierUsable"/> for what the pawn looks like meanwhile.
         /// </para>
+        /// <para>
+        /// What is withheld is the <em>position</em> and nothing else. The pawn's events still go out on
+        /// their own tick, and its jump still plays locally — see <see cref="SendOwnerSample"/>.
+        /// </para>
         /// </remarks>
         /// <returns>False when nothing truthful can be said about this pawn's position this tick.</returns>
         private bool TryCaptureState(out PawnState state) {
@@ -470,8 +531,16 @@ namespace AlpineLib.Networking {
         /// Reported rather than passed over in silence because the degraded mode it starts is otherwise
         /// invisible: with no frame to name, the owner sends nothing at all, the authority holds the last
         /// state it received, and every observer — the host included — draws this pawn standing still
-        /// wherever that was, however far its game carries the body in the meantime. The owner's own
-        /// screen is unaffected, which is exactly why the log line matters.
+        /// wherever that was, however far its game carries the body in the meantime.
+        /// </para>
+        /// <para>
+        /// <b>The owner keeps playing and pays on the way out.</b> The tick the reports resume is measured
+        /// against a state as old as the silence, so a rider carried the length of a platform while quiet
+        /// would be refused and handed back the boarding pose — a snap of the carried distance less a
+        /// walking gait's worth over the gap, growing with the length of the withhold. The resumption
+        /// therefore carries <see cref="Netcode.Replication.Messages.OwnerPawnUpdate.ResyncFlag"/>, which
+        /// the server accepts on the frame-change budget instead of measuring; the withhold still costs
+        /// every observer a frozen replica, and that is what the log line is for.
         /// </para>
         /// <para>
         /// It ends by itself the moment the carrier registers, which the retry in
@@ -758,7 +827,8 @@ namespace AlpineLib.Networking {
             _correctionResidual = Vector3.zero;
             _placedForEntityId = 0u;
             _hasSpawnState = false;
-            _hasWarnedUnplaceableSpawn = false;
+            _hasHandledSpawnDeferralExpiry = false;
+            _needsResync = false;
         }
     }
 }

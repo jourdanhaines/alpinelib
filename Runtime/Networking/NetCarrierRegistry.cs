@@ -43,7 +43,7 @@ namespace AlpineLib.Networking {
         public static bool Register(NetCarrier carrier) {
             if (carrier == null) return false;
 
-            if (CarriersById.TryGetValue(carrier.CarrierId, out NetCarrier existing) && existing != carrier) {
+            if (TryResolve(carrier.CarrierId, out NetCarrier existing) && existing != carrier) {
                 Debug.LogError($"NetCarrierRegistry::Register->Carrier id {carrier.CarrierId} is already held by '{existing.name}'; '{carrier.name}' is not registered and its riders replicate in world space until that id is free.");
                 return false;
             }
@@ -66,9 +66,22 @@ namespace AlpineLib.Networking {
         }
 
         /// <summary>Finds the carrier an id names.</summary>
-        /// <returns>False when no enabled carrier currently answers to that id.</returns>
+        /// <remarks>
+        /// A destroyed carrier is not a carrier, and it is evicted here rather than merely refused. The
+        /// dictionary is static and outlives any scene: an editor scene reload, an additive scene
+        /// unloaded without disabling its objects first, or a torn-down domain with reload disabled all
+        /// leave entries whose object has gone, and every one of them is a Unity fake-null that survives
+        /// a plain reference comparison and throws on the first member access. Dropping it frees the id
+        /// for the carrier that comes back with it, which is what a scene reload always does.
+        /// </remarks>
+        /// <returns>False when no live, enabled carrier currently answers to that id.</returns>
         public static bool TryResolve(ushort carrierId, out NetCarrier carrier) {
-            return CarriersById.TryGetValue(carrierId, out carrier) && carrier != null;
+            if (!CarriersById.TryGetValue(carrierId, out carrier)) return false;
+            if (carrier != null) return true;
+
+            CarriersById.Remove(carrierId);
+            carrier = null;
+            return false;
         }
 
         /// <summary>Empties the registry before the first scene of a play session loads.</summary>

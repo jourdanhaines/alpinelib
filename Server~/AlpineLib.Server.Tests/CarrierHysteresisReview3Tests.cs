@@ -21,6 +21,7 @@ namespace AlpineLib.Server.Tests {
         private const ushort SecondCarrierId = 2;
         private const ushort ThirdCarrierId = 3;
         private const ushort FourthCarrierId = 4;
+        private const ushort FifthCarrierId = 5;
 
         /// <summary>Metres a thirty-metre-a-second consist covers in one thirty-hertz tick.</summary>
         private const float DeckTravelPerTick = 1f;
@@ -119,11 +120,11 @@ namespace AlpineLib.Server.Tests {
         }
 
         /// <summary>
-        /// Three frame changes inside one window are accepted and the fourth is not, counted from the
-        /// tick the window opened rather than from any later claim.
+        /// A whole window's budget of frame changes is accepted and the one past it is not, counted from
+        /// the tick the window opened rather than from any later claim.
         /// </summary>
         [Fact]
-        public void ExactlyThreeChangesFitInOneWindowAndTheFourthDoesNot() {
+        public void ExactlyTheBudgetFitsInOneWindowAndTheClaimPastItDoesNot() {
             using var world = new CarrierReplicationLoopbackWorld();
             CarrierReplicationLoopbackClient owner = world.ConnectClient();
             world.Pump(4);
@@ -139,8 +140,12 @@ namespace AlpineLib.Server.Tests {
             Report(world, owner, pawn, At(OnTheDeck, FourthCarrierId));
             Assert.Equal(FourthCarrierId, pawn.State.CarrierId);
 
+            Report(world, owner, pawn, At(OnTheDeck, FifthCarrierId));
+            Assert.Equal(FifthCarrierId, pawn.State.CarrierId);
+            Assert.Equal(MovementValidator.MaxCarrierSwitchesPerWindow, pawn.CarrierSwitchesInWindow);
+
             Report(world, owner, pawn, At(OnTheDeck, DeckCarrierId));
-            Assert.Equal(FourthCarrierId, pawn.State.CarrierId);
+            Assert.Equal(FifthCarrierId, pawn.State.CarrierId);
         }
 
         /// <summary>
@@ -158,12 +163,13 @@ namespace AlpineLib.Server.Tests {
             Report(world, owner, pawn, At(OnTheDeck, SecondCarrierId));
             Report(world, owner, pawn, At(OnTheDeck, ThirdCarrierId));
             Report(world, owner, pawn, At(OnTheDeck, FourthCarrierId));
+            Report(world, owner, pawn, At(OnTheDeck, FifthCarrierId));
 
             // Seven ticks of refusals, each one counted into the window.
             for (int tick = 0; tick < 7; tick++) {
                 world.Pump(1);
                 Report(world, owner, pawn, At(OnTheDeck, DeckCarrierId));
-                Assert.Equal(FourthCarrierId, pawn.State.CarrierId);
+                Assert.Equal(FifthCarrierId, pawn.State.CarrierId);
             }
 
             world.Pump(1);
@@ -191,7 +197,7 @@ namespace AlpineLib.Server.Tests {
             }
 
             Assert.Equal(byte.MaxValue, pawn.CarrierSwitchesInWindow);
-            Assert.Equal(102, pawn.State.CarrierId);
+            Assert.Equal(99 + MovementValidator.MaxCarrierSwitchesPerWindow, pawn.State.CarrierId);
         }
 
         private static NetEntity SpawnRider(

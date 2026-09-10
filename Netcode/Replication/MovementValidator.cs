@@ -45,7 +45,15 @@ namespace AlpineLib.Netcode.Replication {
     /// corrected for several ticks running while a cheat merely switched more slowly. A budget refuses
     /// only the alternation nobody produces by walking — and honest play is kept away from it from the
     /// other end too, because <c>INetCarrierSource</c> owes this side hysteresis and a source that
-    /// settles before it reports never reaches the budget at all.
+    /// settles before it reports leaves a slot of the budget unspent.
+    /// </para>
+    /// <para>
+    /// <b>The other unmeasured move.</b> An owner that stopped reporting because it had nothing truthful
+    /// to say comes back with <c>OwnerPawnUpdate.ResyncFlag</c> set, and that resumption is accepted on
+    /// the same terms and out of the same budget as a frame change: unmeasured, bounded by frequency, and
+    /// never free. It is the same trust boundary seen from the time axis rather than the space one — the
+    /// two poses either side belong to different stories rather than different origins — so the exposure
+    /// below covers it unchanged.
     /// </para>
     /// <para>
     /// What the hole cannot buy, either way, is speed: every tick that keeps the same carrier is
@@ -87,18 +95,32 @@ namespace AlpineLib.Netcode.Replication {
         public const float CarrierSwitchCooldownSeconds = 0.25f;
 
         /// <summary>
-        /// How many frame changes one pawn may have accepted unmeasured inside a single
-        /// <see cref="CarrierSwitchCooldownSeconds"/> window before the rest are rejected.
+        /// How many moves one pawn may have accepted unmeasured inside a single
+        /// <see cref="CarrierSwitchCooldownSeconds"/> window before the rest are rejected: frame changes,
+        /// and the owner resyncs charged alongside them.
         /// </summary>
         /// <remarks>
-        /// Two of the three are the honest bursts — off a deck and back, or one car to the next — which is
-        /// also exactly what a source honouring <c>NetCarrier.SourceHysteresisSeconds</c> can fit into a
-        /// window this long. The third is headroom for a source that does not honour it, which is every
-        /// source the library cannot see: a game whose dwell is short or missing would otherwise spend
-        /// this budget on honest play, and the cost of being one too tight is a correction storm on a
-        /// player who is only walking. Anything past three inside a quarter of a second is not walking.
+        /// <para>
+        /// Three of the four are what a conforming source produces at its fastest, and they fill those
+        /// three slots exactly. The window is eight ticks of a thirty-hertz clock and
+        /// <c>NetCarrier.SourceHysteresisSeconds</c> is three of them, so a source honouring the dwell
+        /// lands changes on ticks 0, 3 and 6 — all inside one window, which only reopens at elapsed ≥ 8 —
+        /// and that is the honest burst itself, a hop off a deck and back or a walk across a coupler,
+        /// seen at the dwell's own cadence. There is no margin against honest play in those three, which
+        /// is the fact a future reader needs: the count cannot be lowered without lengthening the dwell
+        /// first.
+        /// </para>
+        /// <para>
+        /// The fourth is the margin, and it has a claimant. An owner's resync after a withheld silence is
+        /// charged against this same budget — see <c>ServerReplication.HandleOwnerPawnUpdate</c> — and a
+        /// resync arrives exactly when a rider is boarding or alighting, which is when the burst above is
+        /// already in flight. At three the resync would be refused, measured against a walking gait over
+        /// the gap, and the player corrected for walking: the correction storm this budget exists to
+        /// avoid. It doubles as headroom for a source the library cannot see honouring the dwell at all.
+        /// Anything past four inside a quarter of a second is not walking.
+        /// </para>
         /// </remarks>
-        public const int MaxCarrierSwitchesPerWindow = 3;
+        public const int MaxCarrierSwitchesPerWindow = 4;
 
         private readonly NetConfig config;
 

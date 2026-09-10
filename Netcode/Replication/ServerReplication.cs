@@ -65,6 +65,12 @@ namespace AlpineLib.Netcode.Replication {
         /// <summary>Ceiling on motor steps run in one <see cref="Tick"/>, so a stall is not paid back at once.</summary>
         public const int MaxCatchUpSteps = 8;
 
+        /// <summary>
+        /// Longest interval one owner update may be measured over, in seconds; see
+        /// <see cref="MeasuredIntervalSince"/> for why an uncapped one lets silence buy distance.
+        /// </summary>
+        public const float MaxMeasuredIntervalSeconds = 1f;
+
         /// <summary>Starved ticks during which the last intent is repeated at full strength.</summary>
         public const int StarvationHoldTicks = 2;
 
@@ -539,7 +545,9 @@ namespace AlpineLib.Netcode.Replication {
                 return;
             }
 
-            float deltaSeconds = ElapsedSince(entity.LastDirtyTick);
+            if (TryAcceptResync(entity, in message)) return;
+
+            float deltaSeconds = MeasuredIntervalSince(entity.LastDirtyTick);
             bool carrierChangeAllowed = IsCarrierChangeAllowed(entity, message.State.CarrierId);
             MovementVerdict verdict = validator.Validate(
                 entity.PrefabId,
@@ -560,19 +568,61 @@ namespace AlpineLib.Netcode.Replication {
         }
 
         /// <summary>
+        /// Adopts an update the owner has flagged as a resync, when the frame-change budget still covers
+        /// one; see <see cref="OwnerPawnUpdate.ResyncFlag"/>.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// <b>The trust boundary.</b> A resync is a claim like any other and the server cannot check it:
+        /// what the owner is asserting is that the pose either side of the gap belongs to two different
+        /// stories, exactly as a frame change asserts they belong to two different origins. It is
+        /// therefore given the frame change's terms and no better ones — accepted whole, unmeasured, and
+        /// charged one slot of the same per-window budget — so a client that flags every update buys
+        /// <see cref="MovementValidator.MaxCarrierSwitchesPerWindow"/> unmeasured moves per window and not
+        /// one more. Past the budget it falls through to the ordinary measurement, where a claim that
+        /// really is a teleport is rejected like any other.
+        /// </para>
+        /// <para>
+        /// An accepted resync never corrects the owner: the whole point is that the state the server
+        /// holds is the stale one, so handing it back is the harm being removed. A resync arriving with a
+        /// frame change is left to the frame-change path so the two cannot charge the budget twice.
+        /// </para>
+        /// </remarks>
+        private bool TryAcceptResync(NetEntity entity, in OwnerPawnUpdate message) {
+            if (!message.IsResync) return false;
+            if (entity.State.CarrierId != message.State.CarrierId) return false;
+            if (!ChargeUnmeasuredMove(entity)) return false;
+
+            entity.ApplyState(message.State, currentTick);
+            entity.LastAcknowledgedInputSequence = message.ClientTick;
+            return true;
+        }
+
+        /// <summary>
         /// Counts a claimed frame change into this pawn's window and answers whether the budget covers
         /// it; see <see cref="MovementValidator.MaxCarrierSwitchesPerWindow"/>.
         /// </summary>
         /// <remarks>
         /// A claim that keeps the frame the pawn is already in costs nothing and is not counted — it is
-        /// measured as an ordinary move. Everything else opens a window or spends from the open one, the
-        /// refused attempts included, so a client cannot hold a window open by continuing to claim after
-        /// its budget has run out. The elapsed count is a plain unsigned subtraction, which stays correct
-        /// across the tick counter wrapping.
+        /// measured as an ordinary move, unless it is a resync, which spends from the same budget through
+        /// <see cref="TryAcceptResync"/>.
         /// </remarks>
         private bool IsCarrierChangeAllowed(NetEntity entity, ushort claimedCarrierId) {
             if (entity.State.CarrierId == claimedCarrierId) return true;
 
+            return ChargeUnmeasuredMove(entity);
+        }
+
+        /// <summary>
+        /// Spends one slot of this pawn's per-window budget of moves the server accepts without measuring
+        /// them, and answers whether the budget covered it.
+        /// </summary>
+        /// <remarks>
+        /// Every unmeasured move charges here, the refused attempts included, so a client cannot hold a
+        /// window open by continuing to claim after its budget has run out. The elapsed count is a plain
+        /// unsigned subtraction, which stays correct across the tick counter wrapping.
+        /// </remarks>
+        private bool ChargeUnmeasuredMove(NetEntity entity) {
             uint elapsedTicks = currentTick - entity.CarrierSwitchWindowStartTick;
 
             if (entity.CarrierSwitchesInWindow == 0 || elapsedTicks >= validator.CarrierSwitchCooldownTicks) {
@@ -774,11 +824,33 @@ namespace AlpineLib.Netcode.Replication {
         }
 
         /// <summary>
-        /// Seconds between a past tick and now, floored at one tick. The floor matters: two updates
-        /// landing inside one tick would otherwise divide by zero elapsed time and read as infinite speed.
+        /// Seconds an owner update is measured over: the age of the pawn's last change, floored at one
+        /// tick and capped at <see cref="MaxMeasuredIntervalSeconds"/>.
         /// </summary>
-        private float ElapsedSince(uint tick) {
+        /// <remarks>
+        /// <para>
+        /// The floor matters because two updates landing inside one tick would otherwise divide by zero
+        /// elapsed time and read as infinite speed.
+        /// </para>
+        /// <para>
+        /// The cap matters because the tick this measures from is stamped when the pawn's state actually
+        /// <em>changes</em>, not when it last reported: a pawn standing still, one whose owner stopped
+        /// sending, and one whose updates the library is withholding all age the same way, and without a
+        /// cap the allowance grows with the gap until a claim of any size fits inside it. Silence is not
+        /// credit. A second is far longer than any honest gap between owner updates at thirty a second,
+        /// so a client reporting continuously is measured exactly as before; a client that goes quiet and
+        /// comes back somewhere else says so with <see cref="OwnerPawnUpdate.ResyncFlag"/>, which is
+        /// budgeted, rather than by waiting long enough to buy the distance.
+        /// </para>
+        /// </remarks>
+        private float MeasuredIntervalSince(uint tick) {
             uint elapsedTicks = currentTick > tick ? currentTick - tick : 1u;
+            uint maxTicks = (uint)Math.Max(1, (int)(MaxMeasuredIntervalSeconds * config.ServerTickRate));
+
+            if (elapsedTicks > maxTicks) {
+                elapsedTicks = maxTicks;
+            }
+
             return elapsedTicks * config.ServerTickInterval;
         }
     }
