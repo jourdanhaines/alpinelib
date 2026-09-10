@@ -245,9 +245,11 @@ namespace AlpineLib.Editor {
         /// this build ships no server, and a half-filled asset behind that flag is not a fault.
         /// </para>
         /// <para>
-        /// Everything <c>ServerBundleBuildStep</c> refuses to build is refused here too, in the same
-        /// terms, so that authoring and building cannot give two answers about one asset — including the
-        /// count, which no single asset can see about itself.
+        /// Everything <c>ServerBundleBuildStep</c> refuses <em>in the asset itself</em> is refused here
+        /// too, in the same terms, so that authoring and building cannot give two answers about one
+        /// asset — including the count, which no single asset can see about itself. Its other rules read
+        /// something no authoring pass has: the published binary's own header, and the macOS player's
+        /// architecture, which is a build setting rather than a field on the asset.
         /// </para>
         /// </remarks>
         private static void ValidateServerBundles(List<string> failures) {

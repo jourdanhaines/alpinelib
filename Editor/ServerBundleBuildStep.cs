@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using AlpineLib.Sessions;
@@ -42,8 +43,10 @@ namespace AlpineLib.Editor {
     /// <see cref="BuildFailedException"/>, which is the only exception type Unity's build pipeline turns
     /// into a failed build rather than a logged one: two bundle configs, a bundle folder name that is
     /// not a single folder, a publish folder that is not there or holds nothing, a publish built for a
-    /// different runtime identifier than the one being bundled, a publish that resolves to the same
-    /// place as the destination, a missing session config, a launcher that names a different server
+    /// different runtime identifier than the one being bundled — a different operating system or a
+    /// different processor, read from the executable's own header on all three platforms — a publish
+    /// that resolves to the same place as any folder the swap replaces, a missing session config, a
+    /// launcher that names a different server
     /// from the bundle (or no launcher at all), and a copy that did not land everything the publish
     /// holds. The whole step runs inside one guard in <see cref="OnPostprocessBuild"/> that turns
     /// anything else thrown into the same failure — an unreadable manifest, a publish folder the build
@@ -99,6 +102,24 @@ namespace AlpineLib.Editor {
 
         /// <summary>COFF machine value of a 64-bit ARM PE file.</summary>
         private const int peMachineArm64 = 0xAA64;
+
+        /// <summary>ELF <c>e_machine</c> value of a 32-bit Intel binary.</summary>
+        private const int elfMachineX86 = 0x03;
+
+        /// <summary>ELF <c>e_machine</c> value of a 64-bit Intel binary.</summary>
+        private const int elfMachineX64 = 0x3E;
+
+        /// <summary>ELF <c>e_machine</c> value of a 64-bit ARM binary.</summary>
+        private const int elfMachineArm64 = 0xB7;
+
+        /// <summary>Mach-O <c>cputype</c> value of a 64-bit Intel binary.</summary>
+        private const int machCpuTypeX64 = 0x01000007;
+
+        /// <summary>Mach-O <c>cputype</c> value of a 64-bit ARM binary.</summary>
+        private const int machCpuTypeArm64 = 0x0100000C;
+
+        /// <summary>Most slices a universal binary is read for, so a bogus count cannot drive the read.</summary>
+        private const int maximumFatArchitectures = 16;
 
         private const string macIntelRuntimeIdentifier = "osx-x64";
         private const string macAppleSiliconRuntimeIdentifier = "osx-arm64";
@@ -424,29 +445,44 @@ namespace AlpineLib.Editor {
         }
 
         /// <summary>
-        /// The one dependency manifest a publish root holds, or null when it holds none.
+        /// The dependency manifest that describes this publish, or null when the root holds none.
         /// </summary>
         /// <remarks>
-        /// Found by its extension rather than by name, because the manifest is named after the assembly
-        /// and not after the file the launcher starts: a Windows publish writes
-        /// <c>&lt;assembly&gt;.deps.json</c> beside <c>&lt;assembly&gt;.exe</c>, so looking it up by the
-        /// launched file's name would never find it — and Windows, whose two runtime identifiers share a
-        /// magic number and a file name, is the platform with least else to go on. A publish root holds
-        /// exactly one; two mean two applications were published into one folder, which is not a publish
-        /// of anything in particular.
+        /// <para>
+        /// The manifest is named after the assembly and not after the file the launcher starts: a
+        /// Windows publish writes <c>&lt;assembly&gt;.deps.json</c> beside <c>&lt;assembly&gt;.exe</c>.
+        /// The assembly name is what the asset's executable name holds, so that is the manifest asked
+        /// for first, and a root holding only one falls back to it whatever it is called.
+        /// </para>
+        /// <para>
+        /// Several with none of them ours is the only ambiguity left, and it fails: <c>dotnet
+        /// publish</c> does not clean its output, so a renamed assembly or a second application
+        /// published into the same folder leaves a manifest describing something that is no longer
+        /// there, and picking one of those would be a guess about which runtime identifier the folder
+        /// holds.
+        /// </para>
         /// </remarks>
         private static string ResolveDependencyManifest(
             ServerBundleConfig config, string sourceDirectory, string relativeSource) {
             List<string> manifests = FindDependencyManifests(sourceDirectory);
-
             if (manifests.Count == 0) return null;
+
+            string named = config.executableName + dependencyManifestSuffix;
+
+            foreach (string manifest in manifests) {
+                if (!string.Equals(manifest, named, StringComparison.OrdinalIgnoreCase)) continue;
+
+                return Path.Combine(sourceDirectory, manifest);
+            }
+
             if (manifests.Count == 1) return Path.Combine(sourceDirectory, manifests[0]);
 
             throw new BuildFailedException(
                 $"{logPrefix}: '{config.name}' bundles '{relativeSource}', which holds {manifests.Count} " +
-                $"'{dependencyManifestSuffix}' manifests ({string.Join(", ", manifests)}); two applications were " +
-                "published into one folder, so there is no telling which runtime identifier it holds. Publish each " +
-                "server into a folder of its own.");
+                $"'{dependencyManifestSuffix}' manifests ({string.Join(", ", manifests)}) and none of them is the " +
+                $"'{named}' this bundle's executable name asks for; two applications were published into one folder, " +
+                "so there is no telling which runtime identifier it holds. Publish each server into a folder of its " +
+                "own.");
         }
 
         /// <summary>The names of every dependency manifest directly inside a publish root, in order.</summary>
@@ -492,8 +528,10 @@ namespace AlpineLib.Editor {
         /// Checks the launched file's own header against the runtime identifier, as far as it can say.
         /// </summary>
         /// <remarks>
-        /// A header naming another operating system fails the build whatever the manifest said: the two
-        /// disagreeing is a folder somebody assembled by hand. A header that says nothing is a wrapper
+        /// A header naming another operating system — or, through
+        /// <see cref="RequireArchitectureMatch"/>, another processor — fails the build whatever the
+        /// manifest said: the two disagreeing is a folder somebody assembled by hand. A header that
+        /// says nothing is a wrapper
         /// script or a hand-written launcher, which is a legal thing to aim the launcher at, so it is
         /// refused only when no manifest confirmed the identifier either. A publish holding no such file
         /// at all is left to <see cref="RequireBundledExecutable"/>, which names that state.
@@ -527,7 +565,7 @@ namespace AlpineLib.Editor {
             }
 
             if (string.Equals(format, expected, StringComparison.Ordinal)) {
-                RequireWindowsMachineMatch(
+                RequireArchitectureMatch(
                     config, executablePath, executableFileName, runtimeIdentifier, relativeSource, format);
                 return;
             }
@@ -569,34 +607,73 @@ namespace AlpineLib.Editor {
         }
 
         /// <summary>
-        /// Refuses a Windows publish built for another processor.
+        /// Refuses a publish built for another processor, on all three executable formats.
         /// </summary>
         /// <remarks>
-        /// <c>win-x64</c> and <c>win-arm64</c> are both PE files with the same file name, so the magic
-        /// number says exactly the same thing about a server that cannot start. The COFF header's
-        /// machine field is what tells them apart, and for a single-file publish — no manifest on disk —
-        /// it is the only thing that can.
+        /// <para>
+        /// The magic number names an operating system and nothing else, so <c>linux-x64</c> and
+        /// <c>linux-arm64</c> — like the two Windows identifiers and the two macOS ones — are the same
+        /// four bytes under the same file name, and a server that cannot start looks exactly like one
+        /// that can. Each format carries the processor a few bytes further in.
+        /// </para>
+        /// <para>
+        /// This is the whole identification for the shape this library ships: a self-contained
+        /// single-file publish embeds its manifest in the executable, so there is no <c>.deps.json</c> on
+        /// disk and the header is the only thing left to read. A field naming a processor no runtime
+        /// identifier does is taken on trust, exactly as an unrecognised identifier is.
+        /// </para>
         /// </remarks>
-        private static void RequireWindowsMachineMatch(
+        private static void RequireArchitectureMatch(
             ServerBundleConfig config,
             string executablePath,
             string executableFileName,
             string runtimeIdentifier,
             string relativeSource,
             string format) {
-            if (!string.Equals(format, ServerBundleConfig.WindowsPlatformName, StringComparison.Ordinal)) return;
-
             string expected = ResolveRuntimeIdentifierArchitecture(runtimeIdentifier);
             if (expected == null) return;
 
-            string machine = ReadWindowsMachine(executablePath);
-            if (machine == null) return;
-            if (string.Equals(machine, expected, StringComparison.Ordinal)) return;
+            List<string> architectures = ReadExecutableArchitectures(executablePath, format);
+            if (architectures.Count == 0) return;
+            if (architectures.Contains(expected)) return;
 
             throw new BuildFailedException(
                 $"{logPrefix}: '{config.name}' bundles '{relativeSource}' as its '{runtimeIdentifier}' server, but " +
-                $"'{executableFileName}' there is built for {machine} rather than {expected}. Windows will not run " +
-                "it beside this player. Publish the runtime identifier the asset names, or correct the asset.");
+                $"'{executableFileName}' there is built for {string.Join(", ", architectures)} rather than " +
+                $"{expected}. {format} will not run it beside this player. Publish the runtime identifier the asset " +
+                "names, or correct the asset.");
+        }
+
+        /// <summary>
+        /// Every processor an executable's header names, empty when it names none this step reads.
+        /// </summary>
+        /// <remarks>
+        /// More than one is a macOS universal binary, which really does run on all of them; every other
+        /// format answers with one processor or with nothing.
+        /// </remarks>
+        private static List<string> ReadExecutableArchitectures(string executablePath, string format) {
+            if (string.Equals(format, ServerBundleConfig.WindowsPlatformName, StringComparison.Ordinal)) {
+                return AsArchitectureList(ReadWindowsMachine(executablePath));
+            }
+
+            if (string.Equals(format, ServerBundleConfig.LinuxPlatformName, StringComparison.Ordinal)) {
+                return AsArchitectureList(ReadElfMachine(executablePath));
+            }
+
+            if (string.Equals(format, ServerBundleConfig.MacPlatformName, StringComparison.Ordinal)) {
+                return ReadMachArchitectures(executablePath);
+            }
+
+            return new List<string>();
+        }
+
+        /// <summary>One processor as a list, or an empty one when the header named nothing.</summary>
+        private static List<string> AsArchitectureList(string architecture) {
+            var architectures = new List<string>();
+
+            if (architecture != null) architectures.Add(architecture);
+
+            return architectures;
         }
 
         /// <summary>The processor a runtime identifier names, or null when its last part is not one.</summary>
@@ -635,7 +712,7 @@ namespace AlpineLib.Editor {
         private static int ReadPeHeaderOffset(FileStream stream) {
             var stub = new byte[0x40];
 
-            if (stream.Read(stub, 0, stub.Length) < stub.Length) return -1;
+            if (!FillBuffer(stream, stub)) return -1;
 
             return stub[0x3C] | (stub[0x3D] << 8) | (stub[0x3E] << 16) | (stub[0x3F] << 24);
         }
@@ -647,7 +724,7 @@ namespace AlpineLib.Editor {
             stream.Seek(headerOffset, SeekOrigin.Begin);
             var header = new byte[6];
 
-            if (stream.Read(header, 0, header.Length) < header.Length) return -1;
+            if (!FillBuffer(stream, header)) return -1;
             if (header[0] != 0x50 || header[1] != 0x45 || header[2] != 0x00 || header[3] != 0x00) return -1;
 
             return header[4] | (header[5] << 8);
@@ -663,12 +740,105 @@ namespace AlpineLib.Editor {
             }
         }
 
+        /// <summary>
+        /// The processor an ELF header names, or null when there is no header to read.
+        /// </summary>
+        /// <remarks>
+        /// <c>e_machine</c> is two bytes at <c>0x12</c>, written in the byte order <c>EI_DATA</c> at
+        /// <c>0x05</c> declares — an ELF carries its target's endianness, not the reader's. A truncated
+        /// file, a byte order that is neither value, or a machine .NET does not publish for answers
+        /// nothing rather than guessing, and the caller then trusts the magic number alone.
+        /// </remarks>
+        private static string ReadElfMachine(string executablePath) {
+            var header = new byte[0x14];
+
+            using (FileStream stream = File.OpenRead(executablePath)) {
+                if (!FillBuffer(stream, header)) return null;
+            }
+
+            if (header[0x05] == 1) return ResolveElfMachineName(header[0x12] | (header[0x13] << 8));
+            if (header[0x05] == 2) return ResolveElfMachineName((header[0x12] << 8) | header[0x13]);
+
+            return null;
+        }
+
+        /// <summary>The processor an ELF machine value names, or null for one .NET does not publish.</summary>
+        private static string ResolveElfMachineName(int machine) {
+            switch (machine) {
+                case elfMachineX86: return "x86";
+                case elfMachineX64: return "x64";
+                case elfMachineArm64: return "arm64";
+                default: return null;
+            }
+        }
+
+        /// <summary>
+        /// Every processor a Mach-O file holds, empty when its header names none.
+        /// </summary>
+        /// <remarks>
+        /// A thin binary's <c>cputype</c> is four bytes at <c>0x04</c>, in the byte order its magic
+        /// number declares. A universal binary is a table of that same field, one entry per slice, and
+        /// it really does run on every architecture it lists — so all of them are returned and the
+        /// caller accepts a match against any, rather than refusing a binary that would have run.
+        /// </remarks>
+        private static List<string> ReadMachArchitectures(string executablePath) {
+            var header = new byte[8];
+
+            using (FileStream stream = File.OpenRead(executablePath)) {
+                if (!FillBuffer(stream, header)) return new List<string>();
+
+                var magic = (uint)ReadHeaderInt32(header, 0, false);
+                bool littleEndian = IsReversedMachOMagic(magic);
+
+                if (!IsFatMachOMagic(magic)) {
+                    return AsArchitectureList(ResolveMachCpuTypeName(ReadHeaderInt32(header, 4, littleEndian)));
+                }
+
+                return ReadFatMachArchitectures(
+                    stream, ReadHeaderInt32(header, 4, littleEndian), IsFat64MachOMagic(magic), littleEndian);
+            }
+        }
+
+        /// <summary>
+        /// The processors a universal binary's slice table names, in the order it lists them.
+        /// </summary>
+        /// <remarks>
+        /// The slice count comes out of the file, so it is capped rather than trusted: a truncated or
+        /// hand-made header can claim any number. The 64-bit table differs only in entry size — the
+        /// <c>cputype</c> is the first field of both.
+        /// </remarks>
+        private static List<string> ReadFatMachArchitectures(
+            FileStream stream, int sliceCount, bool is64BitTable, bool littleEndian) {
+            var architectures = new List<string>();
+            var entry = new byte[is64BitTable ? 32 : 20];
+
+            for (int slice = 0; slice < sliceCount && slice < maximumFatArchitectures; slice++) {
+                if (!FillBuffer(stream, entry)) break;
+
+                string architecture = ResolveMachCpuTypeName(ReadHeaderInt32(entry, 0, littleEndian));
+                if (architecture == null || architectures.Contains(architecture)) continue;
+
+                architectures.Add(architecture);
+            }
+
+            return architectures;
+        }
+
+        /// <summary>The processor a Mach-O CPU type names, or null for one .NET does not publish.</summary>
+        private static string ResolveMachCpuTypeName(int cpuType) {
+            switch (cpuType) {
+                case machCpuTypeX64: return "x64";
+                case machCpuTypeArm64: return "arm64";
+                default: return null;
+            }
+        }
+
         /// <summary>The operating system an executable's first four bytes name, or null for neither.</summary>
         private static string ReadExecutableFormat(string executablePath) {
             var header = new byte[4];
 
             using (FileStream stream = File.OpenRead(executablePath)) {
-                if (stream.Read(header, 0, header.Length) < header.Length) return null;
+                if (!FillBuffer(stream, header)) return null;
             }
 
             if (header[0] == 0x7F && header[1] == 0x45 && header[2] == 0x4C && header[3] == 0x46) {
@@ -690,20 +860,82 @@ namespace AlpineLib.Editor {
         /// are checked in both directions rather than assuming the build machine's endianness.
         /// </remarks>
         private static bool IsMachOHeader(byte[] header) {
-            uint magic = (uint)((header[0] << 24) | (header[1] << 16) | (header[2] << 8) | header[3]);
+            var magic = (uint)ReadHeaderInt32(header, 0, false);
 
-            return magic == 0xFEEDFACF || magic == 0xFEEDFACE || magic == 0xCAFEBABE || magic == 0xCAFEBABF
-                || magic == 0xCFFAEDFE || magic == 0xCEFAEDFE || magic == 0xBEBAFECA || magic == 0xBFBAFECA;
+            return magic == 0xFEEDFACF || magic == 0xFEEDFACE
+                || IsFatMachOMagic(magic) || IsReversedMachOMagic(magic);
+        }
+
+        /// <summary>True for the two universal-binary magic numbers, in either byte order.</summary>
+        private static bool IsFatMachOMagic(uint magic) {
+            return magic == 0xCAFEBABE || magic == 0xCAFEBABF || magic == 0xBEBAFECA || magic == 0xBFBAFECA;
+        }
+
+        /// <summary>True for a universal binary whose slice table uses the wider 64-bit entry.</summary>
+        private static bool IsFat64MachOMagic(uint magic) {
+            return magic == 0xCAFEBABF || magic == 0xBFBAFECA;
+        }
+
+        /// <summary>
+        /// True for the Mach-O magic numbers whose bytes read backwards, meaning little-endian fields.
+        /// </summary>
+        /// <remarks>
+        /// The magic is stored as a number, so a little-endian file writes its bytes in reverse. Reading
+        /// the four bytes big-endian and recognising the reversed values is how the file says which way
+        /// round every field after it is written.
+        /// </remarks>
+        private static bool IsReversedMachOMagic(uint magic) {
+            return magic == 0xCFFAEDFE || magic == 0xCEFAEDFE || magic == 0xBEBAFECA || magic == 0xBFBAFECA;
+        }
+
+        /// <summary>Four header bytes as an integer, in whichever byte order the header declares.</summary>
+        private static int ReadHeaderInt32(byte[] header, int offset, bool littleEndian) {
+            if (littleEndian) {
+                return header[offset] | (header[offset + 1] << 8)
+                    | (header[offset + 2] << 16) | (header[offset + 3] << 24);
+            }
+
+            return (header[offset] << 24) | (header[offset + 1] << 16)
+                | (header[offset + 2] << 8) | header[offset + 3];
+        }
+
+        /// <summary>
+        /// Fills a buffer from a stream, answering false when the file ends before it is full.
+        /// </summary>
+        /// <remarks>
+        /// <c>Read</c> is allowed to return fewer bytes than it was asked for, and does over a network
+        /// share. Treating that as end-of-file would read a perfectly good publish as one whose header
+        /// says nothing about it.
+        /// </remarks>
+        private static bool FillBuffer(FileStream stream, byte[] buffer) {
+            int filled = 0;
+
+            while (filled < buffer.Length) {
+                int read = stream.Read(buffer, filled, buffer.Length - filled);
+                if (read <= 0) return false;
+
+                filled += read;
+            }
+
+            return true;
         }
 
         /// <summary>
         /// Builds the bundle beside its destination and swaps it in, failing the build on any fault.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// The catch-all is the point. Unity logs a non-<see cref="BuildFailedException"/> thrown from a
         /// post-process callback and lets the build finish <c>Succeeded</c>, so an <c>IOException</c>
         /// half-way through a copy would otherwise ship a torn server folder beside a player the build
         /// called good.
+        /// </para>
+        /// <para>
+        /// The overlap check runs before that guard rather than inside it, because the cleanup the guard
+        /// performs is a delete of the temporary folder — which is one of the folders the check refuses
+        /// to let the publish live in. Failing inside the guard would destroy the very publish the check
+        /// exists to protect.
+        /// </para>
         /// </remarks>
         private static int SwapInFreshBundle(
             ServerBundleConfig config,
@@ -715,6 +947,8 @@ namespace AlpineLib.Editor {
             string temporary = destination + temporarySuffix;
             string stale = destination + staleSuffix;
             bool swapped = false;
+
+            RequireSeparatePaths(config, sourceDirectory, destination);
 
             try {
                 return AssembleAndSwap(
@@ -774,7 +1008,6 @@ namespace AlpineLib.Editor {
             BuildTarget platform,
             string relativeSource,
             ref bool swapped) {
-            RequireSeparatePaths(config, sourceDirectory, destination);
             RestoreInterruptedSwap(destination, stale);
 
             DeleteDirectory(temporary);
@@ -798,23 +1031,31 @@ namespace AlpineLib.Editor {
         /// </summary>
         /// <remarks>
         /// The rename that put the new bundle in place has already made the build correct, so nothing
-        /// here fails it. What it does refuse to do is delete: a publish that was living inside the
-        /// previous bundle moved with it, and the stale folder is then the only copy there is. The
-        /// overlap checks catch that shape before anything is touched wherever the two paths can be
-        /// resolved; a bind mount is where they cannot.
+        /// here fails it — the one read it does is guarded for the same reason. What it refuses to do is
+        /// delete: a publish that was living inside the previous bundle moved with it, and the stale
+        /// folder is then the only copy there is. A publish that cannot be looked at is not evidence
+        /// either way, so it is kept as well. The overlap checks catch that shape before anything is
+        /// touched wherever the paths can be resolved; a bind mount is where they cannot.
         /// </remarks>
         private static void ClearPreviousBundle(string stale, string sourceDirectory, string relativeSource) {
             if (!Directory.Exists(stale)) return;
 
-            if (HasContent(sourceDirectory)) {
-                TryDeleteDirectory(stale, "the previous bundle");
+            try {
+                if (!HasContent(sourceDirectory)) {
+                    Debug.LogWarning(
+                        $"{logPrefix}: the new bundle is in place, but the publish at '{relativeSource}' went with " +
+                        $"the previous one, so '{stale}' is the only copy of it left and has not been removed. " +
+                        "Publish outside the build folder, then delete it.");
+                    return;
+                }
+            } catch (Exception exception) {
+                Debug.LogWarning(
+                    $"{logPrefix}: the new bundle is in place, but '{relativeSource}' could not be looked at to see " +
+                    $"whether it went with the previous one, so '{stale}' has been kept: {exception.Message}");
                 return;
             }
 
-            Debug.LogWarning(
-                $"{logPrefix}: the new bundle is in place, but the publish at '{relativeSource}' went with the " +
-                $"previous one, so '{stale}' is the only copy of it left and has not been removed. Publish outside " +
-                "the build folder, then delete it.");
+            TryDeleteDirectory(stale, "the previous bundle");
         }
 
         /// <summary>
@@ -1159,33 +1400,63 @@ namespace AlpineLib.Editor {
         }
 
         /// <summary>
-        /// Refuses a source and destination where either contains the other, symbolic links resolved.
+        /// Refuses a publish that overlaps any folder this step replaces, symbolic links resolved.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// Building the player into the publish root, or publishing into the build folder, makes one a
         /// child of the other — which would copy a folder into itself, or delete the publish as the old
         /// bundle. <see cref="Path.GetFullPath"/> alone cannot see that: it normalises <c>.</c> and
-        /// <c>..</c> but follows no links, so the two paths are compared twice, as they are written and
-        /// as the filesystem lays them out. A link is only ever a question about overlap here: a player
+        /// <c>..</c> but follows no links, so the paths are compared twice, as they are written and as
+        /// the filesystem lays them out. A link is only ever a question about overlap here: a player
         /// built into a symlinked output folder, or a project living under a symlinked home, is an
         /// ordinary thing to do and is not refused for it.
+        /// </para>
+        /// <para>
+        /// All three folders the swap owns are checked, not just the destination. <c>.bundling</c> and
+        /// <c>.stale</c> beside it are deleted outright a few lines later, so a publish living in either
+        /// one is destroyed before anything else notices — and the previous bundle kept in <c>.stale</c>
+        /// on purpose, because the publish was inside it, is exactly that shape.
+        /// </para>
         /// </remarks>
         private static void RequireSeparatePaths(
             ServerBundleConfig config, string sourceDirectory, string destination) {
-            RequireNoOverlap(config, sourceDirectory, destination, sourceDirectory, destination);
+            string[] replaced = { destination, destination + temporarySuffix, destination + staleSuffix };
+
+            foreach (string blocked in replaced) {
+                RequireNoOverlap(config, sourceDirectory, blocked, sourceDirectory, blocked);
+            }
 
             string resolvedSource = ResolvePhysicalPath(sourceDirectory);
-            string resolvedDestination = ResolvePhysicalPath(destination);
 
-            if (resolvedSource == null || resolvedDestination == null) {
-                Debug.LogWarning(
-                    $"{logPrefix}: '{sourceDirectory}' or '{destination}' goes through a link this editor cannot " +
-                    "follow, so the two were compared only as they are written. A link that puts one inside the " +
-                    "other is caught when the publish is looked for again after the old bundle is cleared.");
+            if (resolvedSource == null) {
+                WarnUnfollowedLink(sourceDirectory, destination);
                 return;
             }
 
-            RequireNoOverlap(config, resolvedSource, resolvedDestination, sourceDirectory, destination);
+            foreach (string blocked in replaced) {
+                RequireResolvedSeparate(config, resolvedSource, blocked, sourceDirectory);
+            }
+        }
+
+        /// <summary>Compares the publish with one replaced folder as the filesystem lays the two out.</summary>
+        private static void RequireResolvedSeparate(
+            ServerBundleConfig config, string resolvedSource, string blocked, string sourceDirectory) {
+            string resolvedBlocked = ResolvePhysicalPath(blocked);
+
+            if (resolvedBlocked == null) {
+                WarnUnfollowedLink(sourceDirectory, blocked);
+                return;
+            }
+
+            RequireNoOverlap(config, resolvedSource, resolvedBlocked, sourceDirectory, blocked);
+        }
+
+        private static void WarnUnfollowedLink(string sourceDirectory, string blocked) {
+            Debug.LogWarning(
+                $"{logPrefix}: '{sourceDirectory}' or '{blocked}' goes through a link this editor cannot follow, so " +
+                "the two were compared only as they are written. A link that puts one inside the other is caught " +
+                "when the publish is looked for again after the old bundle is cleared.");
         }
 
         /// <summary>Refuses two paths where either one holds the other, comparing them as given.</summary>
@@ -1194,7 +1465,7 @@ namespace AlpineLib.Editor {
             string first,
             string second,
             string sourceDirectory,
-            string destination) {
+            string blocked) {
             string source = WithTrailingSeparator(first);
             string target = WithTrailingSeparator(second);
 
@@ -1204,9 +1475,10 @@ namespace AlpineLib.Editor {
             }
 
             throw new BuildFailedException(
-                $"{logPrefix}: '{config.name}' would copy '{sourceDirectory}' into '{destination}', which resolves " +
-                "to the same place (or to one inside the other). Build the player outside the publish folder, or " +
-                "publish outside the build folder.");
+                $"{logPrefix}: '{config.name}' publishes to '{sourceDirectory}', which resolves to the same place as " +
+                $"'{blocked}' (or to one inside the other). This step replaces that folder beside the player, so the " +
+                "publish would be copied into itself or deleted with the previous bundle. Build the player outside " +
+                "the publish folder, or publish outside the build folder.");
         }
 
         /// <summary>
@@ -1236,33 +1508,42 @@ namespace AlpineLib.Editor {
         /// An existing directory's physical location, or null when this runtime cannot report one.
         /// </summary>
         /// <remarks>
-        /// Entering the directory and asking where that is resolves every link in the path at once,
-        /// ancestors included, because that is what a working directory is. The .NET 6 link API would
-        /// answer for the last component only and the editor's scripting runtime does not have it at
-        /// all. Windows reports the path as it was set rather than the physical one, so a junction there
-        /// falls back to the comparison of the paths as written rather than failing anything.
+        /// <para>
+        /// <c>realpath(3)</c> follows every component of the path, ancestors included, which is the
+        /// question being asked. It is reached through libc because the .NET 6 link API answers for the
+        /// last component only and the editor's scripting runtime does not have it at all. The path is
+        /// marshalled as UTF-8 bytes so a project living under a non-ASCII path is not mangled by the
+        /// default charset, and the buffer <c>realpath(NULL)</c> allocates is freed.
+        /// </para>
+        /// <para>
+        /// Deliberately not the working directory: <c>chdir(2)</c> is process-global, so every other
+        /// thread in the editor — an in-flight import, a launched process inheriting the directory —
+        /// would resolve its own relative paths against the publish folder for as long as it was set.
+        /// Windows has no libc, so the call fails there and the comparison of the paths as written is
+        /// that platform's answer, as it already was.
+        /// </para>
         /// </remarks>
         private static string ResolvePhysicalDirectory(string directory) {
-            string previous = Directory.GetCurrentDirectory();
-
             try {
-                Directory.SetCurrentDirectory(directory);
-                return Directory.GetCurrentDirectory();
+                IntPtr resolved = ResolveRealPath(Encoding.UTF8.GetBytes(directory + "\0"), IntPtr.Zero);
+                if (resolved == IntPtr.Zero) return null;
+
+                try {
+                    return Marshal.PtrToStringUTF8(resolved);
+                } finally {
+                    FreeRealPath(resolved);
+                }
             } catch (Exception) {
+                // No libc, or no such entry point: the written comparison is the answer on that platform.
                 return null;
-            } finally {
-                RestoreWorkingDirectory(previous);
             }
         }
 
-        /// <summary>Puts the process's working directory back after a path has been resolved.</summary>
-        private static void RestoreWorkingDirectory(string directory) {
-            try {
-                Directory.SetCurrentDirectory(directory);
-            } catch (Exception) {
-                // Nothing here can put it back, and every path this step works with is absolute anyway.
-            }
-        }
+        [DllImport("libc", EntryPoint = "realpath")]
+        private static extern IntPtr ResolveRealPath(byte[] path, IntPtr resolved);
+
+        [DllImport("libc", EntryPoint = "free")]
+        private static extern void FreeRealPath(IntPtr pointer);
 
         /// <summary>A full path that always ends in a separator, so one folder cannot prefix another.</summary>
         private static string WithTrailingSeparator(string path) {
