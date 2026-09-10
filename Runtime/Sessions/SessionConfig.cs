@@ -44,6 +44,8 @@ namespace AlpineLib.Sessions {
         [Header("Spawning")]
         [Tooltip("Append-only prefab table; a row's index is its prefab id on the wire.")]
         public NetPrefabRegistry prefabRegistry;
+        [Tooltip("What body a joining player is given and where it appears. Empty seats arrivals on a ring at the origin.")]
+        public SpawnPlacementConfig spawn;
 
         [Header("Fallbacks")]
         [Tooltip("Scene loaded when a session ends and there is nowhere else to be — usually the main menu.")]

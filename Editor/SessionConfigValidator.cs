@@ -71,6 +71,7 @@ namespace AlpineLib.Editor {
         public static void Validate(List<string> failures) {
             ValidateSessionConfigs(failures);
             ValidatePrefabRegistries(failures);
+            ValidateSpawnPlacements(failures);
         }
 
         private static void ValidateSessionConfigs(List<string> failures) {
@@ -82,6 +83,7 @@ namespace AlpineLib.Editor {
 
                 ValidateMatchIds(config, assetPath, failures);
                 ValidateCapacity(config, assetPath, failures);
+                ValidateSpawnPrefabId(config, assetPath, failures);
                 WarnOnMissingGeometry(config, assetPath, geometryRegistries);
             }
         }
@@ -140,6 +142,63 @@ namespace AlpineLib.Editor {
             failures.Add(
                 $"{assetPath}: LobbyConfig '{config.lobby.name}' seats {config.lobby.lobbyCapacity} but " +
                 $"SessionProfile '{config.profile.name}' admits {config.profile.maxPlayers}.");
+        }
+
+        /// <summary>
+        /// Checks that the pawn a session spawns is a row its prefab registry actually has.
+        /// </summary>
+        /// <remarks>
+        /// The prefab id is an index into the registry, and an index past the end is silent on the
+        /// server — the spawn message goes out naming a prefab no client can resolve, so every player
+        /// joins into a world where nobody, themselves included, has a body.
+        /// </remarks>
+        private static void ValidateSpawnPrefabId(SessionConfig config, string assetPath, List<string> failures) {
+            if (config.spawn == null || config.prefabRegistry == null) return;
+
+            int rowCount = config.prefabRegistry.entries?.Length ?? 0;
+            if (config.spawn.pawnPrefabId < rowCount) return;
+
+            failures.Add(
+                $"{assetPath}: SpawnPlacementConfig '{config.spawn.name}' spawns prefab id {config.spawn.pawnPrefabId} " +
+                $"but NetPrefabRegistry '{config.prefabRegistry.name}' has {rowCount} row(s); no player would get a body.");
+        }
+
+        /// <summary>
+        /// Checks that every spawn placement asset describes a placement that can actually be built.
+        /// </summary>
+        /// <remarks>
+        /// <c>SpawnPlacementConfig.ToPlacement</c> repairs both of these at runtime — an empty list falls
+        /// back to a ring, a seatless ring is clamped to one seat — because refusing to open a session is
+        /// worse than opening a wrong one. That repair is exactly why the mistake needs catching here
+        /// instead: in play it looks like the placement simply being ignored.
+        /// </remarks>
+        private static void ValidateSpawnPlacements(List<string> failures) {
+            foreach (string assetPath in FindAssetPaths("t:SpawnPlacementConfig")) {
+                var placementConfig = AssetDatabase.LoadAssetAtPath<SpawnPlacementConfig>(assetPath);
+                if (placementConfig == null) continue;
+
+                ValidateRingSettings(placementConfig, assetPath, failures);
+                ValidateListSettings(placementConfig, assetPath, failures);
+            }
+        }
+
+        private static void ValidateRingSettings(
+            SpawnPlacementConfig placementConfig, string assetPath, List<string> failures) {
+            if (placementConfig.ringSeats <= 0) {
+                failures.Add($"{assetPath}: ringSeats is {placementConfig.ringSeats}; a spawn ring needs at least one seat.");
+            }
+
+            if (placementConfig.ringRadius >= 0f) return;
+
+            failures.Add($"{assetPath}: ringRadius is {placementConfig.ringRadius:0.###}; a ring cannot have a negative radius.");
+        }
+
+        private static void ValidateListSettings(
+            SpawnPlacementConfig placementConfig, string assetPath, List<string> failures) {
+            if (placementConfig.placement != SpawnPlacementKind.List) return;
+            if (placementConfig.BuildSpawnPoints().Count > 0) return;
+
+            failures.Add($"{assetPath}: placement is List but no spawn points are authored; arrivals would fall back to a ring.");
         }
 
         /// <summary>

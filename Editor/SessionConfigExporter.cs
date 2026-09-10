@@ -20,8 +20,9 @@ namespace AlpineLib.Editor {
     /// keeps a single mapping: whatever the game runs with is exactly what the server is handed.
     /// </para>
     /// <para>
-    /// <b>Shape contract.</b> Two top-level objects, <c>net</c> and <c>session</c>, whose members are the
-    /// camel-cased property names of <see cref="NetConfig"/> and <see cref="SessionConfigData"/> — so the
+    /// <b>Shape contract.</b> Three top-level objects: <c>net</c> and <c>session</c>, whose members are
+    /// the camel-cased property names of <see cref="NetConfig"/> and <see cref="SessionConfigData"/>, and
+    /// <c>spawn</c>, whose members are the field names of <see cref="SpawnPlacementConfig"/> — so the
     /// server binds them with a camel-case naming policy and nothing else. Enumerations are written as
     /// their numeric values, which every reader accepts whether or not it registers a string-enum
     /// converter. Computed properties (intervals, max speeds) are deliberately absent: they are derived
@@ -83,6 +84,9 @@ namespace AlpineLib.Editor {
             builder.Append(",\n");
             builder.Append("  \"session\": ");
             AppendSessionConfig(builder, sessionData);
+            builder.Append(",\n");
+            builder.Append("  \"spawn\": ");
+            AppendSpawnConfig(builder, config.spawn);
             builder.Append("\n}\n");
 
             return builder.ToString();
@@ -227,6 +231,70 @@ namespace AlpineLib.Editor {
             AppendNumber(builder, "minPlayers", resolved.MinPlayers, 8);
             AppendNumber(builder, "maxPlayers", resolved.MaxPlayers, 8);
             AppendLastNumber(builder, "maxDurationSeconds", resolved.MaxDurationSeconds, 8);
+            AppendIndent(builder, 6);
+            builder.Append('}');
+        }
+
+        /// <summary>
+        /// Writes the spawn section, falling back to a throwaway asset's field initialisers when the
+        /// config authors none.
+        /// </summary>
+        /// <remarks>
+        /// The section is never omitted, because a server reading it is entitled to assume the build it
+        /// serves has an opinion about where players appear. Borrowing the defaults from a fresh
+        /// instance rather than repeating them here keeps <see cref="SpawnPlacementConfig"/> the one
+        /// place they are written down.
+        /// </remarks>
+        private static void AppendSpawnConfig(StringBuilder builder, SpawnPlacementConfig spawn) {
+            if (spawn != null) {
+                AppendSpawnFields(builder, spawn);
+                return;
+            }
+
+            var defaults = ScriptableObject.CreateInstance<SpawnPlacementConfig>();
+            AppendSpawnFields(builder, defaults);
+            Object.DestroyImmediate(defaults);
+        }
+
+        private static void AppendSpawnFields(StringBuilder builder, SpawnPlacementConfig spawn) {
+            builder.Append("{\n");
+            AppendNumber(builder, "pawnPrefabId", spawn.pawnPrefabId, 4);
+            AppendNumber(builder, "pawnAuthority", (int)spawn.pawnAuthority, 4);
+            AppendNumber(builder, "placement", (int)spawn.placement, 4);
+            AppendNumber(builder, "ringRadius", spawn.ringRadius, 4);
+            AppendNumber(builder, "ringSeats", spawn.ringSeats, 4);
+            AppendIndent(builder, 4);
+            builder.Append("\"points\": ");
+            AppendSpawnPoints(builder, spawn.points);
+            builder.Append("\n  }");
+        }
+
+        private static void AppendSpawnPoints(StringBuilder builder, SpawnPointEntry[] points) {
+            if (points == null || points.Length == 0) {
+                builder.Append("[]");
+                return;
+            }
+
+            builder.Append("[\n");
+
+            for (int pointIndex = 0; pointIndex < points.Length; pointIndex++) {
+                AppendSpawnPoint(builder, points[pointIndex]);
+                builder.Append(pointIndex < points.Length - 1 ? ",\n" : "\n");
+            }
+
+            AppendIndent(builder, 4);
+            builder.Append(']');
+        }
+
+        private static void AppendSpawnPoint(StringBuilder builder, SpawnPointEntry point) {
+            SpawnPointEntry resolved = point ?? new SpawnPointEntry();
+
+            AppendIndent(builder, 6);
+            builder.Append("{\n");
+            AppendNumber(builder, "x", resolved.position.x, 8);
+            AppendNumber(builder, "y", resolved.position.y, 8);
+            AppendNumber(builder, "z", resolved.position.z, 8);
+            AppendLastNumber(builder, "yawDegrees", resolved.yawDegrees, 8);
             AppendIndent(builder, 6);
             builder.Append('}');
         }

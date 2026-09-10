@@ -561,13 +561,17 @@ namespace AlpineLib.Sessions {
 
             if (server == null) return NetEndpoint.None;
 
+            SpawnPlacementConfig spawn = _config.spawn;
+
             _frontDesk = new ListenServerFrontDesk(
                 server,
                 _config.ToData(),
                 _netConfig,
                 new AnonymousAuthValidator(_config.defaultDisplayName),
                 CurrentCollisionWorld(),
-                pawnPrefabId: 0, pawnAuthority: AuthorityMode.Server, placement: new RingSpawnPlacement());
+                pawnPrefabId: spawn != null ? spawn.pawnPrefabId : SpawnPlacementConfig.DefaultPawnPrefabId,
+                pawnAuthority: spawn != null ? spawn.pawnAuthority : AuthorityMode.Server,
+                placement: spawn != null ? spawn.ToPlacement() : new RingSpawnPlacement());
 
             return LoopbackEndpoint();
         }
