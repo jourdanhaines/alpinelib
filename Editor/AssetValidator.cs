@@ -58,6 +58,7 @@ namespace AlpineLib.Editor {
             ValidatePrefabs(failures);
             ValidateScriptableObjects(failures);
             SessionConfigValidator.Validate(failures);
+            LocalServerConfigValidator.Validate(failures);
             ValidateScenes(failures);
 
             Report(failures);

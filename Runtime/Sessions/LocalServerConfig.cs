@@ -25,6 +25,10 @@ namespace AlpineLib.Sessions {
     /// exit — so a build that offers hosting must keep <see cref="idleExitSeconds"/> non-zero or a
     /// detached server has nothing left to reap it.
     /// </para>
+    /// <para>
+    /// The asking half is POSIX-only. A Windows child with redirected pipes and no shared console has
+    /// no portable signal, so <see cref="stopGraceSeconds"/> is inert there and a stop kills outright.
+    /// </para>
     /// </remarks>
     [CreateAssetMenu(fileName = "LocalServerConfig", menuName = "AlpineLib/Networking/Local Server Config")]
     public class LocalServerConfig : ScriptableObject {
@@ -74,7 +78,7 @@ namespace AlpineLib.Sessions {
         [Tooltip("Seconds with no players after which the server exits on its own, so a crashed client leaves nothing behind.")]
         public int idleExitSeconds = 30;
         [Min(0)]
-        [Tooltip("Seconds the server is given to close its sessions after a stop request before it is killed outright.")]
+        [Tooltip("Seconds the server is given to close its sessions after a stop request before it is killed outright. Ignored on Windows, where a child with redirected pipes has no portable way to be asked.")]
         public float stopGraceSeconds = 2f;
 
         /// <summary>The preferred port, forced into the range a socket can actually bind.</summary>

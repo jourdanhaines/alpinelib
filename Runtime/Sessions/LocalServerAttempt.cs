@@ -37,7 +37,15 @@ namespace AlpineLib.Sessions {
     /// Stopping asks before it insists. A dedicated server has a shutdown of its own — it tells every
     /// session it is closing and pumps until those notices are off the wire — and only <c>SIGTERM</c>
     /// reaches it; <c>SIGKILL</c> leaves the guests waiting out a transport timeout instead. So a stop
-    /// signals termination, waits out the configured grace, and kills only what is still standing.
+    /// signals termination, waits out the configured grace, and kills only what is still standing. The
+    /// group reap runs either way: a leader that took the hint can still leave a helper behind it.
+    /// Windows has no such asking, and is killed outright.
+    /// </para>
+    /// <para>
+    /// The waiting is the caller's choice. <see cref="Stop"/> holds the calling thread for the grace and
+    /// is for the endings where that thread is about to disappear anyway; <see cref="BeginStop"/> sends
+    /// the request and hands the grace to the thread pool, which is what a player leaving a session
+    /// wants — that caller is the Unity main thread and the wait is a visible freeze.
     /// </para>
     /// <para>
     /// <see cref="Detach"/> is the opposite ending: the attempt lets go of a server that is still
@@ -200,12 +208,18 @@ namespace AlpineLib.Sessions {
         }
 
         /// <summary>
-        /// Ends this attempt's server and settles anyone waiting on it. Idempotent, because the several
-        /// shutdown signals wired to it overlap.
+        /// Ends this attempt's server and settles anyone waiting on it, waiting out the grace on the
+        /// calling thread. Idempotent, because the several shutdown signals wired to it overlap.
         /// </summary>
         /// <remarks>
         /// The server is asked to shut down before it is killed, so the sessions it is holding are told
         /// they are closing. See <see cref="StopProcess"/> for what "asked" means per platform.
+        /// <para>
+        /// For the endings that cannot afford to return early — the application quitting, a domain
+        /// reload, this object being disposed — because the thread doing the killing is about to stop
+        /// existing. Anything else wants <see cref="BeginStop"/>: the wait here is the server's whole
+        /// shutdown, and on a Unity caller that is the main thread.
+        /// </para>
         /// </remarks>
         public void Stop() {
             if (!ClaimEnding(out bool hadProcess)) return;
@@ -215,6 +229,30 @@ namespace AlpineLib.Sessions {
             if (hadProcess) StopProcess();
 
             _process.Dispose();
+        }
+
+        /// <summary>
+        /// Ends this attempt's server without waiting for it to finish: the request goes out here, the
+        /// grace and the kill behind it happen on a pool thread.
+        /// </summary>
+        /// <remarks>
+        /// For a player leaving a session, where the caller is the Unity main thread and the wait would
+        /// be a visible freeze — a real server takes a few hundred milliseconds to close its sessions,
+        /// and one that ignores the request costs the whole grace. Nothing races the next launch: the
+        /// launcher has already let go of this attempt by the time the reap runs, and a new one gets a
+        /// new attempt with its own process.
+        /// </remarks>
+        public void BeginStop() {
+            if (!ClaimEnding(out bool hadProcess)) return;
+
+            ReleaseProcess();
+
+            if (!hadProcess) {
+                _process.Dispose();
+                return;
+            }
+
+            ScheduleDeferredStop(TrySignalTermination() ? _stopGraceMilliseconds : 0);
         }
 
         /// <summary>
@@ -370,33 +408,72 @@ namespace AlpineLib.Sessions {
 
         /// <summary>Asks the server to end itself, then kills whatever is left when the grace runs out.</summary>
         /// <remarks>
-        /// The kill runs even for a process that has already exited, because "the server is gone" and
-        /// "the launch is cleaned up" are different things: a server that forked a helper and exited
-        /// leaves that helper holding the port, and the group is the only handle left on it.
+        /// The group reap runs on both paths, including for a leader that took the hint and for one that
+        /// had already exited, because "the server is gone" and "the launch is cleaned up" are different
+        /// things: a server that forked a helper leaves that helper holding the port whether it exited
+        /// politely or not, and the group is the only handle left on it. Only the single-pid escalation
+        /// is skipped, and only for a leader that is provably gone.
         /// </remarks>
         private void StopProcess() {
-            if (RequestGracefulStop()) return;
+            bool ended = RequestGracefulStop();
 
             KillProcessGroup();
+
+            if (ended) return;
+
             KillProcess();
             WaitForExit(StopWaitMilliseconds);
+        }
+
+        /// <summary>Finishes a <see cref="BeginStop"/> once its grace has run out. Runs on a pool thread.</summary>
+        private void CompleteDeferredStop() {
+            KillProcessGroup();
+            KillSurvivingProcess();
+            _process.Dispose();
+        }
+
+        /// <summary>Kills the leader, unless the grace already ended it.</summary>
+        private void KillSurvivingProcess() {
+            if (HasProcessExited()) return;
+
+            KillProcess();
+            WaitForExit(StopWaitMilliseconds);
+        }
+
+        /// <summary>Hands the grace and the kill behind it to the thread pool.</summary>
+        /// <remarks>
+        /// A timer rather than a spare thread: the wait is idle, it is up to
+        /// <see cref="LocalServerConfig.MaximumStopGraceSeconds"/> long, and a leave must be free to
+        /// happen twice in a row without paying for a thread each time. The continuation is not
+        /// synchronous, so the kill never runs on the timer's own thread.
+        /// </remarks>
+        private void ScheduleDeferredStop(int graceMilliseconds) {
+            Task.Delay(graceMilliseconds).ContinueWith(
+                graceElapsed => CompleteDeferredStop(),
+                CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
         }
 
         /// <summary>
         /// Sends <c>SIGTERM</c> and waits out the grace, and reports whether the server took the hint.
         /// </summary>
+        private bool RequestGracefulStop() {
+            if (!TrySignalTermination()) return false;
+
+            return WaitForExit(_stopGraceMilliseconds);
+        }
+
+        /// <summary>Asks the server to shut itself down, and reports whether a grace is worth waiting.</summary>
         /// <remarks>
         /// The signal is what reaches the dedicated server's own shutdown — closing every session it
         /// holds and pumping until those notices are off the wire — and <c>SIGKILL</c> reaches none of
         /// it. Windows has no portable equivalent for a child with redirected pipes and no shared
-        /// console, so it always answers false and the kill below is the whole story there.
+        /// console, so it always answers false and the kill is the whole story there.
         /// </remarks>
-        private bool RequestGracefulStop() {
+        private bool TrySignalTermination() {
             if (_stopGraceMilliseconds <= 0) return false;
             if (LocalServerPaths.IsWindows()) return false;
-            if (!SignalTermination()) return false;
 
-            return WaitForExit(_stopGraceMilliseconds);
+            return SignalTermination();
         }
 
         /// <summary>Terminates the whole group when one is known, and the tracked pid alone otherwise.</summary>
@@ -466,13 +543,17 @@ namespace AlpineLib.Sessions {
         /// therefore takes two answers, not one. The process handle says the child this attempt started
         /// really has ended — a libc that merely will not talk about it does not count — and a pid that
         /// no longer resolves to any group says the name has not since been handed to a stranger.
+        /// <para>
+        /// Whether the leader has exited is asked first, ahead of the group this attempt cached while it
+        /// was alive. The cached answer always equals the tracked pid, so nothing is lost for a live
+        /// server; for a dead one the cache is exactly what must not be trusted, because a recycled pid
+        /// leading somebody else's group answers a bare existence probe the same way this attempt's own
+        /// helpers do.
+        /// </para>
         /// </remarks>
         private int CandidateProcessGroup() {
-            int verified = ResolveProcessGroup();
-
-            if (verified != NoProcessGroup) return verified;
             if (!_leadsOwnProcessGroup) return NoProcessGroup;
-            if (!HasProcessExited()) return NoProcessGroup;
+            if (!HasProcessExited()) return ResolveProcessGroup();
 
             int processId = CurrentProcessId();
 

@@ -1272,6 +1272,13 @@ namespace AlpineLib.Sessions {
         }
 
         /// <summary>Ends the session's hold on a launched server, by detaching it or by stopping it.</summary>
+        /// <remarks>
+        /// A leave does not wait for the server to finish shutting down. This runs on the Unity main
+        /// thread, and the grace is the server closing its sessions and draining — a few hundred
+        /// milliseconds for a healthy one, the whole budget for a wedged one, and either is a freeze the
+        /// player sees. Only a shutdown blocks, because the thread that would do the killing is itself
+        /// about to stop existing.
+        /// </remarks>
         private void ReleaseLocalServer(bool detach) {
             if (_localServer == null) return;
 
@@ -1280,7 +1287,12 @@ namespace AlpineLib.Sessions {
                 return;
             }
 
-            _localServer.Stop();
+            if (_isShuttingDown) {
+                _localServer.Stop();
+                return;
+            }
+
+            _localServer.BeginStop();
         }
 
         private string ResolveProfileId() {

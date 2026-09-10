@@ -135,17 +135,27 @@ namespace AlpineLib.Sessions {
         /// A start still waiting on readiness ends here too, and ends promptly: the attempt settles its
         /// own promise as it dies, so a host request abandoned by teardown or by leaving play mode
         /// reports failure at once rather than after the whole readiness budget.
+        /// <para>
+        /// Holds the calling thread while the server closes its sessions, so it is for the endings that
+        /// have to finish before this process does: quitting, a domain reload, leaving play mode and
+        /// <see cref="Dispose"/>. A leave wants <see cref="BeginStop"/> instead.
+        /// </para>
         /// </remarks>
         public void Stop() {
-            LocalServerAttempt attempt;
+            TakeAttempt()?.Stop();
+        }
 
-            lock (_gate) {
-                attempt = _attempt;
-                _attempt = null;
-                _endpoint = NetEndpoint.None;
-            }
-
-            attempt?.Stop();
+        /// <summary>
+        /// Ends the server the way <see cref="Stop"/> does, but without waiting for it to finish.
+        /// </summary>
+        /// <remarks>
+        /// The launcher lets go of the attempt here, so a host started straight afterwards is a new
+        /// attempt with its own process and the reap still running behind it cannot reach it. The old
+        /// server may not have released its port by then; <see cref="StartAsync"/>'s ephemeral retry is
+        /// what covers that.
+        /// </remarks>
+        public void BeginStop() {
+            TakeAttempt()?.BeginStop();
         }
 
         /// <summary>
@@ -159,15 +169,23 @@ namespace AlpineLib.Sessions {
         /// detached is reusable: the next start simply spawns a new server.
         /// </remarks>
         public void Detach() {
-            LocalServerAttempt attempt;
+            TakeAttempt()?.Detach();
+        }
 
+        /// <summary>Hands the live attempt over to one ending, leaving the launcher with nothing.</summary>
+        /// <remarks>
+        /// The endpoint goes with it. A launcher that has given up its attempt reports no address at
+        /// all, rather than one belonging to a server that is being killed or has been let go.
+        /// </remarks>
+        private LocalServerAttempt TakeAttempt() {
             lock (_gate) {
-                attempt = _attempt;
+                LocalServerAttempt attempt = _attempt;
+
                 _attempt = null;
                 _endpoint = NetEndpoint.None;
-            }
 
-            attempt?.Detach();
+                return attempt;
+            }
         }
 
         /// <inheritdoc />
