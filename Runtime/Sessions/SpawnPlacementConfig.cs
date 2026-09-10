@@ -37,8 +37,10 @@ namespace AlpineLib.Sessions {
         public SpawnPlacementKind placement = SpawnPlacementKind.Ring;
 
         [Header("Ring")]
+        [Min(0f)]
         [Tooltip("How far from the origin the ring's seats sit, in metres.")]
         public float ringRadius = RingSpawnPlacement.DefaultRadiusMetres;
+        [Min(1)]
         [Tooltip("Seats on the ring before positions repeat. Usually the lobby capacity.")]
         public int ringSeats = RingSpawnPlacement.DefaultSeats;
 
@@ -50,9 +52,18 @@ namespace AlpineLib.Sessions {
         /// Builds the placement this asset describes.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// A list placement with no authored points falls back to a ring rather than throwing: the asset
         /// is usually switched to List before the markers have been placed, and a session that opens on
         /// a ring is far easier to diagnose than one that refuses to open at all.
+        /// </para>
+        /// <para>
+        /// <b>Shared repair rule.</b> A seat count below one becomes
+        /// <see cref="RingSpawnPlacement.DefaultSeats"/>, never one seat, because the dedicated server
+        /// repairs the same field the same way in <c>SpawnSettings.CreatePlacement</c>. Any other rule
+        /// here would seat a listen host's players differently from the same build's dedicated server,
+        /// which is precisely what one shared asset exists to prevent.
+        /// </para>
         /// </remarks>
         public ISpawnPlacement ToPlacement() {
             if (placement != SpawnPlacementKind.List) return BuildRingPlacement();
@@ -84,7 +95,8 @@ namespace AlpineLib.Sessions {
         }
 
         private RingSpawnPlacement BuildRingPlacement() {
-            return new RingSpawnPlacement(ringRadius, Mathf.Max(1, ringSeats));
+            return new RingSpawnPlacement(
+                ringRadius, ringSeats < 1 ? RingSpawnPlacement.DefaultSeats : ringSeats);
         }
     }
 }

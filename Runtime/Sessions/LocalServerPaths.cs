@@ -22,7 +22,12 @@ namespace AlpineLib.Sessions {
         /// <summary>Folder the server reads its exported session and scene configuration from.</summary>
         public const string ConfigFolderName = "config";
 
-        private const string WindowsExecutableExtension = ".exe";
+        /// <summary>Extension a published server carries on Windows and on no other platform.</summary>
+        /// <remarks>
+        /// Public because the build step has to check for the same file the launcher will later run, and
+        /// a second copy of ".exe" in the editor assembly is a second thing to keep in step.
+        /// </remarks>
+        public const string WindowsExecutableExtension = ".exe";
 
         /// <summary>
         /// Levels between a macOS player's data path and the folder the <c>.app</c> bundle sits in.

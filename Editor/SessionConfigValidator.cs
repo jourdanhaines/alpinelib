@@ -13,8 +13,9 @@ namespace AlpineLib.Editor {
     /// Networking-specific asset checks that no single asset can make about itself: match ids that
     /// collide inside one session config, a lobby that seats more players than the session profile
     /// admits, movement profiles that have drifted away from the stats the game actually moves with,
-    /// collision capsules that describe a shape the shared motor cannot step with, and scenes a session
-    /// can load but no exported geometry covers.
+    /// collision capsules that describe a shape the shared motor cannot step with, scenes a session can
+    /// load but no exported geometry covers, and a server bundle that would copy a server the launcher
+    /// beside it will not look for.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -72,6 +73,7 @@ namespace AlpineLib.Editor {
             ValidateSessionConfigs(failures);
             ValidatePrefabRegistries(failures);
             ValidateSpawnPlacements(failures);
+            ValidateServerBundles(failures);
         }
 
         private static void ValidateSessionConfigs(List<string> failures) {
@@ -148,18 +150,38 @@ namespace AlpineLib.Editor {
         /// Checks that the pawn a session spawns is a row its prefab registry actually has.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// The prefab id is an index into the registry, and an index past the end is silent on the
         /// server — the spawn message goes out naming a prefab no client can resolve, so every player
         /// joins into a world where nobody, themselves included, has a body.
+        /// </para>
+        /// <para>
+        /// A config with no spawn asset is checked too, against the default id every hosting path falls
+        /// back to. That is the state every project is in before it adopts a spawn config, and it is the
+        /// one most likely to be wrong — but it is only a warning, because a project whose registry is
+        /// still empty may simply not host yet, and a build gate should not stop it.
+        /// </para>
         /// </remarks>
         private static void ValidateSpawnPrefabId(SessionConfig config, string assetPath, List<string> failures) {
-            if (config.spawn == null || config.prefabRegistry == null) return;
+            if (config.prefabRegistry == null) return;
 
-            int rowCount = config.prefabRegistry.entries?.Length ?? 0;
-            if (config.spawn.pawnPrefabId < rowCount) return;
+            int rowCount = config.prefabRegistry.Count;
+            ushort prefabId = config.spawn != null
+                ? config.spawn.pawnPrefabId
+                : SpawnPlacementConfig.DefaultPawnPrefabId;
+
+            if (prefabId < rowCount) return;
+
+            if (config.spawn == null) {
+                Debug.LogWarning(
+                    $"{logPrefix}: {assetPath}: SessionConfig names no SpawnPlacementConfig, so every host spawns " +
+                    $"prefab id {prefabId}, which NetPrefabRegistry '{config.prefabRegistry.name}' has no row for " +
+                    "(it has none at all); nobody would get a body. Author a spawn config, or add the pawn row.");
+                return;
+            }
 
             failures.Add(
-                $"{assetPath}: SpawnPlacementConfig '{config.spawn.name}' spawns prefab id {config.spawn.pawnPrefabId} " +
+                $"{assetPath}: SpawnPlacementConfig '{config.spawn.name}' spawns prefab id {prefabId} " +
                 $"but NetPrefabRegistry '{config.prefabRegistry.name}' has {rowCount} row(s); no player would get a body.");
         }
 
@@ -168,9 +190,9 @@ namespace AlpineLib.Editor {
         /// </summary>
         /// <remarks>
         /// <c>SpawnPlacementConfig.ToPlacement</c> repairs both of these at runtime — an empty list falls
-        /// back to a ring, a seatless ring is clamped to one seat — because refusing to open a session is
-        /// worse than opening a wrong one. That repair is exactly why the mistake needs catching here
-        /// instead: in play it looks like the placement simply being ignored.
+        /// back to a ring, a seatless ring takes the default seat count — because refusing to open a
+        /// session is worse than opening a wrong one. That repair is exactly why the mistake needs
+        /// catching here instead: in play it looks like the placement simply being ignored.
         /// </remarks>
         private static void ValidateSpawnPlacements(List<string> failures) {
             foreach (string assetPath in FindAssetPaths("t:SpawnPlacementConfig")) {
@@ -185,12 +207,16 @@ namespace AlpineLib.Editor {
         private static void ValidateRingSettings(
             SpawnPlacementConfig placementConfig, string assetPath, List<string> failures) {
             if (placementConfig.ringSeats <= 0) {
-                failures.Add($"{assetPath}: ringSeats is {placementConfig.ringSeats}; a spawn ring needs at least one seat.");
+                failures.Add(
+                    $"{assetPath}: ringSeats is {placementConfig.ringSeats}; a spawn ring needs at least one seat, " +
+                    "and a list placement falls back to the ring when its points are missing.");
             }
 
             if (placementConfig.ringRadius >= 0f) return;
 
-            failures.Add($"{assetPath}: ringRadius is {placementConfig.ringRadius:0.###}; a ring cannot have a negative radius.");
+            failures.Add(
+                $"{assetPath}: ringRadius is {placementConfig.ringRadius:0.###}; a ring cannot have a negative " +
+                "radius, and a list placement falls back to the ring when its points are missing.");
         }
 
         private static void ValidateListSettings(
@@ -199,6 +225,103 @@ namespace AlpineLib.Editor {
             if (placementConfig.BuildSpawnPoints().Count > 0) return;
 
             failures.Add($"{assetPath}: placement is List but no spawn points are authored; arrivals would fall back to a ring.");
+        }
+
+        /// <summary>
+        /// Checks that every enabled server bundle names everything the post-build step needs, and that
+        /// it names the same server the launcher will look for.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The publish folder itself is deliberately not checked here. It is produced by a command-line
+        /// step that usually runs after the assets are authored and often on a different machine, so a
+        /// missing one is a build-time fact — <c>ServerBundleBuildStep</c> fails on it — not an authoring
+        /// mistake. What is checked is everything that is wrong in the asset no matter when anybody
+        /// builds.
+        /// </para>
+        /// <para>
+        /// A disabled bundle is skipped entirely: switching the flag off is how a project states that
+        /// this build ships no server, and a half-filled asset behind that flag is not a fault.
+        /// </para>
+        /// </remarks>
+        private static void ValidateServerBundles(List<string> failures) {
+            foreach (string assetPath in FindAssetPaths("t:ServerBundleConfig")) {
+                var bundle = AssetDatabase.LoadAssetAtPath<ServerBundleConfig>(assetPath);
+                if (bundle == null) continue;
+                if (!bundle.enabled) continue;
+
+                ValidateBundleSource(bundle, assetPath, failures);
+                ValidateBundleLauncher(bundle, assetPath, failures);
+                ValidateBundleSessionConfig(bundle, assetPath, failures);
+            }
+        }
+
+        /// <remarks>
+        /// The three runtime identifiers are checked together rather than one at a time: a project that
+        /// ships one platform leaves the other two blank on purpose, and only an asset with none of them
+        /// filled in can never bundle anything.
+        /// </remarks>
+        private static void ValidateBundleSource(
+            ServerBundleConfig bundle, string assetPath, List<string> failures) {
+            if (string.IsNullOrWhiteSpace(bundle.publishedServerRoot)) {
+                failures.Add($"{assetPath}: ServerBundleConfig is enabled but names no published server root.");
+            }
+
+            if (string.IsNullOrWhiteSpace(bundle.executableName)) {
+                failures.Add($"{assetPath}: ServerBundleConfig is enabled but names no server executable.");
+            }
+
+            if (HasAnyRuntimeIdentifier(bundle)) return;
+
+            failures.Add(
+                $"{assetPath}: ServerBundleConfig names no runtime identifier for any platform; no standalone build " +
+                "could find a publish to copy.");
+        }
+
+        private static bool HasAnyRuntimeIdentifier(ServerBundleConfig bundle) {
+            return !string.IsNullOrWhiteSpace(bundle.windowsRuntimeIdentifier)
+                || !string.IsNullOrWhiteSpace(bundle.linuxRuntimeIdentifier)
+                || !string.IsNullOrWhiteSpace(bundle.macRuntimeIdentifier);
+        }
+
+        /// <summary>
+        /// Checks that the bundle and the launcher agree about the copied server.
+        /// </summary>
+        /// <remarks>
+        /// They meet at two values: the folder the server is copied into, which the bundle reads off the
+        /// launcher's asset, and the executable's name, which is authored on both. A build with either
+        /// out of step copies a working server into a place the player will not look, and the only
+        /// symptom is hosting failing in a shipped build.
+        /// </remarks>
+        private static void ValidateBundleLauncher(
+            ServerBundleConfig bundle, string assetPath, List<string> failures) {
+            if (bundle.localServer == null) {
+                failures.Add(
+                    $"{assetPath}: ServerBundleConfig names no LocalServerConfig, so it would copy the server into " +
+                    $"'{ServerBundleConfig.DefaultBundleFolderName}' without anything confirming that is where the " +
+                    "player looks.");
+                return;
+            }
+
+            if (bundle.localServer.executableName == bundle.executableName) return;
+
+            failures.Add(
+                $"{assetPath}: ServerBundleConfig bundles '{bundle.executableName}' but LocalServerConfig " +
+                $"'{bundle.localServer.name}' launches '{bundle.localServer.executableName}'; the copied server " +
+                "would never be found.");
+        }
+
+        /// <remarks>
+        /// Without a session config the bundled server runs on library defaults — a different port, a
+        /// different tick rate and a different lobby from the build standing next to it.
+        /// </remarks>
+        private static void ValidateBundleSessionConfig(
+            ServerBundleConfig bundle, string assetPath, List<string> failures) {
+            if (bundle.sessionConfig != null) return;
+
+            failures.Add(
+                $"{assetPath}: ServerBundleConfig names no SessionConfig; the bundled server would run on library " +
+                "defaults rather than this build's settings.");
         }
 
         /// <summary>

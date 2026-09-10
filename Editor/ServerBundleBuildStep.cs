@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using AlpineLib.Sessions;
 using UnityEditor;
@@ -24,6 +25,14 @@ namespace AlpineLib.Editor {
     /// of truth that nothing checks.
     /// </para>
     /// <para>
+    /// <b>Failure policy.</b> Every state that would ship a player unable to host fails the build: two
+    /// bundle configs, a publish folder that is not there, and a copy that did not land the executable
+    /// the launcher will run. The two states that are a deliberate choice — no bundle config at all, and
+    /// one whose <c>enabled</c> flag is off — log a line and return, because a build with no server in
+    /// it is an ordinary thing to want and silence is what makes the missing <c>Server</c> folder a
+    /// mystery afterwards.
+    /// </para>
+    /// <para>
     /// Runs late (order 100) so any step that rearranges the player's own output has already finished
     /// and <c>outputPath</c>'s folder is final.
     /// </para>
@@ -31,7 +40,6 @@ namespace AlpineLib.Editor {
     public class ServerBundleBuildStep : IPostprocessBuildWithReport {
         private const string logPrefix = "[AlpineLib] ServerBundleBuildStep";
         private const string geometryFolderName = "geometry";
-        private const string geometrySearchPattern = "*.geo";
 
         /// <summary>Runs after the player's own post-build steps, so the output folder is settled.</summary>
         public int callbackOrder => 100;
@@ -43,19 +51,26 @@ namespace AlpineLib.Editor {
 
             ServerBundleConfig config = ResolveConfig();
             if (config == null) return;
-            if (!config.enabled) return;
 
-            string sourceDirectory = ResolveProjectPath(config.publishedServerDirectory);
-            if (!Directory.Exists(sourceDirectory)) {
-                throw new BuildFailedException(
-                    $"{logPrefix}: '{config.name}' publishes from '{config.publishedServerDirectory}', which does not " +
-                    "exist. Publish the server before building, or clear the asset's enabled flag.");
+            if (!config.enabled) {
+                Debug.Log(
+                    $"{logPrefix}: '{config.name}' is disabled; this build ships no server and cannot host on its own.");
+                return;
             }
 
+            BundleServer(report, config);
+        }
+
+        /// <summary>Copies the platform's publish, then writes the config the copied server reads.</summary>
+        private static void BundleServer(BuildReport report, ServerBundleConfig config) {
+            string runtimeIdentifier = ResolveRuntimeIdentifier(report.summary.platform, config);
+            string relativeSource = config.ResolvePublishedDirectory(runtimeIdentifier);
+            string sourceDirectory = RequirePublishedDirectory(config, relativeSource, report.summary.platform);
             string destination = ResolveDestination(report, config);
 
             WarnOnExecutableMismatch(config);
-            CopyDirectory(sourceDirectory, destination);
+            ReplaceDirectory(config, sourceDirectory, destination);
+            RequireBundledExecutable(config, destination, report.summary.platform, relativeSource);
 
             string configDirectory = Path.Combine(destination, LocalServerPaths.ConfigFolderName);
             Directory.CreateDirectory(configDirectory);
@@ -64,32 +79,106 @@ namespace AlpineLib.Editor {
             int geometryCount = CopyGeometry(config, configDirectory);
 
             Debug.Log(
-                $"{logPrefix}: bundled '{config.publishedServerDirectory}' into '{destination}' with " +
-                $"{geometryCount} geometry file(s).");
+                $"{logPrefix}: bundled '{relativeSource}' into '{destination}' with {geometryCount} geometry file(s).");
         }
 
         /// <summary>
         /// The project's single server bundle config, or null when the project ships no server.
         /// </summary>
         /// <remarks>
-        /// More than one is an error rather than a choice: the destination folder is fixed by the
-        /// launcher, so a second asset would only overwrite the first and the build would depend on
-        /// which order the asset database happened to return them in.
+        /// More than one fails the build rather than picking one: the destination folder is fixed by the
+        /// launcher, so a second asset would only overwrite the first and which one won would depend on
+        /// the order the asset database happened to return them in.
         /// </remarks>
         private static ServerBundleConfig ResolveConfig() {
             string[] assetGuids = AssetDatabase.FindAssets("t:ServerBundleConfig");
 
-            if (assetGuids.Length == 0) return null;
+            if (assetGuids.Length == 0) {
+                Debug.Log($"{logPrefix}: the project has no ServerBundleConfig; no server was bundled.");
+                return null;
+            }
 
             if (assetGuids.Length > 1) {
-                Debug.LogError(
+                throw new BuildFailedException(
                     $"{logPrefix}: the project has {assetGuids.Length} ServerBundleConfig assets and they would all " +
-                    "copy into the same folder; no server was bundled.");
-                return null;
+                    "copy into the same folder. Delete or disable all but one.");
             }
 
             string assetPath = AssetDatabase.GUIDToAssetPath(assetGuids[0]);
             return AssetDatabase.LoadAssetAtPath<ServerBundleConfig>(assetPath);
+        }
+
+        /// <summary>
+        /// The runtime identifier folder published for the platform being built.
+        /// </summary>
+        /// <remarks>
+        /// A .NET publish is per runtime identifier, so this is what stops a Windows player being handed
+        /// the Linux publish. An unmapped standalone target fails rather than guessing: guessing means
+        /// shipping binaries for another operating system with nothing in the build output saying so.
+        /// </remarks>
+        private static string ResolveRuntimeIdentifier(BuildTarget platform, ServerBundleConfig config) {
+            string runtimeIdentifier = ReadRuntimeIdentifier(platform, config);
+
+            if (!string.IsNullOrWhiteSpace(runtimeIdentifier)) return runtimeIdentifier.Trim();
+
+            throw new BuildFailedException(
+                $"{logPrefix}: '{config.name}' names no published runtime identifier for build target " +
+                $"'{platform}'; fill the matching field in, or clear the asset's enabled flag.");
+        }
+
+        private static string ReadRuntimeIdentifier(BuildTarget platform, ServerBundleConfig config) {
+            switch (platform) {
+                case BuildTarget.StandaloneWindows:
+                case BuildTarget.StandaloneWindows64:
+                    return config.windowsRuntimeIdentifier;
+                case BuildTarget.StandaloneLinux64:
+                    return config.linuxRuntimeIdentifier;
+                case BuildTarget.StandaloneOSX:
+                    return config.macRuntimeIdentifier;
+                default:
+                    return null;
+            }
+        }
+
+        /// <summary>The absolute publish directory, failing the build when the platform has none.</summary>
+        private static string RequirePublishedDirectory(
+            ServerBundleConfig config, string relativeSource, BuildTarget platform) {
+            string sourceDirectory = ResolveProjectPath(relativeSource);
+
+            if (Directory.Exists(sourceDirectory)) return sourceDirectory;
+
+            throw new BuildFailedException(
+                $"{logPrefix}: '{config.name}' publishes '{platform}' from '{relativeSource}', which does not exist. " +
+                "Publish the server for that runtime identifier before building, or clear the asset's enabled flag.");
+        }
+
+        /// <summary>
+        /// Checks that the copy landed the file the launcher will try to run.
+        /// </summary>
+        /// <remarks>
+        /// The one check that covers every way this step can otherwise succeed and still ship a build
+        /// that cannot host: a publish folder holding some other platform's output, a publish holding
+        /// something else entirely, and an executable name that no longer matches what is published.
+        /// </remarks>
+        private static void RequireBundledExecutable(
+            ServerBundleConfig config, string destination, BuildTarget platform, string relativeSource) {
+            string fileName = ResolveExecutableFileName(config, platform);
+
+            if (File.Exists(Path.Combine(destination, fileName))) return;
+
+            throw new BuildFailedException(
+                $"{logPrefix}: '{relativeSource}' holds no '{fileName}' for build target '{platform}'; what was " +
+                "copied is not a server the launcher could run. Check the publish's runtime identifier and the " +
+                $"asset's executable name ('{config.executableName}').");
+        }
+
+        /// <summary>The published server's file name, <c>.exe</c> included for a Windows target.</summary>
+        private static string ResolveExecutableFileName(ServerBundleConfig config, BuildTarget platform) {
+            bool isWindows = platform == BuildTarget.StandaloneWindows || platform == BuildTarget.StandaloneWindows64;
+
+            if (!isWindows) return config.executableName;
+
+            return config.executableName + LocalServerPaths.WindowsExecutableExtension;
         }
 
         /// <summary>
@@ -147,13 +236,35 @@ namespace AlpineLib.Editor {
             string geometryDirectory = Path.Combine(configDirectory, geometryFolderName);
             Directory.CreateDirectory(geometryDirectory);
 
-            string[] geometryFiles = Directory.GetFiles(sourceDirectory, geometrySearchPattern);
+            return CopyGeometryFiles(sourceDirectory, geometryDirectory);
+        }
 
-            foreach (string geometryFile in geometryFiles) {
+        /// <summary>
+        /// Copies the exported geometry, matching the extension exactly.
+        /// </summary>
+        /// <remarks>
+        /// The files are filtered rather than searched for by pattern: a three-character extension in a
+        /// search pattern also matches longer ones on Windows, so a stray <c>.geometry</c> file would be
+        /// shipped as geometry the server cannot read.
+        /// </remarks>
+        private static int CopyGeometryFiles(string sourceDirectory, string geometryDirectory) {
+            int copied = 0;
+
+            foreach (string geometryFile in Directory.GetFiles(sourceDirectory)) {
+                if (!IsGeometryFile(geometryFile)) continue;
+
                 File.Copy(geometryFile, Path.Combine(geometryDirectory, Path.GetFileName(geometryFile)), true);
+                copied++;
             }
 
-            return geometryFiles.Length;
+            return copied;
+        }
+
+        private static bool IsGeometryFile(string filePath) {
+            return string.Equals(
+                Path.GetExtension(filePath),
+                SceneGeometryExporter.GeometryFileExtension,
+                StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>Turns a project-relative path into an absolute one, leaving absolute paths alone.</summary>
@@ -165,7 +276,60 @@ namespace AlpineLib.Editor {
             return Path.GetFullPath(Path.Combine(projectRoot, relativePath));
         }
 
-        /// <summary>Copies a directory tree, overwriting whatever a previous build left behind.</summary>
+        /// <summary>
+        /// Replaces the bundle folder with a fresh copy of the publish.
+        /// </summary>
+        /// <remarks>
+        /// The bundle folder is emptied first and nothing outside it is ever touched. Merging into it
+        /// instead leaves a previous build's renamed executable, another runtime identifier's native
+        /// libraries and geometry for scenes that no longer exist sitting exactly where the server's
+        /// probe will find them.
+        /// </remarks>
+        private static void ReplaceDirectory(ServerBundleConfig config, string sourceDirectory, string destination) {
+            RequireSeparatePaths(config, sourceDirectory, destination);
+
+            if (Directory.Exists(destination)) {
+                Directory.Delete(destination, true);
+            }
+
+            CopyDirectory(sourceDirectory, destination);
+        }
+
+        /// <summary>
+        /// Refuses a source and destination where either contains the other.
+        /// </summary>
+        /// <remarks>
+        /// Building the player into the publish root, or publishing into the build folder, makes one a
+        /// child of the other — which would either delete the source before copying it or copy a folder
+        /// into itself until the path length gives out. Neither is recoverable by carrying on.
+        /// </remarks>
+        private static void RequireSeparatePaths(
+            ServerBundleConfig config, string sourceDirectory, string destination) {
+            string source = WithTrailingSeparator(sourceDirectory);
+            string target = WithTrailingSeparator(destination);
+
+            if (!target.StartsWith(source, StringComparison.Ordinal)
+                && !source.StartsWith(target, StringComparison.Ordinal)) {
+                return;
+            }
+
+            throw new BuildFailedException(
+                $"{logPrefix}: '{config.name}' would copy '{sourceDirectory}' into '{destination}', which is inside " +
+                "it (or contains it). Build the player outside the publish folder, or publish outside the build " +
+                "folder.");
+        }
+
+        /// <summary>A full path that always ends in a separator, so one folder cannot prefix another.</summary>
+        private static string WithTrailingSeparator(string path) {
+            string fullPath = Path.GetFullPath(path);
+            string separator = Path.DirectorySeparatorChar.ToString();
+
+            if (fullPath.EndsWith(separator, StringComparison.Ordinal)) return fullPath;
+
+            return fullPath + separator;
+        }
+
+        /// <summary>Copies a directory tree into an emptied destination.</summary>
         private static void CopyDirectory(string sourceDirectory, string destinationDirectory) {
             Directory.CreateDirectory(destinationDirectory);
 

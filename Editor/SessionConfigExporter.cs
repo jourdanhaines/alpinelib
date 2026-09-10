@@ -252,8 +252,14 @@ namespace AlpineLib.Editor {
             }
 
             var defaults = ScriptableObject.CreateInstance<SpawnPlacementConfig>();
-            AppendSpawnFields(builder, defaults);
-            Object.DestroyImmediate(defaults);
+
+            // Destroyed in a finally: an export that throws part-way through is already a build failure,
+            // and a leaked instance would add a "cleaning up leaked objects" line on top of the real one.
+            try {
+                AppendSpawnFields(builder, defaults);
+            } finally {
+                Object.DestroyImmediate(defaults);
+            }
         }
 
         private static void AppendSpawnFields(StringBuilder builder, SpawnPlacementConfig spawn) {

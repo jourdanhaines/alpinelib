@@ -49,9 +49,18 @@ namespace AlpineLib.Server.Sessions.Spawning {
         /// carries the seat counter of the one session it belongs to.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// A list placement with no points falls back to a ring rather than throwing: an export whose
         /// points were forgotten should seat players somewhere reasonable and be visible in a log, not
         /// stop the server from accepting anybody.
+        /// </para>
+        /// <para>
+        /// <b>Shared repair rule.</b> A seat count below one becomes
+        /// <see cref="RingSpawnPlacement.DefaultSeats"/>. The Unity-side twin of this type,
+        /// <c>SpawnPlacementConfig.ToPlacement</c>, repairs the same exported field the same way — the
+        /// two have to, or a listen host and a dedicated server built from one asset would seat their
+        /// players on rings of different sizes.
+        /// </para>
         /// </remarks>
         public ISpawnPlacement CreatePlacement() {
             if (Placement != SpawnPlacementKind.List || Points == null || Points.Count == 0) {
