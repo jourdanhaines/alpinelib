@@ -222,7 +222,13 @@ namespace AlpineLib.Editor {
             return scenePaths;
         }
 
-        private static bool IsValidatedPath(string assetPath) {
+        /// <summary>The two roots this gate covers: the project's own assets and the library package.</summary>
+        /// <remarks>
+        /// Shared with the passes that reach the AssetDatabase by type filter rather than by path, so
+        /// none of them can fail a build over a sample asset shipped by a package the project has no way
+        /// to edit.
+        /// </remarks>
+        internal static bool IsValidatedPath(string assetPath) {
             if (assetPath.StartsWith("Assets/", StringComparison.Ordinal)) return true;
 
             return assetPath.StartsWith(libraryPackagePath + "/", StringComparison.Ordinal);

@@ -690,7 +690,7 @@ namespace AlpineLib.Editor {
             return property.objectReferenceValue;
         }
 
-        private static List<string> FindAssetPaths(string filter) {
+        internal static List<string> FindAssetPaths(string filter) {
             var assetPaths = new List<string>();
 
             foreach (string assetGuid in AssetDatabase.FindAssets(filter)) {

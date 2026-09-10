@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using AlpineLib.Sessions;
 using UnityEditor;
@@ -12,16 +13,16 @@ namespace AlpineLib.Editor {
     /// <para>
     /// Separate from <see cref="AssetValidator"/>'s critical-field table because none of these is an
     /// empty reference — every field is filled in, with a value that is legal on its own and wrong for
-    /// the one thing the asset exists to do. A <see cref="LocalServerConfig"/> is only ever read by
-    /// <c>LocalServerLauncher</c>, so authoring one is opting into
-    /// <see cref="SessionHostingMode.LocalServerProcess"/> and into the endings that mode has.
+    /// the one thing the asset exists to do.
     /// </para>
     /// <para>
     /// The idle exit is the load-bearing one. A host who leaves a session other players are still in
     /// detaches the server rather than killing it, and nothing else ever reaps a detached one — so a
     /// zero idle exit, which the server reads as "run forever", leaks a server process per detach for
     /// the rest of the machine's uptime. That is invisible in play: the session the host left carries on
-    /// working, which is the whole point of the detach.
+    /// working, which is the whole point of the detach. It is also the one rule that asks whether
+    /// anything hosts with the asset: zero is the right setting for a server a developer starts by hand,
+    /// so only an asset a <see cref="ServerBundleConfig"/> ships a server for fails the gate over it.
     /// </para>
     /// </remarks>
     public static class LocalServerConfigValidator {
@@ -32,12 +33,14 @@ namespace AlpineLib.Editor {
         /// with no local-server assets, which is every project that hosts somewhere else.
         /// </summary>
         public static void Validate(List<string> failures) {
-            foreach (string assetPath in FindLocalServerConfigPaths()) {
+            HashSet<string> hostedPaths = HostedConfigPaths();
+
+            foreach (string assetPath in ValidatedAssetPaths("t:LocalServerConfig")) {
                 var localServer = AssetDatabase.LoadAssetAtPath<LocalServerConfig>(assetPath);
 
                 if (localServer == null) continue;
 
-                ValidateIdleExit(localServer, assetPath, failures);
+                ValidateIdleExit(localServer, assetPath, hostedPaths.Contains(assetPath), failures);
                 ValidateReadyTimeout(localServer, assetPath, failures);
                 ValidateExecutableName(localServer, assetPath, failures);
             }
@@ -64,14 +67,27 @@ namespace AlpineLib.Editor {
         /// Read through the clamp rather than off the field, because that is the value the launcher
         /// passes to <c>--idle-exit-seconds</c>: a negative authored number reaches the server as zero,
         /// which is the case being caught.
+        /// <para>
+        /// Only a build failure for an asset a <see cref="ServerBundleConfig"/> actually points at.
+        /// Zero is a legal authored value — it is what a developer running the server by hand wants —
+        /// and an asset nothing ships a server for cannot leak anything, so an orphan is reported and
+        /// left alone rather than failing somebody's build.
+        /// </para>
         /// </remarks>
-        private static void ValidateIdleExit(LocalServerConfig localServer, string assetPath, List<string> failures) {
+        private static void ValidateIdleExit(LocalServerConfig localServer, string assetPath, bool isHosted, List<string> failures) {
             if (localServer.ClampedIdleExitSeconds() > 0) return;
 
-            failures.Add(
+            string problem =
                 $"{assetPath}: LocalServerConfig.idleExitSeconds is {localServer.idleExitSeconds}, which the server " +
                 "reads as \"never exit\". A host who leaves a session other players are still in detaches the " +
-                "server instead of stopping it, and nothing else reaps one, so every such leave leaks a process.");
+                "server instead of stopping it, and nothing else reaps one, so every such leave leaks a process.";
+
+            if (isHosted) {
+                failures.Add(problem);
+                return;
+            }
+
+            Debug.LogWarning($"{logPrefix}: {problem} No ServerBundleConfig references this asset, so nothing hosts with it yet.");
         }
 
         /// <remarks>
@@ -100,13 +116,38 @@ namespace AlpineLib.Editor {
                 "itself as the executable and every host attempt fails before it spawns anything.");
         }
 
-        private static List<string> FindLocalServerConfigPaths() {
+        /// <summary>The assets every <see cref="ServerBundleConfig"/> in scope hosts with.</summary>
+        /// <remarks>
+        /// The bundle config is the one place a project says "this is the server we ship, and this is
+        /// the launcher config that finds it", so it is what separates an asset a player will host with
+        /// from one somebody authored and never wired up.
+        /// </remarks>
+        private static HashSet<string> HostedConfigPaths() {
+            var hostedPaths = new HashSet<string>(StringComparer.Ordinal);
+
+            foreach (string assetPath in ValidatedAssetPaths("t:ServerBundleConfig")) {
+                var bundle = AssetDatabase.LoadAssetAtPath<ServerBundleConfig>(assetPath);
+
+                if (bundle == null) continue;
+                if (bundle.localServer == null) continue;
+
+                hostedPaths.Add(AssetDatabase.GetAssetPath(bundle.localServer));
+            }
+
+            return hostedPaths;
+        }
+
+        /// <summary>Type-filtered asset paths, narrowed to the roots the gate covers.</summary>
+        /// <remarks>
+        /// The search itself indexes every package in the project, which is wider than
+        /// <see cref="AssetValidator"/> ever scans — a package shipping a sample config would otherwise
+        /// fail a build over a file nobody in this project can edit.
+        /// </remarks>
+        private static List<string> ValidatedAssetPaths(string filter) {
             var assetPaths = new List<string>();
 
-            foreach (string assetGuid in AssetDatabase.FindAssets("t:LocalServerConfig")) {
-                string assetPath = AssetDatabase.GUIDToAssetPath(assetGuid);
-
-                if (string.IsNullOrEmpty(assetPath)) continue;
+            foreach (string assetPath in SessionConfigValidator.FindAssetPaths(filter)) {
+                if (!AssetValidator.IsValidatedPath(assetPath)) continue;
 
                 assetPaths.Add(assetPath);
             }

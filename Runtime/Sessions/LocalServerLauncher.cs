@@ -272,9 +272,14 @@ namespace AlpineLib.Sessions {
         /// project-local <c>bin</c> — costs group reaping and must not cost the host, so the spawn is
         /// retried directly rather than predicted. Predicting it cannot be done: the execute bit is
         /// checked before this, and an executable file can still fail to run.
+        /// <para>
+        /// Anything still running is ended without being waited for: this runs in the synchronous prefix
+        /// of <see cref="StartAsync"/>, which on a Unity caller is the main thread, and the caller wants
+        /// a new server rather than confirmation that the old one is gone.
+        /// </para>
         /// </remarks>
         private LocalServerAttempt StartAttempt(string executablePath, int port) {
-            Stop();
+            BeginStop();
 
             ProcessStartInfo startInfo = BuildStartInfo(executablePath, port, out bool leadsOwnProcessGroup);
 
@@ -329,10 +334,16 @@ namespace AlpineLib.Sessions {
             return failure;
         }
 
-        /// <summary>Stops one attempt, and forgets it only if it is still the live one.</summary>
+        /// <summary>Ends one attempt without waiting for it, and forgets it only if it is still the live one.</summary>
         /// <remarks>
         /// The guard is the point. A superseded attempt reaches its timeout long after a newer one has
         /// taken over, and without this it would kill a server somebody is already playing on.
+        /// <para>
+        /// The deferred ending, because every caller here is "this attempt is dead to us, clean it up"
+        /// with nobody waiting on the answer — and one of them, a readiness timeout, is cleaning up a
+        /// server that by definition is not cooperating, so the wait would be the whole grace on
+        /// whichever thread resumed the await. On a Unity caller that is the main thread.
+        /// </para>
         /// </remarks>
         private void StopAttempt(LocalServerAttempt attempt) {
             lock (_gate) {
@@ -342,7 +353,7 @@ namespace AlpineLib.Sessions {
                 }
             }
 
-            attempt.Stop();
+            attempt.BeginStop();
         }
 
         /// <summary>Publishes a ready attempt's endpoint, unless a newer attempt has already taken over.</summary>

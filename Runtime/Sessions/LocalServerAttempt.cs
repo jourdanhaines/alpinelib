@@ -30,8 +30,9 @@ namespace AlpineLib.Sessions {
     /// On Linux and macOS the launcher runs the server through <c>setsid</c>, so the tracked pid leads a
     /// process group of its own and that whole group is what gets killed — a server that spawned helpers
     /// leaves them holding the port otherwise. The group is only ever signalled once it has been read
-    /// back and proved to be the child's own and not this process's; every unknown answers "no group"
-    /// and degrades to killing the single pid, because the alternative is signalling the editor.
+    /// back and proved to be the child's own and not this process's — including the reap that follows a
+    /// polite stop, which claims that same proved name and nothing else. Every unknown answers "no
+    /// group" and degrades to killing the single pid, because the alternative is signalling the editor.
     /// </para>
     /// <para>
     /// Stopping asks before it insists. A dedicated server has a shutdown of its own — it tells every
@@ -74,6 +75,12 @@ namespace AlpineLib.Sessions {
         /// <summary>Delivers nothing; asks only whether the target still exists.</summary>
         private const int NoSignal = 0;
 
+        /// <summary>What every libc call here returns when it failed and set <c>errno</c>.</summary>
+        private const int NativeFailure = -1;
+
+        /// <summary><c>ESRCH</c>: the only errno that means "no such process", rather than "cannot say".</summary>
+        private const int NoSuchProcess = 3;
+
         /// <summary>Argument to <c>getpgid</c> meaning "whoever is asking".</summary>
         private const int CallingProcess = 0;
 
@@ -81,10 +88,18 @@ namespace AlpineLib.Sessions {
         /// Wildly generous: the move takes a fraction of a millisecond in practice, because all that has
         /// to happen is <c>setsid</c> reaching its own <c>setsid(2)</c> call. The budget is here so a
         /// host on a loaded machine still resolves rather than silently dropping to a single-pid kill.
-        /// It is only ever waited out on a thread pool thread draining the server's output.
+        /// It is only ever waited out on the settle thread, never on the one that asked for a server.
         /// </remarks>
         private const int ProcessGroupSettleMilliseconds = 250;
         private const int ProcessGroupPollMilliseconds = 1;
+
+        /// <summary>How long the settle spins before it starts sleeping between reads.</summary>
+        /// <remarks>
+        /// Covers the window a server that forks a helper and exits at once is alive for. Beyond it the
+        /// child is a server that is going to keep running, and a sleeping poll is the cheaper way to
+        /// wait for a group it is in no hurry to enter.
+        /// </remarks>
+        private const int ProcessGroupSpinMilliseconds = 5;
 
         private static readonly object ProcessGroupGate = new object();
 
@@ -99,9 +114,14 @@ namespace AlpineLib.Sessions {
             new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly object _outputGate = new object();
         private readonly object _stateGate = new object();
+
+        /// <summary>Guards <see cref="_hasSpawned"/>, and wakes the thread waiting to read the group.</summary>
+        private readonly object _spawnGate = new object();
+
         private readonly Queue<string> _recentOutputLines = new Queue<string>();
 
         private volatile int _processGroupId = NoProcessGroup;
+        private bool _hasSpawned;
         private int _isProcessGroupSettleClaimed;
         private int _processId;
         private int _exitCode = UnknownExitCode;
@@ -169,7 +189,8 @@ namespace AlpineLib.Sessions {
         /// group, a child that turns out not to lead its own group, or a libc that will not bind — each
         /// answers "no group", and the attempt falls back to killing the one pid it tracks. The failure
         /// this guards against is not a leaked helper process; it is <c>kill -9</c> on the group the
-        /// editor itself is sitting in.
+        /// editor itself is sitting in. Nothing caches an unknown, so a reap that runs after the leader
+        /// has exited has either this proved answer to claim or none at all.
         /// </para>
         /// </remarks>
         private int ResolveProcessGroup() {
@@ -188,14 +209,16 @@ namespace AlpineLib.Sessions {
         /// <remarks>
         /// Nothing here waits on anything. This runs inside the synchronous prefix of the launcher's
         /// <c>StartAsync</c>, which on a Unity build is the main thread, so the process-group settle it
-        /// used to do lives on the output-drain thread instead — a frozen editor is a worse failure than
-        /// a server whose group is read a few milliseconds later.
+        /// used to do is handed to a thread of its own — a frozen editor is a worse failure than a server
+        /// whose group is read a few milliseconds later.
         /// <para>
         /// A no-op once <see cref="Stop"/> has run: the launcher publishes an attempt before starting it
         /// so a stop can reach it, and a stop that lands in that window has already disposed the process.
         /// </para>
         /// </remarks>
         public void Start() {
+            BeginProcessGroupSettle();
+
             lock (_stateGate) {
                 if (_isStopped) return;
 
@@ -205,6 +228,11 @@ namespace AlpineLib.Sessions {
                 _process.BeginOutputReadLine();
                 _process.BeginErrorReadLine();
             }
+
+            // One read here, on this thread: a server that forked a helper and exited during the spawn
+            // itself is already a zombie, and a zombie still answers for its group. Two syscalls.
+            ResolveProcessGroup();
+            AnnounceSpawn();
         }
 
         /// <summary>
@@ -446,6 +474,12 @@ namespace AlpineLib.Sessions {
         /// <see cref="LocalServerConfig.MaximumStopGraceSeconds"/> long, and a leave must be free to
         /// happen twice in a row without paying for a thread each time. The continuation is not
         /// synchronous, so the kill never runs on the timer's own thread.
+        /// <para>
+        /// The task is deliberately unobserved: everything inside the continuation swallows its own
+        /// failures except <c>Process.Dispose</c>, and a handle that will not close is nothing this side
+        /// can act on. Nobody waits for the reap either — a process that quits before the grace elapses
+        /// simply leaves it unfinished, and the server's own idle exit is the backstop for that.
+        /// </para>
         /// </remarks>
         private void ScheduleDeferredStop(int graceMilliseconds) {
             Task.Delay(graceMilliseconds).ContinueWith(
@@ -539,35 +573,111 @@ namespace AlpineLib.Sessions {
         /// A group is named after its leader's pid and the runtime reaps the child the instant it exits,
         /// so the name outlives the process on purpose: reaping a server that forked a helper and exited
         /// at once is the whole reason the group is signalled rather than the pid, and the kernel keeps
-        /// the pid reserved for as long as the group has members. Claiming it after the leader is gone
-        /// therefore takes two answers, not one. The process handle says the child this attempt started
-        /// really has ended — a libc that merely will not talk about it does not count — and a pid that
-        /// no longer resolves to any group says the name has not since been handed to a stranger.
+        /// the pid reserved for as long as the group has members.
         /// <para>
-        /// Whether the leader has exited is asked first, ahead of the group this attempt cached while it
-        /// was alive. The cached answer always equals the tracked pid, so nothing is lost for a live
-        /// server; for a dead one the cache is exactly what must not be trusted, because a recycled pid
-        /// leading somebody else's group answers a bare existence probe the same way this attempt's own
-        /// helpers do.
+        /// Once the leader is gone the name is this attempt's only if three separate answers say so: the
+        /// group was read back and proved to be the child's own while the server was certainly alive, so
+        /// there is a cached name to claim at all; <c>getpgid</c> now fails <c>ESRCH</c> for that name,
+        /// which is the one failure that means "nobody answers to it" — a libc that will not talk about a
+        /// pid is not a libc saying the pid is free; and this process's own group is readable and is a
+        /// different group. Anything else falls back to the single tracked pid, because the failure being
+        /// guarded against is not a leaked helper — it is <c>kill -9</c> on the group the editor is in.
         /// </para>
         /// </remarks>
         private int CandidateProcessGroup() {
             if (!_leadsOwnProcessGroup) return NoProcessGroup;
             if (!HasProcessExited()) return ResolveProcessGroup();
 
-            int processId = CurrentProcessId();
+            int cached = _processGroupId;
 
-            if (processId <= 0) return NoProcessGroup;
-            if (ReadProcessGroup(processId) != NoProcessGroup) return NoProcessGroup;
+            if (cached == NoProcessGroup) return NoProcessGroup;
+            if (!IsProcessGroupNameVacant(cached)) return NoProcessGroup;
 
-            return processId;
+            int ownGroup = OwnProcessGroup();
+
+            if (ownGroup == NoProcessGroup) return NoProcessGroup;
+            if (ownGroup == cached) return NoProcessGroup;
+
+            return cached;
         }
 
-        /// <summary>Runs the settle at most once, on the first line of output the server produces.</summary>
+        /// <summary>True only when <c>getpgid</c> fails <c>ESRCH</c> for the name: nothing holds it.</summary>
         /// <remarks>
-        /// The first line is the earliest moment this side can know the exec succeeded, and it arrives
-        /// on a thread pool thread — which is the whole point. A server that never prints leaves the
-        /// group unresolved until a stop asks for it, and a stop resolves it lazily.
+        /// The errno is the whole point, and it is why this does not go through
+        /// <see cref="ReadProcessGroup"/>: that one collapses every non-answer into "no group", and
+        /// <c>getpgid</c> is also allowed to fail <c>EPERM</c> — POSIX permits it for a target in another
+        /// session, which is exactly what <c>setsid</c> makes the server. On such a host every unreadable
+        /// answer would otherwise read as "the name is free".
+        /// </remarks>
+        private static bool IsProcessGroupNameVacant(int processGroupId) {
+            if (processGroupId <= 0) return false;
+            if (!IsProcessGroupApiUsable()) return false;
+
+            try {
+                if (ReadProcessGroupNative(processGroupId) != NativeFailure) return false;
+
+                return Marshal.GetLastWin32Error() == NoSuchProcess;
+            } catch (DllNotFoundException) {
+                DisableProcessGroupApi();
+            } catch (EntryPointNotFoundException) {
+                DisableProcessGroupApi();
+            }
+
+            return false;
+        }
+
+        /// <summary>Puts a thread in place to read the child's group the moment the child exists.</summary>
+        /// <remarks>
+        /// Not left to the first line of output the server prints: a server that forks a helper and exits
+        /// without printing anything would never have its group read at all, and a read taken while the
+        /// child was alive is the only name a reap after that exit may claim — so the helper left holding
+        /// the port would survive. That window is a couple of milliseconds wide.
+        /// <para>
+        /// Which is why the thread is started before the spawn rather than after it, and waits on
+        /// <see cref="_hasSpawned"/>: creating a thread, or queueing a pool item, takes long enough that
+        /// a server which forks and exits at once is regularly gone before the first read. A thread
+        /// already parked wakes in microseconds. It is a background thread and lives a millisecond in the
+        /// ordinary case, 250 ms at the very worst, so it never holds a quit up.
+        /// </para>
+        /// </remarks>
+        private void BeginProcessGroupSettle() {
+            if (!_leadsOwnProcessGroup) return;
+
+            var settle = new Thread(AwaitSpawnAndSettle) {
+                IsBackground = true,
+                Name = "LocalServerProcessGroupSettle"
+            };
+
+            settle.Start();
+        }
+
+        /// <summary>Wakes the settle thread, which has been parked since before the spawn.</summary>
+        private void AnnounceSpawn() {
+            lock (_spawnGate) {
+                _hasSpawned = true;
+                Monitor.PulseAll(_spawnGate);
+            }
+        }
+
+        /// <summary>Waits for the spawn this thread was started ahead of, then reads the group back.</summary>
+        /// <remarks>
+        /// Bounded, because a spawn that throws or an attempt stopped in the window never announces one,
+        /// and this thread has to end either way.
+        /// </remarks>
+        private void AwaitSpawnAndSettle() {
+            lock (_spawnGate) {
+                if (!_hasSpawned) Monitor.Wait(_spawnGate, ProcessGroupSettleMilliseconds);
+                if (!_hasSpawned) return;
+            }
+
+            SettleProcessGroupOnce();
+        }
+
+        /// <summary>Runs the settle at most once, whichever of the two triggers gets there first.</summary>
+        /// <remarks>
+        /// Two triggers, one settle: the spawn itself, and the first line of output. The second is kept
+        /// because it costs nothing — it is the thread already draining the server's output — and it
+        /// covers a settle that gave up on a child slow to reach its own <c>setsid</c> call.
         /// </remarks>
         private void SettleProcessGroupOnce() {
             if (Interlocked.Exchange(ref _isProcessGroupSettleClaimed, 1) != 0) return;
@@ -602,8 +712,25 @@ namespace AlpineLib.Sessions {
                 if (HasProcessExited()) return;
                 if (IsStopped()) return;
 
-                Thread.Sleep(ProcessGroupPollMilliseconds);
+                WaitBeforeNextGroupRead(watch);
             }
+        }
+
+        /// <summary>Spins through the first few milliseconds of the child's life, then sleeps.</summary>
+        /// <remarks>
+        /// The answer arrives a fraction of a millisecond after the spawn — <c>setsid</c> moves the group
+        /// before it execs the server — and a server that forks a helper and exits straight away is gone
+        /// two or three milliseconds later. Sleeping through that window is what loses the helper: the
+        /// group is never read, and a reap may only claim a group it read. Spinning through it costs a
+        /// fraction of one core on a thread of this attempt's own, and catches it.
+        /// </remarks>
+        private static void WaitBeforeNextGroupRead(Stopwatch watch) {
+            if (watch.ElapsedMilliseconds < ProcessGroupSpinMilliseconds) {
+                Thread.Yield();
+                return;
+            }
+
+            Thread.Sleep(ProcessGroupPollMilliseconds);
         }
 
         /// <summary>The child's group, or <see cref="NoProcessGroup"/> unless it is provably safe to signal.</summary>
