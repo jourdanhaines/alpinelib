@@ -295,11 +295,30 @@ namespace AlpineLib.Editor {
                 failures.Add($"{assetPath}: ServerBundleConfig is enabled but names no server executable.");
             }
 
+            ValidateRuntimeIdentifierShape(bundle.windowsRuntimeIdentifier, "Windows", assetPath, failures);
+            ValidateRuntimeIdentifierShape(bundle.linuxRuntimeIdentifier, "Linux", assetPath, failures);
+            ValidateRuntimeIdentifierShape(bundle.macRuntimeIdentifier, "macOS", assetPath, failures);
+
             if (HasAnyRuntimeIdentifier(bundle)) return;
 
             failures.Add(
                 $"{assetPath}: ServerBundleConfig names no runtime identifier for any platform; no standalone build " +
                 "could find a publish to copy.");
+        }
+
+        /// <remarks>
+        /// A runtime identifier is one folder beneath the publish root, so the same rules that stop the
+        /// bundle folder walking out of the player's directory stop this walking out of the publish
+        /// root. The build step refuses the same values.
+        /// </remarks>
+        private static void ValidateRuntimeIdentifierShape(
+            string runtimeIdentifier, string platform, string assetPath, List<string> failures) {
+            if (string.IsNullOrWhiteSpace(runtimeIdentifier)) return;
+            if (ServerBundleConfig.IsSingleFolderName(runtimeIdentifier)) return;
+
+            failures.Add(
+                $"{assetPath}: ServerBundleConfig names '{runtimeIdentifier}' as its {platform} runtime identifier, " +
+                "which is not a single folder name; the publish root holds one folder per runtime identifier.");
         }
 
         private static bool HasAnyRuntimeIdentifier(ServerBundleConfig bundle) {

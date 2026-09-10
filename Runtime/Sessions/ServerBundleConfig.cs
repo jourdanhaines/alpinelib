@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using UnityEngine;
 
@@ -96,16 +97,26 @@ namespace AlpineLib.Sessions {
         /// True when a name is one path segment: no separators, not rooted, and not a relative step.
         /// </summary>
         /// <remarks>
-        /// Both separators are rejected whatever platform this runs on. A backslash is an ordinary
-        /// filename character on Linux, so a name authored on Windows and validated on a Linux build
-        /// machine would otherwise pass there and traverse when the same project is built on Windows.
+        /// <para>
+        /// Every rule here is applied the same way on every platform, because the answer has to be. A
+        /// backslash is an ordinary filename character on Linux and a colon is one too, so a name
+        /// authored on Windows and validated on a Linux build machine would otherwise pass there and
+        /// traverse — or fail to resolve at all — when the same project is built on Windows.
+        /// </para>
+        /// <para>
+        /// A trailing dot is refused for the same reason: Windows strips trailing dots off a path's last
+        /// component, so <c>'...'</c> would resolve to the player's own directory there and to a folder
+        /// literally named <c>...</c> here. <c>'.hidden'</c> is a perfectly ordinary folder and stays
+        /// allowed — it is the trailing dot, not the leading one, that normalises away.
+        /// </para>
         /// </remarks>
         public static bool IsSingleFolderName(string folderName) {
             if (string.IsNullOrWhiteSpace(folderName)) return false;
 
             string trimmed = folderName.Trim();
-            if (trimmed == "." || trimmed == "..") return false;
+            if (trimmed.EndsWith(".", StringComparison.Ordinal)) return false;
             if (trimmed.IndexOf('/') >= 0 || trimmed.IndexOf('\\') >= 0) return false;
+            if (trimmed.IndexOf(':') >= 0) return false;
             if (Path.IsPathRooted(trimmed)) return false;
 
             return Path.GetFileName(trimmed) == trimmed;
