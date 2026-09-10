@@ -68,11 +68,11 @@ namespace AlpineLib.Networking {
         /// clear is the server's <em>sustained</em> rate of unmeasured moves, and that floor is a count of
         /// ticks rather than a ratio of seconds: a source's changes land on send ticks, so what matters is
         /// that a budget's worth of dwells outlasts the window — <c>CarrierSwitchCooldownTicks /
-        /// (ServerTickRate × MaxCarrierSwitchesPerWindow)</c>, 8 / 120 = 0.067 s. Three ticks clears it
-        /// with a slot of the budget left over, which is where an owner's resync after a withheld silence
-        /// is charged; see <c>MovementValidator.MaxCarrierSwitchesPerWindow</c>. It cannot go to zero
-        /// either: a hop or a step over a rail breaks ground contact for a handful of frames without the
-        /// rider leaving the deck, and this outlasts that at sixty frames a second.
+        /// (ServerTickRate × MaxCarrierSwitchesPerWindow)</c>, 8 / 90 = 0.089 s. Three ticks clears that
+        /// by about a tenth and no more, so the dwell and the budget are one decision: lowering the
+        /// budget means lengthening this first; see <c>MovementValidator.MaxCarrierSwitchesPerWindow</c>.
+        /// It cannot go to zero either: a hop or a step over a rail breaks ground contact for a handful
+        /// of frames without the rider leaving the deck, and this outlasts that at sixty frames a second.
         /// </para>
         /// <para>
         /// Every tick of dwell is paid for by a rider whose two frames are not moving together — see

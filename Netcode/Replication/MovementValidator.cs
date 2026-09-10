@@ -43,9 +43,9 @@ namespace AlpineLib.Netcode.Replication {
     /// first and it punished honest play: walking across a coupler from one car to the next is two frame
     /// changes in quick succession, and a hop off a deck and back is another two, so real riders were
     /// corrected for several ticks running while a cheat merely switched more slowly. A budget refuses
-    /// only the alternation nobody produces by walking — and honest play is kept away from it from the
-    /// other end too, because <c>INetCarrierSource</c> owes this side hysteresis and a source that
-    /// settles before it reports leaves a slot of the budget unspent.
+    /// only the alternation nobody produces by walking — and honest play is held to the same edge from
+    /// the other end, because <c>INetCarrierSource</c> owes this side hysteresis and a source honouring
+    /// that dwell fills the budget exactly rather than overrunning it.
     /// </para>
     /// <para>
     /// <b>The other unmeasured move.</b> An owner that stopped reporting because it had nothing truthful
@@ -54,6 +54,19 @@ namespace AlpineLib.Netcode.Replication {
     /// never free. It is the same trust boundary seen from the time axis rather than the space one — the
     /// two poses either side belong to different stories rather than different origins — so the exposure
     /// below covers it unchanged.
+    /// </para>
+    /// <para>
+    /// <b>What the interval cap costs an honest client.</b> The gap a move is measured over is capped at
+    /// <c>ServerReplication.MaxMeasuredIntervalSeconds</c>, so silence stops buying allowance — and the
+    /// bill for that lands on a client whose datagrams were merely lost. With the cap at <c>T</c>, a gap
+    /// <c>g</c> at gait <c>v</c> is rejected once <c>v·g &gt; RejectDistanceRatio · (tolerance · v · T +
+    /// slack)</c>, i.e. from about <c>4.5·T</c> onwards at any gait: a two-second gap is clamped and
+    /// rubber-banded, and one past roughly four and a half seconds is thrown away and snapped back. The
+    /// resync flag cannot cover this case on its own — an owner raises it only when it withholds or
+    /// places a state itself, and a client losing packets has done neither and cannot tell — which is
+    /// why the owner repeats the flag and re-raises it on a large correction; see
+    /// <c>NetActorSync.SendOwnerSample</c>. The real fix is a receipt clock on the server side, stamping
+    /// when an owner update last <em>arrived</em> and treating an overlong gap as a resync.
     /// </para>
     /// <para>
     /// What the hole cannot buy, either way, is speed: every tick that keeps the same carrier is
@@ -101,26 +114,30 @@ namespace AlpineLib.Netcode.Replication {
         /// </summary>
         /// <remarks>
         /// <para>
-        /// Three of the four are what a conforming source produces at its fastest, and they fill those
-        /// three slots exactly. The window is eight ticks of a thirty-hertz clock and
-        /// <c>NetCarrier.SourceHysteresisSeconds</c> is three of them, so a source honouring the dwell
-        /// lands changes on ticks 0, 3 and 6 — all inside one window, which only reopens at elapsed ≥ 8 —
-        /// and that is the honest burst itself, a hop off a deck and back or a walk across a coupler,
-        /// seen at the dwell's own cadence. There is no margin against honest play in those three, which
-        /// is the fact a future reader needs: the count cannot be lowered without lengthening the dwell
-        /// first.
+        /// Three is what a conforming source produces at its fastest, and it fills the window exactly.
+        /// The window is eight ticks of a thirty-hertz clock and <c>NetCarrier.SourceHysteresisSeconds</c>
+        /// is three of them, so a source honouring the dwell lands changes on ticks 0, 3 and 6 — all
+        /// inside one window, which only reopens at elapsed ≥ 8 — and that is the honest burst itself, a
+        /// hop off a deck and back or a walk across a coupler, seen at the dwell's own cadence. There is
+        /// no margin against honest play in those three, which is the fact a future reader needs: the
+        /// count cannot be lowered without lengthening the dwell first.
         /// </para>
         /// <para>
-        /// The fourth is the margin, and it has a claimant. An owner's resync after a withheld silence is
-        /// charged against this same budget — see <c>ServerReplication.HandleOwnerPawnUpdate</c> — and a
-        /// resync arrives exactly when a rider is boarding or alighting, which is when the burst above is
-        /// already in flight. At three the resync would be refused, measured against a walking gait over
-        /// the gap, and the player corrected for walking: the correction storm this budget exists to
-        /// avoid. It doubles as headroom for a source the library cannot see honouring the dwell at all.
-        /// Anything past four inside a quarter of a second is not walking.
+        /// <b>A resync does not need a fourth slot, because it cannot coincide with a charge.</b> An
+        /// owner pushes at most one sample per send tick, so a resync on tick <c>k</c> means nothing at
+        /// all was sent on tick <c>k-1</c> and nothing was charged there either. The earliest resync that
+        /// can follow the burst above is therefore tick 8, and tick 8 reopens the window; a resync
+        /// earlier in a window instead pushes the source's remaining dwells past its end. The two
+        /// claimants interleave rather than stack.
+        /// </para>
+        /// <para>
+        /// The count is also the ceiling on a client that lies, and that ceiling is a rate rather than a
+        /// distance: nothing bounds how far one unmeasured move may travel, so each slot is a teleport of
+        /// any size and three slots is twelve of them a second at the default tick rate. Widening it for
+        /// an interleaving nobody can produce would widen that in the same proportion.
         /// </para>
         /// </remarks>
-        public const int MaxCarrierSwitchesPerWindow = 4;
+        public const int MaxCarrierSwitchesPerWindow = 3;
 
         private readonly NetConfig config;
 

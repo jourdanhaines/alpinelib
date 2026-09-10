@@ -539,13 +539,15 @@ namespace AlpineLib.Netcode.Replication {
         /// ones past it come back as rejections — the previous state, previous frame and all — which the
         /// owner is told about like any other, so an alternating claim is visible through
         /// <see cref="OnMovementViolation"/> rather than free.
+        ///
+        /// The resync flag is consulted only once the measurement has refused the claim, so an owner
+        /// repeating the flag against packet loss pays nothing for the repeats that were never needed;
+        /// see <see cref="TryAcceptResync"/>.
         /// </remarks>
         public void HandleOwnerPawnUpdate(in OwnerPawnUpdate message, PeerHandle sender) {
             if (!TryResolveOwnedEntity(message.EntityId, sender, AuthorityMode.OwnerClient, out NetEntity entity)) {
                 return;
             }
-
-            if (TryAcceptResync(entity, in message)) return;
 
             float deltaSeconds = MeasuredIntervalSince(entity.LastDirtyTick);
             bool carrierChangeAllowed = IsCarrierChangeAllowed(entity, message.State.CarrierId);
@@ -555,6 +557,8 @@ namespace AlpineLib.Netcode.Replication {
                 message.State,
                 deltaSeconds,
                 carrierChangeAllowed);
+
+            if (verdict.RequiresCorrection && TryAcceptResync(entity, in message)) return;
 
             entity.ApplyState(verdict.ResolvedState, currentTick);
             entity.LastAcknowledgedInputSequence = message.ClientTick;
@@ -568,8 +572,8 @@ namespace AlpineLib.Netcode.Replication {
         }
 
         /// <summary>
-        /// Adopts an update the owner has flagged as a resync, when the frame-change budget still covers
-        /// one; see <see cref="OwnerPawnUpdate.ResyncFlag"/>.
+        /// Adopts a claim the measurement refused, when the owner flagged it as a resync and the
+        /// frame-change budget still covers one; see <see cref="OwnerPawnUpdate.ResyncFlag"/>.
         /// </summary>
         /// <remarks>
         /// <para>
@@ -579,8 +583,16 @@ namespace AlpineLib.Netcode.Replication {
         /// therefore given the frame change's terms and no better ones — accepted whole, unmeasured, and
         /// charged one slot of the same per-window budget — so a client that flags every update buys
         /// <see cref="MovementValidator.MaxCarrierSwitchesPerWindow"/> unmeasured moves per window and not
-        /// one more. Past the budget it falls through to the ordinary measurement, where a claim that
-        /// really is a teleport is rejected like any other.
+        /// one more. Once the budget is spent the refused verdict stands, and a claim that really is a
+        /// teleport is thrown away like any other.
+        /// </para>
+        /// <para>
+        /// <b>Only a refused claim reaches here</b>, which is what makes the owner's repeat affordable.
+        /// The flag rides an unreliable datagram, so the owner sets it on the next few sends rather than
+        /// one — see <c>NetActorSync.SendOwnerSample</c> — and every repeat that follows a resync the
+        /// server already adopted is an ordinary centimetre-sized step that the measurement accepts and
+        /// nothing charges. A repeat is charged only when its predecessor never arrived, and a tick
+        /// nothing arrived on charged nothing, so a burst of repeats still costs one slot.
         /// </para>
         /// <para>
         /// An accepted resync never corrects the owner: the whole point is that the state the server

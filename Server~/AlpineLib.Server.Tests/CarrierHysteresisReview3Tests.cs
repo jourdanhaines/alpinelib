@@ -139,13 +139,10 @@ namespace AlpineLib.Server.Tests {
 
             Report(world, owner, pawn, At(OnTheDeck, FourthCarrierId));
             Assert.Equal(FourthCarrierId, pawn.State.CarrierId);
-
-            Report(world, owner, pawn, At(OnTheDeck, FifthCarrierId));
-            Assert.Equal(FifthCarrierId, pawn.State.CarrierId);
             Assert.Equal(MovementValidator.MaxCarrierSwitchesPerWindow, pawn.CarrierSwitchesInWindow);
 
-            Report(world, owner, pawn, At(OnTheDeck, DeckCarrierId));
-            Assert.Equal(FifthCarrierId, pawn.State.CarrierId);
+            Report(world, owner, pawn, At(OnTheDeck, FifthCarrierId));
+            Assert.Equal(FourthCarrierId, pawn.State.CarrierId);
         }
 
         /// <summary>
@@ -163,13 +160,12 @@ namespace AlpineLib.Server.Tests {
             Report(world, owner, pawn, At(OnTheDeck, SecondCarrierId));
             Report(world, owner, pawn, At(OnTheDeck, ThirdCarrierId));
             Report(world, owner, pawn, At(OnTheDeck, FourthCarrierId));
-            Report(world, owner, pawn, At(OnTheDeck, FifthCarrierId));
 
             // Seven ticks of refusals, each one counted into the window.
             for (int tick = 0; tick < 7; tick++) {
                 world.Pump(1);
                 Report(world, owner, pawn, At(OnTheDeck, DeckCarrierId));
-                Assert.Equal(FifthCarrierId, pawn.State.CarrierId);
+                Assert.Equal(FourthCarrierId, pawn.State.CarrierId);
             }
 
             world.Pump(1);

@@ -164,6 +164,11 @@ namespace AlpineLib.Server.Tests {
         /// pawn. Forty seconds of server uptime was a hundred and twenty metres of allowance on the first
         /// claim, and a hundred-metre teleport was accepted with no violation raised at all; capped, the
         /// same claim is thrown away like any other teleport.
+        ///
+        /// The claim is unflagged, which is what a real client now sends after an ordinary spawn: the
+        /// owner raises its resync latch only for a placement it waited for. A flagged first report is
+        /// still adopted whole — <c>ResyncFlagReview5Tests</c> pins that — which is precisely why an
+        /// undisplaced spawn must not flag one.
         /// </remarks>
         [Fact]
         public void TheFirstReportOnALongLivedSessionIsMeasuredOverTheCapNotTheUptime() {
@@ -332,19 +337,21 @@ namespace AlpineLib.Server.Tests {
         }
 
         /// <summary>
-        /// A source dwelling for exactly <c>NetCarrier.SourceHysteresisSeconds</c> fills three slots of
-        /// the switch budget inside one window, and the fourth is the slot a resync is charged to.
+        /// A source dwelling for exactly <c>NetCarrier.SourceHysteresisSeconds</c> fills the switch
+        /// budget inside one window, exactly and with nothing to spare.
         /// </summary>
         /// <remarks>
         /// The dwell is three ticks of a thirty-hertz send clock, and the window is eight ticks, so a
         /// conforming source's changes land on ticks 0, 3 and 6 — all inside one window, because it only
         /// reopens at elapsed ≥ 8. That is the arithmetic behind
-        /// <c>MovementValidator.MaxCarrierSwitchesPerWindow</c> being four rather than three: three is
-        /// what honest play produces on its own, so three would leave nothing for the resync that arrives
-        /// during exactly that burst.
+        /// <c>MovementValidator.MaxCarrierSwitchesPerWindow</c> being three: honest play produces exactly
+        /// this and the count cannot be lowered without lengthening the dwell first. A resync does not
+        /// need a slot of its own here, because it cannot land inside this burst —
+        /// <c>ResyncFlagReview5Tests.AResyncCannotLandInsideAConformingSourcesThreeChangeBurst</c> is
+        /// where that is measured.
         /// </remarks>
         [Fact]
-        public void ASourceDwellingTheMandatedMinimumLeavesOneSlotOfTheBudget() {
+        public void ASourceDwellingTheMandatedMinimumFillsTheBudgetExactly() {
             using var world = new CarrierReplicationLoopbackWorld();
             CarrierReplicationLoopbackClient owner = world.ConnectClient();
             world.Pump(4);
@@ -363,14 +370,15 @@ namespace AlpineLib.Server.Tests {
             Report(world, owner, pawn, At(OnTheDeck, DeckCarrierId));
 
             Assert.Equal(3, pawn.CarrierSwitchesInWindow);
-            Assert.Equal(MovementValidator.MaxCarrierSwitchesPerWindow - 1, pawn.CarrierSwitchesInWindow);
+            Assert.Equal(MovementValidator.MaxCarrierSwitchesPerWindow, pawn.CarrierSwitchesInWindow);
             Assert.Equal(DeckCarrierId, pawn.State.CarrierId);
 
-            // The resync that lands mid-burst takes the slot the dwell left, and is adopted.
-            ReportResync(world, owner, pawn, At(new Vector3(40f, 0f, 0f), DeckCarrierId));
+            // A fourth change inside the same window is one the dwell cannot have produced, and it is
+            // refused: the pawn keeps the frame it was in.
+            world.Pump(1);
+            Report(world, owner, pawn, At(OnTheDeck, SecondCarrierId));
 
-            Assert.Equal(MovementValidator.MaxCarrierSwitchesPerWindow, pawn.CarrierSwitchesInWindow);
-            Assert.Equal(40f, pawn.State.Position.X, 3);
+            Assert.Equal(DeckCarrierId, pawn.State.CarrierId);
         }
 
         /// <summary>
