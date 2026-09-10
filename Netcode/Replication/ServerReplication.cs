@@ -558,7 +558,7 @@ namespace AlpineLib.Netcode.Replication {
                 deltaSeconds,
                 carrierChangeAllowed);
 
-            if (verdict.RequiresCorrection && TryAcceptResync(entity, in message)) return;
+            if (verdict.RequiresCorrection && TryAcceptResync(entity, in message, deltaSeconds)) return;
 
             entity.ApplyState(verdict.ResolvedState, currentTick);
             entity.LastAcknowledgedInputSequence = message.ClientTick;
@@ -587,12 +587,16 @@ namespace AlpineLib.Netcode.Replication {
         /// teleport is thrown away like any other.
         /// </para>
         /// <para>
-        /// <b>Only a refused claim reaches here</b>, which is what makes the owner's repeat affordable.
-        /// The flag rides an unreliable datagram, so the owner sets it on the next few sends rather than
-        /// one — see <c>NetActorSync.SendOwnerSample</c> — and every repeat that follows a resync the
-        /// server already adopted is an ordinary centimetre-sized step that the measurement accepts and
-        /// nothing charges. A repeat is charged only when its predecessor never arrived, and a tick
-        /// nothing arrived on charged nothing, so a burst of repeats still costs one slot.
+        /// <b>A burst is one resumption and is charged once.</b> The flag rides an unreliable datagram,
+        /// so the owner sets it on the next few sends rather than one — see
+        /// <c>NetActorSync.SendOwnerSample</c> — and the sends behind the first are that same claim
+        /// arriving again, not a second one. Charging each of them would spend a whole window's budget on
+        /// a single withhold exit and refuse the rider's next honest boarding, which is the harm the
+        /// budget exists to prevent. So a flagged claim landing within
+        /// <see cref="MovementValidator.ResyncBurstTicks"/> of the resync this pawn is already inside is
+        /// adopted free — but only while it is that resumption carried on, per
+        /// <see cref="MovementValidator.IsResyncBurstContinuation"/>. A repeat that is a fresh teleport
+        /// is not a repeat and is refused outright, so the free window cannot be farmed.
         /// </para>
         /// <para>
         /// An accepted resync never corrects the owner: the whole point is that the state the server
@@ -600,14 +604,50 @@ namespace AlpineLib.Netcode.Replication {
         /// frame change is left to the frame-change path so the two cannot charge the budget twice.
         /// </para>
         /// </remarks>
-        private bool TryAcceptResync(NetEntity entity, in OwnerPawnUpdate message) {
+        private bool TryAcceptResync(NetEntity entity, in OwnerPawnUpdate message, float deltaSeconds) {
             if (!message.IsResync) return false;
             if (entity.State.CarrierId != message.State.CarrierId) return false;
+
+            if (IsInsideResyncBurst(entity)) {
+                if (!validator.IsResyncBurstContinuation(
+                        entity.PrefabId,
+                        entity.State,
+                        message.State,
+                        deltaSeconds)) {
+                    return false;
+                }
+
+                AdoptResync(entity, in message);
+                return true;
+            }
+
             if (!ChargeUnmeasuredMove(entity)) return false;
 
+            entity.LastAcceptedResyncTick = currentTick;
+            entity.HasAcceptedResync = true;
+            AdoptResync(entity, in message);
+            return true;
+        }
+
+        /// <summary>
+        /// Whether this pawn is still inside the resync burst it last opened, so a further flagged claim
+        /// is a repeat of that resumption rather than a new one.
+        /// </summary>
+        /// <remarks>
+        /// The window is anchored to the send that opened the burst and never moved on by the repeats it
+        /// covers: sliding it would let a client hold one paid-for burst open forever. The elapsed count
+        /// is a plain unsigned subtraction, which stays correct across the tick counter wrapping.
+        /// </remarks>
+        private bool IsInsideResyncBurst(NetEntity entity) {
+            if (!entity.HasAcceptedResync) return false;
+
+            return currentTick - entity.LastAcceptedResyncTick < MovementValidator.ResyncBurstTicks;
+        }
+
+        /// <summary>Takes a resync claim whole, which is what an unmeasured move means.</summary>
+        private void AdoptResync(NetEntity entity, in OwnerPawnUpdate message) {
             entity.ApplyState(message.State, currentTick);
             entity.LastAcknowledgedInputSequence = message.ClientTick;
-            return true;
         }
 
         /// <summary>

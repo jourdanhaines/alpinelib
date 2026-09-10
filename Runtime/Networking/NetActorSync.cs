@@ -90,8 +90,10 @@ namespace AlpineLib.Networking {
         /// deck. Open forever is a different thing: a carrier id freed and re-taken minutes later would
         /// yank a settled player onto a car they have never been near, at a minutes-old deck-local pose.
         /// This bounds the heal in time; <see cref="CanStillHealDeferredSpawn"/> bounds it the other way
-        /// that matters, because a player who has walked away from the holding position has already
-        /// answered the question.
+        /// that matters, because a player who has walked the pawn away from the holding position has
+        /// already answered the question. It must stay longer than
+        /// <see cref="SpawnPlacementCarrierWaitSeconds"/>: both run from the same bind, so a grace
+        /// shorter than the wait would be spent before there was a holding position to heal from.
         /// </remarks>
         public const float SpawnDeferralGraceSeconds = 10f;
 
@@ -122,8 +124,8 @@ namespace AlpineLib.Networking {
         private float _spawnDeferralGraceDeadline;
         private bool _hasHandledSpawnDeferralExpiry;
         private bool _hasDeferredPlacement;
-        private Vector3 _holdingPosition;
         private bool _hasHoldingPosition;
+        private float _commandedTravelSinceHold;
         private int _resyncSendsRemaining;
         private readonly HashSet<ushort> _warnedCarrierIds = new HashSet<ushort>();
         private readonly HashSet<int> _warnedUnusableCarriers = new HashSet<int>();
@@ -255,6 +257,7 @@ namespace AlpineLib.Networking {
             if (_view.Authority != AuthorityMode.OwnerClient) return;
             if (_placedForEntityId == _view.EntityId) return;
 
+            AccumulateCommandedTravel();
             RecordSpawnState();
 
             if (NetCarrierFrame.TryToWorld(in _spawnState, out PawnState world)) {
@@ -270,15 +273,16 @@ namespace AlpineLib.Networking {
         }
 
         /// <summary>
-        /// Places a pawn whose spawn state's carrier has resolved, once the placement is still wanted.
+        /// Places a pawn whose spawn state's carrier has resolved, or closes the placement when the
+        /// deferral it waited through has outlived its welcome.
         /// </summary>
         /// <remarks>
         /// A placement on the frame the pawn binds is an ordinary spawn: the pawn has not been anywhere
         /// else yet, so the pose it lands on is the authority's own and its first report is measured like
         /// every other. Only a placement the pawn waited for is a displacement the authority knows
         /// nothing about, and only that one is announced as a resync. A wait that has run past
-        /// <see cref="SpawnDeferralGraceSeconds"/>, or a player who has walked off the holding position,
-        /// is not healed at all.
+        /// <see cref="SpawnDeferralGraceSeconds"/>, or a player who has walked the pawn off the holding
+        /// position, is not healed at all — see <see cref="AbandonDeferredSpawn"/>.
         /// </remarks>
         private void PlaceOnResolvedCarrier(in PawnState world) {
             if (!_hasDeferredPlacement) {
@@ -298,18 +302,50 @@ namespace AlpineLib.Networking {
         /// Whether a carrier registering this late may still move the pawn onto its deck.
         /// </summary>
         /// <remarks>
-        /// Two ends to it. The grace period is the clock, and the holding position is the player: once
-        /// the actor has walked further than <see cref="correctionSnapDistance"/> from the pose the
-        /// expiry parked it at, the player has taken control of where this pawn is and a heal would be a
-        /// teleport out of their hands.
+        /// Two ends to it. The grace period is the clock, and the commanded travel is the player: once
+        /// the player has asked this pawn to walk further than <see cref="correctionSnapDistance"/> since
+        /// the expiry parked it, they have taken control of where it is and a heal would be a teleport
+        /// out of their hands. What counts is intent, never the transform's displacement — a deck carries
+        /// a rider standing perfectly still a metre every thirty-third of a second, and gravity and the
+        /// authority's own corrections move it too. None of those are the player answering the question.
         /// </remarks>
         private bool CanStillHealDeferredSpawn() {
             if (Time.unscaledTime >= _spawnDeferralGraceDeadline) return false;
             if (!_hasHoldingPosition) return true;
 
-            Vector3 drift = transform.position - _holdingPosition;
+            return _commandedTravelSinceHold <= correctionSnapDistance;
+        }
 
-            return drift.sqrMagnitude <= correctionSnapDistance * correctionSnapDistance;
+        /// <summary>
+        /// Adds the distance the player asked for this frame to the travel commanded since the holding
+        /// position was taken; see <see cref="CanStillHealDeferredSpawn"/>.
+        /// </summary>
+        /// <remarks>
+        /// Commanded direction times the gait's own top speed, which is how <c>Actor.Move</c> turns one
+        /// into the other, and it is the same envelope the authority measures this pawn against. A prefab
+        /// with no movement profile contributes nothing and leaves the grace period as the only end,
+        /// which is the same trade the validator makes for an unprofiled prefab.
+        /// </remarks>
+        private void AccumulateCommandedTravel() {
+            if (!_hasHoldingPosition || _actor == null) return;
+
+            Vector3 commanded = _actor.CommandedMoveDirection;
+            commanded.y = 0f;
+
+            _commandedTravelSinceHold +=
+                Vector3.ClampMagnitude(commanded, 1f).magnitude * ResolveGaitSpeed() * Time.deltaTime;
+        }
+
+        /// <summary>
+        /// Top speed of the gait this pawn is in, from the configured movement profile, or zero when the
+        /// prefab has no profile.
+        /// </summary>
+        private float ResolveGaitSpeed() {
+            MovementProfile profile = _networkService?.Config?.GetMovementProfile(_view.PrefabId);
+
+            if (profile == null) return 0f;
+
+            return profile.GetSpeedForGait((int)ResolveGait());
         }
 
         /// <summary>
@@ -342,10 +378,10 @@ namespace AlpineLib.Networking {
         /// the wait, a streamed-in carrier, a host that spawned late all still register eventually, and
         /// the pawn is then placed properly on its deck through <see cref="NetCarrierFrame.TryToWorld"/>
         /// like any other. That heal is bounded by <see cref="SpawnDeferralGraceSeconds"/> and by the
-        /// player walking away from the position taken here — see <see cref="CanStillHealDeferredSpawn"/>
-        /// — so a carrier appearing minutes later cannot teleport a settled pawn onto it. This runs once
-        /// per binding, because a holding position re-taken every frame would fight the actor's own
-        /// movement, and says which of the two happened in the log.
+        /// player walking the pawn away from the position taken here — see
+        /// <see cref="CanStillHealDeferredSpawn"/> — so a carrier appearing minutes later cannot teleport
+        /// a settled pawn onto it. This runs once per binding, because a holding position re-taken every
+        /// frame would fight the actor's own movement, and says which of the two happened in the log.
         /// </para>
         /// </remarks>
         private void PlaceOnExpiredSpawnDeferral() {
@@ -362,8 +398,8 @@ namespace AlpineLib.Networking {
             Debug.LogWarning($"NetActorSync::PlaceOnExpiredSpawnDeferral->{name} spawned on carrier {_spawnState.CarrierId}, which never registered; entity {_view.EntityId} holds the authority's current world pose until that carrier appears.");
             MoveTo(in current);
 
-            _holdingPosition = transform.position;
             _hasHoldingPosition = true;
+            _commandedTravelSinceHold = 0f;
         }
 
         /// <summary>
@@ -502,12 +538,13 @@ namespace AlpineLib.Networking {
         /// <para>
         /// <b>The flag is repeated, because it rides an unreliable datagram.</b> Owner updates go out
         /// sequenced and unretransmitted, so the one send that mattered most was also the one send whose
-        /// loss put the whole snap-back back. It is therefore set on the next <see cref="ResyncSendRepeats"/>
-        /// sends rather than one, and re-raised by <see cref="RequestResyncOnLargeCorrection"/> when the
-        /// authority answers with a correction big enough to mean it did not take the claim. Neither is
-        /// free and neither is unbounded: the server charges an adopted resync against the same
-        /// per-window budget as a frame change, and only charges a repeat whose predecessor never
-        /// arrived.
+        /// loss put the whole snap-back back. It is therefore set on the next
+        /// <see cref="ResyncSendRepeats"/> sends rather than one. The repeats are not free and not
+        /// unbounded, they are simply already paid for: the server charges one resumption against the
+        /// same per-window budget as a frame change and treats the sends behind it as the same claim
+        /// arriving again — see <c>ServerReplication.TryAcceptResync</c>. Nothing here re-raises the
+        /// latch on a correction; a correction big enough to teleport the pawn has already moved it onto
+        /// the authority's pose, so the claim a re-raise would carry is the authority's own numbers.
         /// </para>
         /// </remarks>
         private void SendOwnerSample(ClientReplication replication) {
@@ -543,23 +580,6 @@ namespace AlpineLib.Networking {
         /// </summary>
         private void RequestResync() {
             _resyncSendsRemaining = ResyncSendRepeats;
-        }
-
-        /// <summary>
-        /// Re-raises the resync latch when the authority has just moved this pawn a long way.
-        /// </summary>
-        /// <remarks>
-        /// The owner cannot see whether its flagged datagram arrived, and a correction this large is the
-        /// evidence that it did not: the server only corrects an owner-simulated pawn from a claim it has
-        /// judged, so a disagreement past <see cref="correctionSnapDistance"/> means the claim was
-        /// refused. Claiming it again rather than leaving it stranded converges, because an adopted
-        /// resync produces no correction and so nothing re-raises the latch.
-        /// </remarks>
-        private void RequestResyncOnLargeCorrection(Vector3 error) {
-            if (_view.Authority != AuthorityMode.OwnerClient) return;
-            if (error.sqrMagnitude <= correctionSnapDistance * correctionSnapDistance) return;
-
-            RequestResync();
         }
 
         /// <summary>
@@ -864,7 +884,6 @@ namespace AlpineLib.Networking {
 
             if (!CanSmoothCorrection(error)) {
                 _correctionResidual = Vector3.zero;
-                RequestResyncOnLargeCorrection(error);
                 Teleport(corrected);
                 SyncActorMotion(in world);
                 return;
@@ -972,6 +991,7 @@ namespace AlpineLib.Networking {
             _hasHandledSpawnDeferralExpiry = false;
             _hasDeferredPlacement = false;
             _hasHoldingPosition = false;
+            _commandedTravelSinceHold = 0f;
             _resyncSendsRemaining = 0;
         }
     }

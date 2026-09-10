@@ -308,9 +308,11 @@ namespace AlpineLib.Server.Tests {
         /// </summary>
         /// <remarks>
         /// The trust boundary the flag opens is exactly the frame-change one — the server cannot check
-        /// either — so it is given the same terms and no better ones. A whole window's budget of resyncs
-        /// is adopted unmeasured; the next one inside that window is measured, and a teleport-sized claim
-        /// is thrown away.
+        /// either — so it is given the same terms and no better ones. The two claimants share the window,
+        /// which is why the budget is filled here with frame changes and spent by a resync: a resync
+        /// cannot fill it on its own any more, because a second burst has to wait
+        /// <c>MovementValidator.ResyncBurstTicks</c> and the claims in between are repeats rather than
+        /// new resumptions.
         /// </remarks>
         [Fact]
         public void AResyncPastTheBudgetIsMeasuredLikeAnyOtherClaim() {
@@ -322,18 +324,26 @@ namespace AlpineLib.Server.Tests {
                 CarrierReplicationLoopbackWorld.PawnPrefab,
                 owner.ServerSidePeer.Id,
                 AuthorityMode.OwnerClient,
-                At(Vector3.Zero, PawnState.WorldCarrierId));
+                At(OnTheDeck, PawnState.WorldCarrierId));
 
-            for (int jump = 1; jump <= MovementValidator.MaxCarrierSwitchesPerWindow; jump++) {
-                ReportResync(world, owner, pawn, At(new Vector3(jump * 50f, 0f, 0f), PawnState.WorldCarrierId));
-                Assert.Equal(jump * 50f, pawn.State.Position.X, 3);
-            }
+            // Ticks 0 and 1 of the window: two frame changes, two slots.
+            Report(world, owner, pawn, At(OnTheDeck, DeckCarrierId));
+            world.Pump(1);
+            Report(world, owner, pawn, At(OnTheDeck, SecondCarrierId));
 
-            float spentX = pawn.State.Position.X;
+            // Tick 2: a resumption opens a burst and takes the last slot, unmeasured and whole.
+            world.Pump(1);
+            ReportResync(world, owner, pawn, At(new Vector3(50f, 0f, 0f), SecondCarrierId));
 
-            ReportResync(world, owner, pawn, At(new Vector3(spentX + 50f, 0f, 0f), PawnState.WorldCarrierId));
+            Assert.Equal(50f, pawn.State.Position.X, 3);
+            Assert.Equal(MovementValidator.MaxCarrierSwitchesPerWindow, pawn.CarrierSwitchesInWindow);
 
-            Assert.Equal(spentX, pawn.State.Position.X, 3);
+            // Tick 6: a new burst inside the same window, with the budget spent. Measured, and thrown
+            // away for the teleport it is.
+            world.Pump(4);
+            ReportResync(world, owner, pawn, At(new Vector3(100f, 0f, 0f), SecondCarrierId));
+
+            Assert.Equal(50f, pawn.State.Position.X, 3);
         }
 
         /// <summary>

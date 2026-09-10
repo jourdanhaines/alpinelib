@@ -27,18 +27,19 @@ namespace AlpineLib.Server.Tests {
 
         /// <summary>
         /// A client that sets the flag on every update is bounded in frequency but not in distance: it
-        /// gets a whole budget of unmeasured teleports per window, twelve a second, of any size.
+        /// gets one unmeasured teleport of any size per burst window.
         /// </summary>
         /// <remarks>
-        /// The bound is real and it is the frame-change bound, exactly as the remark on
+        /// The bound is real and it was the frame-change bound, exactly as the remark on
         /// <c>ServerReplication.TryAcceptResync</c> claims. What the remark does not say is what the
         /// bound is worth: nothing caps how far one unmeasured move may travel, so the ceiling on a
-        /// cheat is a rate of teleports rather than a speed. That is why
-        /// <c>MovementValidator.MaxCarrierSwitchesPerWindow</c> stays at three — a fourth slot would be a
-        /// third more of this.
+        /// cheat is a rate of teleports rather than a speed. Round 5 measured a whole budget per window,
+        /// twelve a second; charging a burst once rather than per datagram took that to one per
+        /// <c>MovementValidator.ResyncBurstTicks</c>, because the flagged claims in between must be the
+        /// adopted pose carried on and a teleport is not.
         /// </remarks>
         [Fact]
-        public void AClientFlaggingEveryUpdateGetsAWholeBudgetOfTeleportsPerWindow() {
+        public void AClientFlaggingEveryUpdateGetsOneTeleportPerBurstWindow() {
             using var world = new CarrierReplicationLoopbackWorld();
             CarrierReplicationLoopbackClient owner = world.ConnectClient();
             world.Pump(4);
@@ -66,10 +67,12 @@ namespace AlpineLib.Server.Tests {
                 if (pawn.State.Position.X != heldBefore) adopted++;
             }
 
-            // Three accepted then five refused, per eight-tick window, for the whole second.
-            int expected = MovementValidator.MaxCarrierSwitchesPerWindow * 4;
+            // One accepted then three refused, per burst window, for the whole second.
+            int expected = (TicksPerSecond + (int)MovementValidator.ResyncBurstTicks - 1)
+                / (int)MovementValidator.ResyncBurstTicks;
 
             Assert.Equal(expected, adopted);
+            Assert.True(expected < MovementValidator.MaxCarrierSwitchesPerWindow * 4, "ceiling rose");
             Assert.Equal(expected * TeleportMetres, pawn.State.Position.X, 1);
         }
 
@@ -198,6 +201,9 @@ namespace AlpineLib.Server.Tests {
         /// follow it is tick 8, which reopens the window. That is why the budget does not need a fourth
         /// slot for the resync; the burst itself is pinned by
         /// <c>WithheldOwnerUpdateReview4Tests.ASourceDwellingTheMandatedMinimumFillsTheBudgetExactly</c>.
+        /// One resync is the whole of what the shipped owner costs even though it sends three of them,
+        /// because the repeats charge nothing —
+        /// <c>ResyncRepeatReview6Tests.TheShippedThreeSendBurstFitsTheDensestHonestWindow</c>.
         /// </remarks>
         [Fact]
         public void AResyncCannotLandInsideAConformingSourcesThreeChangeBurst() {
@@ -236,6 +242,11 @@ namespace AlpineLib.Server.Tests {
         /// early in the window pushes the source's remaining changes past its end rather than stacking
         /// with them.
         /// </summary>
+        /// <remarks>
+        /// One flagged send stands for the whole burst the owner actually pushes, which is what the
+        /// server charges for; <c>ResyncRepeatReview6Tests.TheShippedThreeSendBurstFitsTheDensestHonestWindow</c>
+        /// runs the same window with all three sends and reaches the same count.
+        /// </remarks>
         [Fact]
         public void TheDensestHonestWindowStillHoldsOnlyThreeCharges() {
             using var world = new CarrierReplicationLoopbackWorld();

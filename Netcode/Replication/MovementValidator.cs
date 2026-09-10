@@ -53,7 +53,10 @@ namespace AlpineLib.Netcode.Replication {
     /// the same terms and out of the same budget as a frame change: unmeasured, bounded by frequency, and
     /// never free. It is the same trust boundary seen from the time axis rather than the space one — the
     /// two poses either side belong to different stories rather than different origins — so the exposure
-    /// below covers it unchanged.
+    /// below covers it unchanged. What is charged is the resumption, not the datagrams carrying it: the
+    /// owner repeats the flag against packet loss, and the repeats landing inside
+    /// <see cref="ResyncBurstTicks"/> of the send that opened the burst are the same claim arriving
+    /// again — see <see cref="IsResyncBurstContinuation"/>.
     /// </para>
     /// <para>
     /// <b>What the interval cap costs an honest client.</b> The gap a move is measured over is capped at
@@ -62,11 +65,11 @@ namespace AlpineLib.Netcode.Replication {
     /// <c>g</c> at gait <c>v</c> is rejected once <c>v·g &gt; RejectDistanceRatio · (tolerance · v · T +
     /// slack)</c>, i.e. from about <c>4.5·T</c> onwards at any gait: a two-second gap is clamped and
     /// rubber-banded, and one past roughly four and a half seconds is thrown away and snapped back. The
-    /// resync flag cannot cover this case on its own — an owner raises it only when it withholds or
-    /// places a state itself, and a client losing packets has done neither and cannot tell — which is
-    /// why the owner repeats the flag and re-raises it on a large correction; see
-    /// <c>NetActorSync.SendOwnerSample</c>. The real fix is a receipt clock on the server side, stamping
-    /// when an owner update last <em>arrived</em> and treating an overlong gap as a resync.
+    /// resync flag cannot cover this case at all — an owner raises it only when it withholds or places a
+    /// state itself, and a client losing packets has done neither and cannot tell. Repeating the flag
+    /// (see <c>NetActorSync.SendOwnerSample</c>) covers the loss of a resync the owner did raise, and
+    /// nothing more. The fix for the gap itself is a receipt clock on the server side, stamping when an
+    /// owner update last <em>arrived</em> and treating an overlong gap as a resync.
     /// </para>
     /// <para>
     /// What the hole cannot buy, either way, is speed: every tick that keeps the same carrier is
@@ -131,6 +134,13 @@ namespace AlpineLib.Netcode.Replication {
         /// claimants interleave rather than stack.
         /// </para>
         /// <para>
+        /// That argument is about the tick a resync is <em>charged</em> on, which is the tick the owner
+        /// broke its silence — one per resumption, whatever the transport does to the datagrams. The
+        /// repeats the owner sends behind it land on the following send ticks with nothing silent in
+        /// front of them, and they are exactly why <see cref="ResyncBurstTicks"/> exists: they are the
+        /// same claim arriving again and are charged nothing.
+        /// </para>
+        /// <para>
         /// The count is also the ceiling on a client that lies, and that ceiling is a rate rather than a
         /// distance: nothing bounds how far one unmeasured move may travel, so each slot is a teleport of
         /// any size and three slots is twelve of them a second at the default tick rate. Widening it for
@@ -138,6 +148,26 @@ namespace AlpineLib.Netcode.Replication {
         /// </para>
         /// </remarks>
         public const int MaxCarrierSwitchesPerWindow = 3;
+
+        /// <summary>
+        /// Ticks after the send that opened a resync burst within which a further flagged claim is the
+        /// same resumption arriving again rather than a new one.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// One more than the number of sends <c>NetActorSync.ResyncSendRepeats</c> puts the flag on, so
+        /// the last repeat of a burst is still inside the window with a tick of slack for jitter. The
+        /// owner sends at the server's tick rate — <c>NetConfig.Validate</c> refuses any other pairing —
+        /// so a send tick and a server tick are the same thing here.
+        /// </para>
+        /// <para>
+        /// It bounds the cheat as well as the honest case: a client that flags everything gets one
+        /// unmeasured move of any size per window this long — fewer than the budget alone would give it
+        /// — because the claims in between must pass
+        /// <see cref="IsResyncBurstContinuation"/>, which a teleport does not.
+        /// </para>
+        /// </remarks>
+        public const uint ResyncBurstTicks = 4;
 
         private readonly NetConfig config;
 
@@ -210,10 +240,7 @@ namespace AlpineLib.Netcode.Replication {
             float allowedSpeed = ResolveAllowedSpeed(profile, in previous, in next);
             float allowedDistance = allowedSpeed * deltaSeconds + PositionSlackMetres;
 
-            Vector3 travel = new Vector3(
-                next.Position.X - previous.Position.X,
-                0f,
-                next.Position.Z - previous.Position.Z);
+            Vector3 travel = PlanarTravel(in previous, in next);
             float travelled = travel.Length();
             float reportedSpeed = travelled / deltaSeconds;
 
@@ -227,6 +254,61 @@ namespace AlpineLib.Netcode.Replication {
 
             PawnState clamped = ClampTravel(in previous, in next, travel, travelled, allowedDistance);
             return MovementVerdict.Clamp(in clamped, reportedSpeed, allowedSpeed);
+        }
+
+        /// <summary>
+        /// Whether a flagged claim arriving inside a resync burst is the resumption already adopted,
+        /// carried on for another tick, rather than a fresh unmeasured move.
+        /// </summary>
+        /// <param name="prefabId">Selects the movement profile; an unknown id continues anything.</param>
+        /// <param name="held">The state the server adopted from the resync that opened the burst.</param>
+        /// <param name="claim">The state the repeat reports.</param>
+        /// <param name="deltaSeconds">Time between the two, as the server measured it.</param>
+        /// <remarks>
+        /// <para>
+        /// The repeats of a burst are not the same numbers twice: a rider whose withhold ended while
+        /// they were still carrying a thirty-metre-a-second consist covers a metre between sends, which
+        /// is a teleport to the gait ceiling and ordinary continued motion to anyone watching. So the
+        /// bar is the teleport bar — <see cref="RejectDistanceRatio"/> times the allowance — taken at the
+        /// faster of the gait and the speed the server itself already holds for this pawn.
+        /// </para>
+        /// <para>
+        /// Reading the held speed rather than the claimed one is what keeps this from being a way in.
+        /// That velocity arrived on the claim the server charged a budget slot for and replicated to
+        /// every other peer; a client wanting half-kilometre repeats has to have announced the speed
+        /// that covers them, to everybody, and pay for the burst that opened it.
+        /// </para>
+        /// </remarks>
+        public bool IsResyncBurstContinuation(
+            ushort prefabId,
+            in PawnState held,
+            in PawnState claim,
+            float deltaSeconds) {
+            MovementProfile profile = config.GetMovementProfile(prefabId);
+
+            if (profile == null || deltaSeconds <= 0f) return true;
+
+            float carriedSpeed = PlanarLength(held.Velocity) * config.MovementToleranceMultiplier;
+            float allowedSpeed = Math.Max(ResolveAllowedSpeed(profile, in held, in claim), carriedSpeed);
+            float allowedDistance = allowedSpeed * deltaSeconds + PositionSlackMetres;
+
+            return PlanarTravel(in held, in claim).Length() <= allowedDistance * RejectDistanceRatio;
+        }
+
+        /// <summary>
+        /// The horizontal step between two states. Vertical travel is left out of every distance rule
+        /// here: gravity and a stair are not gait.
+        /// </summary>
+        private static Vector3 PlanarTravel(in PawnState previous, in PawnState next) {
+            return new Vector3(
+                next.Position.X - previous.Position.X,
+                0f,
+                next.Position.Z - previous.Position.Z);
+        }
+
+        /// <summary>The horizontal magnitude of a reported velocity.</summary>
+        private static float PlanarLength(Vector3 velocity) {
+            return new Vector3(velocity.X, 0f, velocity.Z).Length();
         }
 
         /// <summary>

@@ -41,6 +41,8 @@ namespace AlpineLib.Netcode.Replication {
             LastDirtyTick = 0u;
             CarrierSwitchWindowStartTick = 0u;
             CarrierSwitchesInWindow = 0;
+            LastAcceptedResyncTick = 0u;
+            HasAcceptedResync = false;
             LastAcknowledgedInputSequence = 0u;
             HighestReceivedInputSequence = 0u;
             StarvedTicks = 0;
@@ -106,6 +108,28 @@ namespace AlpineLib.Netcode.Replication {
         /// it, not in this setter: the entity is a state bag and the policy is the caller's.
         /// </remarks>
         public byte CarrierSwitchesInWindow { get; set; }
+
+        /// <summary>
+        /// Tick the resync this pawn is currently inside was accepted on, meaningful only while
+        /// <see cref="HasAcceptedResync"/> is true.
+        /// </summary>
+        /// <remarks>
+        /// An owner cannot see whether its flagged datagram arrived, so it sends the same resync several
+        /// times — see <c>NetActorSync.SendOwnerSample</c>. Those sends are one claim, not several, and
+        /// this is what lets the server say so: it is stamped by the send that opens a burst and pays for
+        /// it, never by the repeats that follow inside
+        /// <see cref="MovementValidator.ResyncBurstTicks"/> of it. Charging the repeats instead would
+        /// spend a whole window's budget on one resumption; see
+        /// <c>ServerReplication.TryAcceptResync</c>.
+        /// </remarks>
+        public uint LastAcceptedResyncTick { get; set; }
+
+        /// <summary>
+        /// Whether <see cref="LastAcceptedResyncTick"/> names a real resync yet. Tick zero is a legal
+        /// tick, so a pawn that has never resynced cannot be told from one that resynced at the session's
+        /// first tick by the stamp alone.
+        /// </summary>
+        public bool HasAcceptedResync { get; set; }
 
         /// <summary>
         /// The owner's input sequence this state accounts for. Rides on every correction so the owner's
