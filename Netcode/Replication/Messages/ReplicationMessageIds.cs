@@ -1,11 +1,19 @@
 namespace AlpineLib.Netcode.Replication.Messages {
     /// <summary>
-    /// The replication block of the message id map, 128-191.
+    /// The replication block of the message id map, ids 128-135.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Ids are a permanent wire contract. A retired message's id stays retired rather than being handed
     /// to something else — a client one build behind would decode the new message with the old reader and
     /// corrupt itself silently, which is the worst failure this protocol can have.
+    /// </para>
+    /// <para>
+    /// The block stops at 135: 136-191 is the band games author their own messages in, so a new
+    /// replication message takes the next free id here rather than growing into it.
+    /// <see cref="AlpineLib.Netcode.Protocol.MessageIdBudget"/> is the single authority on the whole
+    /// map — check an id there rather than inferring a range from this class.
+    /// </para>
     /// </remarks>
     public static class ReplicationMessageIds {
         /// <summary>Server to client: an entity now exists. ReliableOrdered.</summary>

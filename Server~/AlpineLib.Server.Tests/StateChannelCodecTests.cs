@@ -28,6 +28,34 @@ namespace AlpineLib.Server.Tests {
         }
 
         [Fact]
+        public void ARetiredRecordCarriesItsFlagAndStillHasAStateSlotOnTheWire() {
+            StateChannelRecord<StateChannelTestState> original =
+                StateChannelRecord<StateChannelTestState>.Retired(7, 42u);
+
+            StateChannelRecord<StateChannelTestState> decoded = RoundTrip(in original);
+
+            Assert.Equal(7, decoded.Id);
+            Assert.Equal(42u, decoded.Tick);
+            Assert.True(decoded.IsRetired);
+            Assert.Equal(StateChannelRecord<StateChannelTestState>.RetiredFlag, decoded.Flags);
+
+            // The state is written even though it means nothing, so every record is the same shape and a
+            // reader never branches on a flag it may not understand.
+            Assert.Equal(0f, decoded.State.Distance);
+        }
+
+        [Fact]
+        public void ALiveRecordLeavesTheReservedFlagBitsAlone() {
+            var original = new StateChannelRecord<StateChannelTestState>(
+                1, 2u, new StateChannelTestState(1f, 2f, 3));
+
+            StateChannelRecord<StateChannelTestState> decoded = RoundTrip(in original);
+
+            Assert.Equal(0, decoded.Flags);
+            Assert.False(decoded.IsRetired);
+        }
+
+        [Fact]
         public void AnEnvelopeKeepsItsRecordsInOrder() {
             var records = new List<StateChannelRecord<StateChannelTestState>> {
                 new StateChannelRecord<StateChannelTestState>(3, 10u, new StateChannelTestState(1f, 2f, 1)),

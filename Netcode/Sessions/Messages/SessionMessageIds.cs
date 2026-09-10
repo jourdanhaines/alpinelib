@@ -1,12 +1,20 @@
 namespace AlpineLib.Netcode.Sessions.Messages {
     /// <summary>
-    /// The wire ids of every session-layer message, band 64-127 of the protocol id map.
+    /// The wire ids of every session-layer message: ids 64-83 of the protocol id map, plus the 120-127
+    /// tail held back for listen-host process migration.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// These numbers are a compatibility contract with every shipped build: an id may be retired but
     /// never repurposed, because an old client that still speaks it would decode a different payload
     /// into the same handler. Ids 120 and 122-127 are deliberately left unused — they are reserved for
     /// listen-host process migration, which is designed for but not built in v1.
+    /// </para>
+    /// <para>
+    /// 84-86 belong to the claim messages and 87-119 are free, so this band is not contiguous.
+    /// <see cref="AlpineLib.Netcode.Protocol.MessageIdBudget"/> is the single authority on the whole
+    /// map — check an id there rather than inferring a range from this class.
+    /// </para>
     /// </remarks>
     public static class SessionMessageIds {
         /// <summary>Client to server: the identity claim that opens the handshake.</summary>

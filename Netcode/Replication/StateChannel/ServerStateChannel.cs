@@ -30,11 +30,25 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
     /// their channels apart without this code knowing sessions exist.
     /// </para>
     /// <para>
-    /// <b>Removal is server-local.</b> <see cref="Remove"/> drops a subject from the channel but puts
-    /// nothing on the wire: a client that already holds the id keeps its last state until the game tells
-    /// it otherwise. Subjects on a state channel are expected to live as long as the session — the
-    /// consist that exists for the whole match — so paying for a retire message on every channel would
-    /// buy nothing for the case it is built for.
+    /// <b>A publish is chunked to fit the datagram.</b> A send buffer is
+    /// <see cref="NetBufferPool.DefaultBufferSize"/> bytes and <c>NetWriter</c> does not grow, so a
+    /// publish that did not fit would throw out of the caller's tick loop. Records are therefore
+    /// measured — by serializing each one into a scratch writer, which is the only answer that stays
+    /// right for a <typeparamref name="TState"/> whose encoded size varies with its contents — and
+    /// packed into as many envelopes as it takes. Both cadences chunk, so a keyframe is bounded the
+    /// same way a dirty broadcast is. The one thing chunking cannot rescue is a single record too big
+    /// for an empty datagram; that throws, because no amount of splitting would send it.
+    /// </para>
+    /// <para>
+    /// <b>Retirement rides the record, not a message of its own.</b> <see cref="Remove"/> puts a
+    /// retired record on the wire and the client forgets the subject. The retirement is repeated until
+    /// the next keyframe has carried it reliably, because the dirty broadcast it first went out on is
+    /// unreliable and a client that missed it would hold a ghost forever.
+    /// </para>
+    /// <para>
+    /// <b>The game's own codec runs on the receive path.</b> A client decodes
+    /// <typeparamref name="TState"/> inside its poll, where only <c>NetProtocolException</c> is caught,
+    /// so a <c>Deserialize</c> that throws anything else takes the whole client update with it.
     /// </para>
     /// </remarks>
     public sealed class ServerStateChannel<TState> where TState : struct, INetMessage {
@@ -46,9 +60,12 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         private readonly NetConfig config;
         private readonly ushort messageId;
         private readonly List<ushort> ids = new List<ushort>();
+        private readonly List<ushort> retiredIds = new List<ushort>();
         private readonly Dictionary<ushort, StateEntry> entriesById = new Dictionary<ushort, StateEntry>();
         private readonly HashSet<ushort> dirtyIds = new HashSet<ushort>();
         private readonly List<StateChannelRecord<TState>> records = new List<StateChannelRecord<TState>>();
+        private readonly List<StateChannelRecord<TState>> chunk = new List<StateChannelRecord<TState>>();
+        private readonly byte[] measureBuffer = new byte[NetBufferPool.DefaultBufferSize];
 
         private double snapshotAccumulatorSeconds;
         private double keyframeAccumulatorSeconds;
@@ -69,15 +86,17 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
             this.peerSource = peerSource ?? throw new ArgumentNullException(nameof(peerSource));
             this.config = config ?? throw new ArgumentNullException(nameof(config));
 
-            if (MessageIdBudget.IsReservedByLibrary(messageId)) {
-                throw new ArgumentException(
-                    "Message id " + messageId.ToString() + " is reserved by the library. Author game messages in the "
-                    + MessageIdBudget.GameBandStart.ToString() + "-" + MessageIdBudget.GameBandEnd.ToString() + " band.",
-                    nameof(messageId));
-            }
+            MessageIdBudget.GuardGameMessageId(messageId, nameof(messageId));
 
             this.messageId = messageId;
         }
+
+        /// <summary>
+        /// Bytes one envelope's records may occupy: the send buffer less the id header the frame adds
+        /// and the envelope's own header. A chunk is packed up to this and no further.
+        /// </summary>
+        public static int MaxRecordBytesPerEnvelope =>
+            NetBufferPool.DefaultBufferSize - NetEnvelope.HeaderSize - StateChannelEnvelope<TState>.HeaderBytes;
 
         /// <summary>The id this channel's envelopes travel under.</summary>
         public ushort MessageId => messageId;
@@ -88,6 +107,9 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         /// <summary>The subjects, in the order they were first set. Iteration here is the wire order.</summary>
         public IReadOnlyList<ushort> Ids => ids;
 
+        /// <summary>Subjects retired but not yet carried by a keyframe, so still being repeated.</summary>
+        public IReadOnlyList<ushort> RetiringIds => retiredIds;
+
         /// <summary>The session's peers, as its member list reports them at this moment.</summary>
         public IReadOnlyList<PeerHandle> Peers => peerSource() ?? Array.Empty<PeerHandle>();
 
@@ -95,21 +117,25 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         /// Records a subject's state and marks it for the next broadcast. A subject seen for the first
         /// time joins the end of the wire order and stays there.
         /// </summary>
-        /// <exception cref="InvalidOperationException">
-        /// Adding this subject would push the channel past <see cref="StateChannelEnvelope{TState}.MaxRecordCount"/>,
-        /// beyond which its own keyframe would not decode.
-        /// </exception>
+        /// <remarks>
+        /// A state is identified by its subject and its tick together, and a client drops a record whose
+        /// tick it already holds. Always stamp the tick the state was computed at: restating one tick
+        /// with a new payload publishes nothing.
+        /// </remarks>
         public void Set(ushort id, in TState state, uint tick) {
             if (!entriesById.ContainsKey(id)) {
-                GuardCapacity();
                 ids.Add(id);
+                retiredIds.Remove(id);
             }
 
             entriesById[id] = new StateEntry(state, tick);
             dirtyIds.Add(id);
         }
 
-        /// <summary>Drops a subject. Returns false if the channel never held it.</summary>
+        /// <summary>
+        /// Drops a subject and tells the session to forget it. Returns false if the channel never held
+        /// it.
+        /// </summary>
         public bool Remove(ushort id) {
             if (!entriesById.Remove(id)) {
                 return false;
@@ -117,6 +143,11 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
 
             ids.Remove(id);
             dirtyIds.Remove(id);
+
+            if (!retiredIds.Contains(id)) {
+                retiredIds.Add(id);
+            }
+
             return true;
         }
 
@@ -138,7 +169,9 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         /// <remarks>
         /// The two cadences are driven by wall time rather than by the tick counter for the same reason
         /// replication does it: the send rate is a bandwidth decision and the tick rate is a simulation
-        /// decision, and tying them together would make one hostage to the other.
+        /// decision, and tying them together would make one hostage to the other. Debt past one interval
+        /// is dropped rather than banked, so a load hitch costs a late send and not a burst of catch-up
+        /// sends at several times the configured rate afterwards.
         /// </remarks>
         /// <param name="serverTick">The authoritative tick counter, from <c>NetServer.Tick</c>.</param>
         /// <param name="deltaSeconds">Wall time since the previous call, which drives the send cadences.</param>
@@ -149,7 +182,7 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
 
             double snapshotInterval = config.SnapshotInterval;
             if (snapshotAccumulatorSeconds >= snapshotInterval) {
-                snapshotAccumulatorSeconds -= snapshotInterval;
+                snapshotAccumulatorSeconds = DrainedBy(snapshotAccumulatorSeconds, snapshotInterval);
                 BroadcastDirty(serverTick);
             }
 
@@ -160,50 +193,64 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
         }
 
         /// <summary>
-        /// Sends the subjects that changed since the last broadcast to the whole session, unreliably.
-        /// Clears the dirty set whether or not anything was on it.
+        /// Sends the subjects that changed since the last broadcast to the whole session, unreliably,
+        /// along with any retirement still in flight.
         /// </summary>
+        /// <remarks>
+        /// The dirty set is cleared only once every chunk has gone out. A send that throws — an
+        /// oversized record, a transport refusing the datagram — therefore leaves the pending subjects
+        /// pending, so the next broadcast republishes them instead of silently dropping a state nobody
+        /// will ever hear about again.
+        /// </remarks>
         public void BroadcastDirty(uint tick) {
-            if (dirtyIds.Count == 0) {
+            if (dirtyIds.Count == 0 && retiredIds.Count == 0) {
                 return;
             }
 
-            BuildRecords(onlyDirty: true);
+            BuildRecords(onlyDirty: true, retireTick: tick);
+            BroadcastRecords(tick, DeliveryClass.UnreliableSequenced);
             dirtyIds.Clear();
-
-            var message = new StateChannelEnvelope<TState>(tick, records);
-            server.SendToMany(Peers, messageId, in message, DeliveryClass.UnreliableSequenced);
         }
 
         /// <summary>Sends every subject in full to the whole session, reliably — the 1 Hz floor.</summary>
+        /// <remarks>
+        /// Clears the dirty set too: a keyframe reaches every peer the dirty broadcast would have, so
+        /// leaving it set would only buy an unreliable resend of what just went out reliably. It also
+        /// retires the pending retirements, which is what bounds how long they are repeated.
+        /// </remarks>
         public void BroadcastKeyframe(uint tick) {
-            if (ids.Count == 0) {
+            if (ids.Count == 0 && retiredIds.Count == 0) {
                 return;
             }
 
-            BuildRecords(onlyDirty: false);
-
-            var message = new StateChannelEnvelope<TState>(tick, records);
-            server.SendToMany(Peers, messageId, in message, DeliveryClass.ReliableOrdered);
+            BuildRecords(onlyDirty: false, retireTick: tick);
+            BroadcastRecords(tick, DeliveryClass.ReliableOrdered);
+            dirtyIds.Clear();
+            retiredIds.Clear();
         }
 
         /// <summary>
         /// Sends every subject in full to one peer — the join and rejoin path, so a late arrival does not
         /// wait up to a second for the keyframe floor to come round.
         /// </summary>
+        /// <remarks>
+        /// Neither accumulator is touched: this keyframe is one peer's business and resetting the floor
+        /// would delay everyone else's. The joiner may therefore see a broadcast keyframe moments after
+        /// its own, which costs one duplicate envelope and nothing else. Pending retirements ride along
+        /// so a subject the joiner just heard about on the unreliable stream is not left behind as a
+        /// ghost; ids it never held are ignored on the far side.
+        /// </remarks>
         public void SendKeyframeTo(PeerHandle peer) {
-            if (!peer.IsValid || ids.Count == 0) {
+            if (!peer.IsValid || (ids.Count == 0 && retiredIds.Count == 0)) {
                 return;
             }
 
-            BuildRecords(onlyDirty: false);
-
-            var message = new StateChannelEnvelope<TState>(currentTick, records);
-            server.Send(peer, messageId, in message, DeliveryClass.ReliableOrdered);
+            BuildRecords(onlyDirty: false, retireTick: currentTick);
+            SendRecordsTo(peer, currentTick, DeliveryClass.ReliableOrdered);
         }
 
         /// <summary>Fills the scratch list in wire order, either from the dirty set or from everything.</summary>
-        private void BuildRecords(bool onlyDirty) {
+        private void BuildRecords(bool onlyDirty, uint retireTick) {
             records.Clear();
 
             for (int idIndex = 0; idIndex < ids.Count; idIndex++) {
@@ -216,16 +263,91 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
                 StateEntry entry = entriesById[id];
                 records.Add(new StateChannelRecord<TState>(id, entry.Tick, entry.State));
             }
+
+            for (int retiredIndex = 0; retiredIndex < retiredIds.Count; retiredIndex++) {
+                records.Add(StateChannelRecord<TState>.Retired(retiredIds[retiredIndex], retireTick));
+            }
         }
 
-        private void GuardCapacity() {
-            if (ids.Count < StateChannelEnvelope<TState>.MaxRecordCount) {
+        /// <summary>Sends the built records to the whole session, split across datagram-sized envelopes.</summary>
+        private void BroadcastRecords(uint tick, DeliveryClass delivery) {
+            IReadOnlyList<PeerHandle> targets = Peers;
+            int start = 0;
+
+            while (start < records.Count) {
+                FillChunk(start);
+
+                var message = new StateChannelEnvelope<TState>(tick, chunk);
+                server.SendToMany(targets, messageId, in message, delivery);
+                start += chunk.Count;
+            }
+        }
+
+        /// <summary>Sends the built records to one peer, split the same way a broadcast is.</summary>
+        private void SendRecordsTo(PeerHandle peer, uint tick, DeliveryClass delivery) {
+            int start = 0;
+
+            while (start < records.Count) {
+                FillChunk(start);
+
+                var message = new StateChannelEnvelope<TState>(tick, chunk);
+                server.Send(peer, messageId, in message, delivery);
+                start += chunk.Count;
+            }
+        }
+
+        /// <summary>
+        /// Packs records from <paramref name="start"/> into the chunk list until the next one would not
+        /// fit the datagram. Always takes at least one, because a record that cannot fit alone throws.
+        /// </summary>
+        private void FillChunk(int start) {
+            chunk.Clear();
+
+            int budget = MaxRecordBytesPerEnvelope;
+            int used = 0;
+
+            for (int recordIndex = start; recordIndex < records.Count; recordIndex++) {
+                int recordBytes = MeasureRecord(records[recordIndex]);
+                GuardRecordFits(records[recordIndex].Id, recordBytes, budget);
+
+                if (used + recordBytes > budget || chunk.Count == StateChannelEnvelope<TState>.MaxRecordCount) {
+                    return;
+                }
+
+                chunk.Add(records[recordIndex]);
+                used += recordBytes;
+            }
+        }
+
+        /// <summary>
+        /// The encoded size of one record, measured by writing it. The state is the game's own struct,
+        /// so its size is not something this channel can compute from the type.
+        /// </summary>
+        private int MeasureRecord(in StateChannelRecord<TState> record) {
+            var writer = new NetWriter(measureBuffer);
+            writer.WriteMessage(record);
+            return writer.Written;
+        }
+
+        private static void GuardRecordFits(ushort id, int recordBytes, int budget) {
+            if (recordBytes <= budget) {
                 return;
             }
 
             throw new InvalidOperationException(
-                "A state channel holds at most " + StateChannelEnvelope<TState>.MaxRecordCount.ToString()
-                + " subjects, because a keyframe carrying more than that would not decode.");
+                "Subject " + id.ToString() + " encodes to " + recordBytes.ToString()
+                + " bytes, past the " + budget.ToString()
+                + " an envelope has room for. Splitting cannot help a single oversized record: shrink the state.");
+        }
+
+        /// <summary>
+        /// Pays one interval off a cadence accumulator, dropping anything still owed past a whole
+        /// further interval. A frame hitch is a late send, not a licence to send at several times the
+        /// configured rate until the debt clears.
+        /// </summary>
+        private static double DrainedBy(double accumulatorSeconds, double intervalSeconds) {
+            double remainder = accumulatorSeconds - intervalSeconds;
+            return remainder > intervalSeconds ? 0.0 : remainder;
         }
 
         /// <summary>One subject's stored state and the tick it was true at.</summary>

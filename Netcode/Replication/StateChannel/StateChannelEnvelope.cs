@@ -14,16 +14,25 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
     /// resolves a stale line by comparing ticks rather than by trusting the channel it arrived on.
     /// </para>
     /// <para>
-    /// <see cref="MaxRecordCount"/> is a decode sanity cap, not a capacity promise: it stops a corrupt
-    /// length claim from being allocated for. The real ceiling is the send buffer, which a channel with
-    /// hundreds of dirty subjects would overrun long before this bound — the same trade
-    /// <c>Snapshot</c> makes, and the reason a channel is meant for tens of subjects rather than
-    /// thousands.
+    /// <see cref="MaxRecordCount"/> is a decode sanity cap and nothing more: it stops a corrupt length
+    /// claim from being allocated for before a byte of body has been read. It is not a subject
+    /// capacity and not a promise about how many records a sender emits. The binding limit is the send
+    /// buffer, and <see cref="ServerStateChannel{TState}"/> splits a publish across as many envelopes
+    /// as that takes, so its envelopes never come near this bound. The cap is enforced on both sides —
+    /// an over-cap envelope fails on the server that built it rather than reaching a client as a
+    /// malformed message.
+    /// </para>
+    /// <para>
+    /// <see cref="HeaderBytes"/> is what a sender subtracts from its datagram budget before it starts
+    /// measuring records into a chunk.
     /// </para>
     /// </remarks>
     public struct StateChannelEnvelope<TState> : INetMessage where TState : struct, INetMessage {
         /// <summary>Sanity cap on records in one envelope; a larger claim is treated as corruption.</summary>
         public const int MaxRecordCount = 512;
+
+        /// <summary>Bytes the envelope's own header costs: the publish tick plus the record count.</summary>
+        public const int HeaderBytes = 6;
 
         /// <summary>Creates an envelope over a set of records.</summary>
         public StateChannelEnvelope(uint serverTick, List<StateChannelRecord<TState>> records) {
@@ -42,6 +51,13 @@ namespace AlpineLib.Netcode.Replication.StateChannel {
             writer.WriteUInt(ServerTick);
 
             int recordCount = Records == null ? 0 : Records.Count;
+
+            if (recordCount > MaxRecordCount) {
+                throw new NetProtocolException("State channel envelope holds " + recordCount.ToString()
+                    + " records, which exceeds the sanity cap of " + MaxRecordCount.ToString()
+                    + " every receiver enforces.");
+            }
+
             writer.WriteUShort((ushort)recordCount);
 
             for (int recordIndex = 0; recordIndex < recordCount; recordIndex++) {

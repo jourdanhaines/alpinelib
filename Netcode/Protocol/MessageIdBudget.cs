@@ -1,3 +1,5 @@
+using System;
+
 namespace AlpineLib.Netcode.Protocol {
     /// <summary>
     /// The whole-protocol view of the message id map: which ids the library has spoken for, and which
@@ -83,8 +85,31 @@ namespace AlpineLib.Netcode.Protocol {
         /// unreserved — 3-63, 87-119 and everything past 192 are free too — but they sit between library
         /// bands that may grow, so a game that stays here never has to renumber.
         /// </summary>
+        /// <remarks>
+        /// Advice, not a gate. Nothing in the library refuses an id merely for sitting outside this
+        /// band, because the free gaps are legitimately usable; what is refused is an id the library
+        /// speaks, which is <see cref="IsReservedByLibrary"/>'s job.
+        /// </remarks>
         public static bool IsInGameBand(ushort id) {
             return IsInRange(id, GameBandStart, GameBandEnd);
+        }
+
+        /// <summary>
+        /// Throws unless a game may author on this id. Both halves of a game-owned channel call it, so
+        /// a sender and a receiver cannot disagree about which ids are theirs to take.
+        /// </summary>
+        /// <param name="id">The id the caller wants to publish or listen on.</param>
+        /// <param name="parameterName">The caller's own parameter name, for the thrown exception.</param>
+        /// <exception cref="ArgumentException">The id is one the library already speaks.</exception>
+        public static void GuardGameMessageId(ushort id, string parameterName) {
+            if (!IsReservedByLibrary(id)) {
+                return;
+            }
+
+            throw new ArgumentException(
+                "Message id " + id.ToString() + " is reserved by the library. Author game messages in the "
+                + GameBandStart.ToString() + "-" + GameBandEnd.ToString() + " band.",
+                parameterName);
         }
 
         private static bool IsInRange(ushort id, ushort first, ushort last) {

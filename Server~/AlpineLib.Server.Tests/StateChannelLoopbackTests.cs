@@ -59,6 +59,11 @@ namespace AlpineLib.Server.Tests {
 
             Assert.Single(spy.Envelopes);
 
+            // The cadence keeps firing; with nothing dirty it has nothing to say.
+            world.Pump(3);
+
+            Assert.Single(spy.Envelopes);
+
             world.Pump(40);
 
             Assert.True(spy.Envelopes.Count >= 2, "The 1 Hz keyframe floor never went out.");
@@ -147,6 +152,85 @@ namespace AlpineLib.Server.Tests {
             // on a double registration, so this is what proves Dispose really released it.
             client.RebindChannel();
             Assert.True(client.IsChannelRegistered);
+        }
+
+        [Fact]
+        public void RemovingASubjectRetiresItOnTheClientAndRaisesRemoved() {
+            using var world = new LoopbackWorld(AllocatePort());
+            ChannelClient client = world.ConnectClient();
+
+            world.Channel.Set(1, Moving(10f), 100u);
+            world.Channel.Set(2, Moving(20f), 100u);
+            world.Pump(3);
+
+            Assert.Equal(new ushort[] { 1, 2 }, client.Channel.Ids);
+
+            world.Channel.Remove(1);
+            world.Pump(3);
+
+            Assert.Equal(new ushort[] { 1 }, client.Removals);
+            Assert.Equal(new ushort[] { 2 }, client.Channel.Ids);
+            Assert.False(client.Channel.TryGet(1, out StateChannelTestState _, out uint _));
+        }
+
+        [Fact]
+        public void ARetirementIsRepeatedUntilAKeyframeHasCarriedItReliably() {
+            using var world = new LoopbackWorld(AllocatePort());
+
+            world.Channel.Set(1, Moving(10f), 100u);
+            world.Pump(3);
+
+            world.Channel.Remove(1);
+
+            Assert.Equal(new ushort[] { 1 }, world.Channel.RetiringIds);
+
+            // The dirty broadcast that first carries it is unreliable, so it keeps going out until the
+            // reliable keyframe floor comes round.
+            world.Pump(3);
+
+            Assert.Equal(new ushort[] { 1 }, world.Channel.RetiringIds);
+
+            world.Pump(40);
+
+            Assert.Empty(world.Channel.RetiringIds);
+        }
+
+        [Fact]
+        public void ASubjectSetAgainAfterBeingRemovedIsPublishedRatherThanRetired() {
+            using var world = new LoopbackWorld(AllocatePort());
+            ChannelClient client = world.ConnectClient();
+
+            world.Channel.Set(1, Moving(10f), 100u);
+            world.Pump(3);
+
+            world.Channel.Remove(1);
+            world.Channel.Set(1, Moving(30f), 101u);
+            world.Pump(3);
+
+            Assert.Empty(client.Removals);
+            Assert.True(client.Channel.TryGet(1, out StateChannelTestState held, out uint heldTick));
+            Assert.Equal(30f, held.Distance);
+            Assert.Equal(101u, heldTick);
+        }
+
+        [Fact]
+        public void APublishTooBigForOneDatagramArrivesWholeAcrossSeveralEnvelopes() {
+            using var world = new LoopbackWorld(AllocatePort());
+            WireSpyClient spy = world.ConnectSpy();
+            ChannelClient client = world.ConnectClient();
+
+            const int subjects = 200;
+
+            for (ushort id = 1; id <= subjects; id++) {
+                world.Channel.Set(id, Moving(id), 100u);
+            }
+
+            world.Pump(3);
+
+            Assert.True(spy.Envelopes.Count > 1, "A publish this size should have been split.");
+            Assert.Equal(subjects, client.Channel.Ids.Count);
+            Assert.True(client.Channel.TryGet(subjects, out StateChannelTestState last, out uint _));
+            Assert.Equal(subjects, last.Distance);
         }
 
         [Fact]
@@ -293,6 +377,7 @@ namespace AlpineLib.Server.Tests {
             private readonly FakeNetTransport transport = new FakeNetTransport();
             private readonly NetClient client;
             private readonly List<ChannelUpdate> updates = new List<ChannelUpdate>();
+            private readonly List<ushort> removals = new List<ushort>();
 
             private ClientStateChannel<StateChannelTestState> channel;
 
@@ -306,6 +391,9 @@ namespace AlpineLib.Server.Tests {
 
             /// <summary>Every <c>Updated</c> the channel raised, in order.</summary>
             public IReadOnlyList<ChannelUpdate> Updates => updates;
+
+            /// <summary>Every subject the channel reported retired, in order.</summary>
+            public IReadOnlyList<ushort> Removals => removals;
 
             /// <summary>The handle the server addresses this peer by.</summary>
             public PeerHandle ServerSidePeer { get; private set; } = PeerHandle.None;
@@ -344,10 +432,15 @@ namespace AlpineLib.Server.Tests {
             private void BindChannel() {
                 channel = new ClientStateChannel<StateChannelTestState>(client, ChannelMessageId);
                 channel.Updated += RecordUpdate;
+                channel.Removed += RecordRemoval;
             }
 
             private void RecordUpdate(ushort id, StateChannelTestState state, uint tick) {
                 updates.Add(new ChannelUpdate(id, state, tick));
+            }
+
+            private void RecordRemoval(ushort id) {
+                removals.Add(id);
             }
         }
 
