@@ -32,7 +32,7 @@ namespace AlpineLib.Server.Tests {
             SessionJoinResult refused = RequestSession(harness, player);
 
             Assert.False(refused.IsSuccess);
-            Assert.Equal(SessionEndReason.Full, refused.Reason);
+            Assert.Equal(SessionEndReason.ServerFault, refused.Reason);
             Assert.Equal(1, factory.CreateCount);
             Assert.False(harness.WasStopRequested);
         }
@@ -122,7 +122,7 @@ namespace AlpineLib.Server.Tests {
             SessionJoinResult refused = RequestSession(harness, stranger);
 
             Assert.False(refused.IsSuccess);
-            Assert.Equal(SessionEndReason.Full, refused.Reason);
+            Assert.Equal(SessionEndReason.ServerFault, refused.Reason);
             Assert.Single(harness.CaptureDirectory().Sessions);
             Assert.False(harness.WasStopRequested);
         }

@@ -32,6 +32,11 @@ namespace AlpineLib.Netcode.Sessions {
         SessionNotFound = 7,
 
         /// <summary>The connection is already attached to a session; one session per connection.</summary>
-        AlreadyInSession = 8
+        AlreadyInSession = 8,
+
+        /// <summary>
+        /// The server could not stand the session up. Not something the client can fix by retrying.
+        /// </summary>
+        ServerFault = 9
     }
 }

@@ -114,6 +114,7 @@ namespace AlpineLib.Server.Sessions {
             // Last, and with everything above already readable: a module is handed the entry it belongs to
             // so it can reach the world and the slots it is about to simulate over.
             _module = BuildModule(moduleFactory);
+            AttachModule();
         }
 
         /// <summary>The session this entry is built around.</summary>
@@ -152,12 +153,12 @@ namespace AlpineLib.Server.Sessions {
             }
 
             _replication.Tick(serverTick, deltaSeconds);
-            _module?.Tick(serverTick, deltaSeconds);
+            RunModule(() => _module?.Tick(serverTick, deltaSeconds), "step");
         }
 
         /// <summary>A connection was accepted into this session. Told to the game after the roster knows.</summary>
         public void OnPeerJoined(PeerHandle peer) {
-            _module?.OnPeerJoined(peer);
+            RunModule(() => _module?.OnPeerJoined(peer), "seat an arrival in");
         }
 
         /// <summary>
@@ -171,7 +172,7 @@ namespace AlpineLib.Server.Sessions {
         public void OnPeerLeft(PeerHandle peer) {
             _replication.OnPeerLeft(peer);
             _claims.ReleaseAllHeldBy(peer);
-            _module?.OnPeerLeft(peer);
+            RunModule(() => _module?.OnPeerLeft(peer), "retire a departure from");
         }
 
         /// <summary>Hands a chat frame that arrived on one of this session's connections to the pipeline.</summary>
@@ -208,6 +209,47 @@ namespace AlpineLib.Server.Sessions {
             catch (Exception) {
                 _disposed = true;
                 UnhookHostEvents();
+                DisposeOwnedParts();
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Runs one of the game's callbacks at this session's expense rather than the process's.
+        /// </summary>
+        /// <remarks>
+        /// A module is the game's own code on the loop thread, and the loop's catch-all above this
+        /// stops the whole box: without this guard one player's join throwing on a bad car index would
+        /// take every other session on the server down with it. A throw closes this session and nothing
+        /// else, and the sweep retires it on the next step.
+        /// </remarks>
+        private void RunModule(Action call, string what) {
+            try {
+                call();
+            }
+            catch (Exception error) {
+                _logger.LogError(error, "The game could not {What} session {SessionId}; the session is closing.",
+                    what, _host.SessionId);
+                _host.Close(SessionEndReason.HostClosed);
+            }
+        }
+
+        /// <summary>
+        /// Tells the module its entry is finished, unwinding the entry the same way a refused
+        /// <c>Create</c> does.
+        /// </summary>
+        private void AttachModule() {
+            if (_module == null) {
+                return;
+            }
+
+            try {
+                _module.Attached();
+            }
+            catch (Exception) {
+                _disposed = true;
+                UnhookHostEvents();
+                _module.Dispose();
                 DisposeOwnedParts();
                 throw;
             }

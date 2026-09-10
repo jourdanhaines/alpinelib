@@ -145,9 +145,10 @@ namespace AlpineLib.Server.Sessions {
             SessionEntry entry = OpenSession(profileId);
 
             if (entry == null) {
-                // A fault inside the game's own factory is nothing a client can act on, so it is refused
-                // the way a server with no room refuses and the detail stays in the log.
-                Deny(peer, SessionEndReason.Full);
+                // A fault inside the game's own factory is nothing a client can act on, and it is not a
+                // full box either: telling the player to find a train with room would send them round a
+                // loop that fails identically every time. The detail stays in the log.
+                Deny(peer, SessionEndReason.ServerFault);
                 return;
             }
 

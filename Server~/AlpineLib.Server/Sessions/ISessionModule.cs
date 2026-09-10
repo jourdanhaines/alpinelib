@@ -17,8 +17,28 @@ namespace AlpineLib.Server.Sessions {
     /// that wants to be read from another thread posts through <c>GameThreadInbox</c> like everything
     /// else does.
     /// </para>
+    /// <para>
+    /// A throw out of any of these three closes <b>this</b> session and leaves every other one on the
+    /// process running. That is deliberately narrower than the loop's own catch-all, which stops the
+    /// box: a game that cannot seat one arrival has lost that lobby, not the server. The throw is
+    /// logged with the session id and the session retires on the next sweep.
+    /// </para>
     /// </remarks>
     public interface ISessionModule : IDisposable {
+        /// <summary>
+        /// The entry this module hangs off is finished, and the session has not ticked yet.
+        /// </summary>
+        /// <remarks>
+        /// <see cref="ISessionModuleFactory.Create"/> runs with the entry still inside its own
+        /// constructor: everything on it is readable, but the entry is not yet a thing anybody else
+        /// holds, so a module that wants to publish itself — register with a game-wide index, seat the
+        /// members already on the roster, put a first snapshot on the wire — cannot safely do it there.
+        /// This is the moment after that. A throw here unwinds the entry exactly as a throw from
+        /// <c>Create</c> does, so the session is refused rather than half-built.
+        /// </remarks>
+        void Attached() {
+        }
+
         /// <summary>One step of the game's own simulation, after the session and its world have stepped.</summary>
         /// <param name="serverTick">The authoritative tick this step advances to.</param>
         /// <param name="deltaSeconds">Fixed step length, the same one the loop runs at.</param>
