@@ -68,6 +68,16 @@ namespace AlpineLib.Sessions {
         /// <summary>The match currently loading or running, or null in a lobby.</summary>
         MatchContextData CurrentMatch { get; }
 
+        /// <summary>
+        /// The endpoint the session this client hosted was created on, or none when it did not host one.
+        /// </summary>
+        /// <remarks>
+        /// Exists so a host screen can read out the address a friend on the same network types, which
+        /// nothing else knows: the port a locally launched server bound may be an ephemeral one nobody
+        /// chose, and the join code deliberately carries no address.
+        /// </remarks>
+        NetEndpoint HostEndpoint { get; }
+
         /// <summary>Raised whenever <see cref="State"/> changes.</summary>
         event Action<ClientSessionState> OnStateChanged;
 
@@ -116,6 +126,18 @@ namespace AlpineLib.Sessions {
         /// <summary>Connects to the configured server and attaches to the session behind a join code.</summary>
         Task<SessionJoinResult> JoinSessionAsync(string joinCode);
 
+        /// <summary>
+        /// Attaches to a session behind a join code on a server the player named, instead of the one
+        /// this build is configured for.
+        /// </summary>
+        /// <remarks>
+        /// The locator answers "which server does this build talk to", which is the right question for a
+        /// shipped deployment and the wrong one for two friends dialling a machine one of them is
+        /// hosting on. A typed address bypasses it entirely rather than overriding it, so the configured
+        /// server stays the default for everything else in the same run.
+        /// </remarks>
+        Task<SessionJoinResult> JoinSessionAsync(string joinCode, string serverAddress);
+
         /// <summary>Leaves the session gracefully and drops back to offline.</summary>
         Task LeaveSessionAsync();
 
@@ -131,12 +153,14 @@ namespace AlpineLib.Sessions {
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Hosting has two shapes behind one method. Against a dedicated server — the shape a shipped game
-    /// runs — hosting is just a create request: the server mints the session and the join code, and the
-    /// hosting player is a client like any other. Listen hosting instead stands a server up in this
-    /// process, hands it a <see cref="ListenServerFrontDesk"/>, and dials loopback, so the local player
-    /// still travels the whole handshake and nothing downstream can tell the two apart. That symmetry is
-    /// the point: a bug that only appears over a real connection cannot hide in the host's client.
+    /// Hosting has three shapes behind one method, and they differ only in where the endpoint comes
+    /// from. Against a dedicated server — the shape a shipped game runs — hosting is just a create
+    /// request: the server mints the session and the join code, and the hosting player is a client like
+    /// any other. Listen hosting instead stands a server up in this process, hands it a
+    /// <see cref="ListenServerFrontDesk"/>, and dials loopback. Local-process hosting launches the real
+    /// server executable beside the build and dials the port it reports. In all three the local player
+    /// travels the whole handshake and nothing downstream can tell them apart. That symmetry is the
+    /// point: a bug that only appears over a real connection cannot hide in the host's client.
     /// </para>
     /// <para>
     /// The service ticks the session client — and, when listen hosting, the server side — from
@@ -146,8 +170,10 @@ namespace AlpineLib.Sessions {
     /// </remarks>
     public class SessionService : MonoBehaviour, ISessionService {
         [Header("Hosting")]
-        [Tooltip("Host the session in this process instead of asking the configured server for one. Local development convenience; shipped builds host on the dedicated server.")]
-        [SerializeField] private bool listenHost;
+        [Tooltip("Where the server behind a session this client hosts lives: the configured remote server, this process, or a server executable launched beside this build.")]
+        [SerializeField] private SessionHostingMode hostingMode = SessionHostingMode.RemoteServer;
+        [Tooltip("Which server executable to launch, and how. Read only in Local Server Process mode.")]
+        [SerializeField] private LocalServerConfig localServer;
 
         [Header("Collision")]
         [Tooltip("Every scene's exported collision geometry. The client predicts against the entry matching the scene the session is in; a scene missing from here stands on flat ground at y = 0, which will not match a server that has the export.")]
@@ -210,13 +236,29 @@ namespace AlpineLib.Sessions {
         /// </remarks>
         public bool IsListenHosting => _frontDesk != null;
 
+        /// <inheritdoc />
+        public NetEndpoint HostEndpoint => _hostEndpoint;
+
         /// <summary>
-        /// Whether the next <see cref="HostSessionAsync"/> hosts in this process. Settable so a
-        /// development menu can flip it without a second config asset.
+        /// Where the next <see cref="HostSessionAsync"/> puts its server. Settable so an app root or a
+        /// development menu can pick a mode without a second config asset.
         /// </summary>
+        public SessionHostingMode HostingMode {
+            get => hostingMode;
+            set => hostingMode = value;
+        }
+
+        /// <summary>
+        /// Whether the next <see cref="HostSessionAsync"/> hosts in this process.
+        /// </summary>
+        /// <remarks>
+        /// Kept as a shim over <see cref="HostingMode"/> for callers written before there were three
+        /// modes. Clearing it means "not in this process", which can only be read as the remote server:
+        /// a caller that thinks in booleans has no third answer to give.
+        /// </remarks>
         public bool ListenHost {
-            get => listenHost;
-            set => listenHost = value;
+            get => hostingMode == SessionHostingMode.ListenHost;
+            set => hostingMode = value ? SessionHostingMode.ListenHost : SessionHostingMode.RemoteServer;
         }
 
         /// <summary>
@@ -271,10 +313,14 @@ namespace AlpineLib.Sessions {
         private ClientReplication _replication;
         private ClientClaims _claims;
         private ListenServerFrontDesk _frontDesk;
+        private LocalServerLauncher _localServer;
         private CollisionWorld _collisionWorld;
+        private NetEndpoint _hostEndpoint;
+        private string _hostEndpointFailure = string.Empty;
         private string _currentSceneName = string.Empty;
         private SessionEndReason _pendingTearDownReason;
         private bool _isTearDownPending;
+        private bool _hasWarnedOverrideIgnored;
 
         /// <remarks>
         /// Declared on the concrete type rather than the interface, matching the library's other
@@ -319,6 +365,22 @@ namespace AlpineLib.Sessions {
             geometryRegistry = registry;
         }
 
+        /// <summary>
+        /// Installs the configuration read when hosting launches a server executable.
+        /// </summary>
+        /// <remarks>
+        /// The counterpart to <see cref="ConfigureGeometry"/>, and null is treated the same way: a
+        /// caller with nothing to offer must not be able to unassign what the inspector already holds.
+        /// </remarks>
+        public void ConfigureLocalServer(LocalServerConfig config) {
+            if (config == null) {
+                Debug.LogWarning("SessionService::ConfigureLocalServer->No local server config; hosting a server process will fail until one is assigned.");
+                return;
+            }
+
+            localServer = config;
+        }
+
         /// <inheritdoc />
         public void SetDisplayName(string displayName) {
             if (_identity == null) {
@@ -349,19 +411,25 @@ namespace AlpineLib.Sessions {
         public async Task<SessionJoinResult> HostSessionAsync() {
             if (!IsConfigured()) return SessionJoinResult.Denied(SessionEndReason.HostClosed, "No session config.");
 
-            NetEndpoint endpoint = listenHost
-                ? StartListenHost()
-                : await ResolveServerEndpointAsync();
+            _hostEndpoint = NetEndpoint.None;
+
+            NetEndpoint endpoint = await ResolveHostEndpointAsync();
 
             if (!endpoint.IsValid) {
-                return SessionJoinResult.Denied(SessionEndReason.TransportLost, "No server endpoint.");
+                return SessionJoinResult.Denied(SessionEndReason.TransportLost, ResolveHostFailureMessage());
             }
 
             SessionJoinResult connectResult = await ConnectAsync(endpoint);
 
             if (!connectResult.IsSuccess) return connectResult;
 
-            return await _sessionClient.CreateSessionAsync(ResolveProfileId());
+            SessionJoinResult createResult = await _sessionClient.CreateSessionAsync(ResolveProfileId());
+
+            if (createResult.IsSuccess) {
+                _hostEndpoint = endpoint;
+            }
+
+            return createResult;
         }
 
         /// <inheritdoc />
@@ -378,11 +446,22 @@ namespace AlpineLib.Sessions {
                 return SessionJoinResult.Denied(SessionEndReason.TransportLost, "No server endpoint.");
             }
 
-            SessionJoinResult connectResult = await ConnectAsync(endpoint);
+            return await JoinResolvedAsync(endpoint, normalizedCode);
+        }
 
-            if (!connectResult.IsSuccess) return connectResult;
+        /// <inheritdoc />
+        public async Task<SessionJoinResult> JoinSessionAsync(string joinCode, string serverAddress) {
+            if (!IsConfigured()) return SessionJoinResult.Denied(SessionEndReason.HostClosed, "No session config.");
 
-            return await _sessionClient.JoinSessionAsync(normalizedCode);
+            if (!JoinCodeGenerator.TryNormalize(joinCode, out string normalizedCode)) {
+                return SessionJoinResult.Denied(SessionEndReason.SessionNotFound, "That is not a join code.");
+            }
+
+            if (!ConfiguredServerLocator.TryParseAddress(serverAddress, out NetEndpoint endpoint)) {
+                return SessionJoinResult.Denied(SessionEndReason.SessionNotFound, "That is not a server address.");
+            }
+
+            return await JoinResolvedAsync(endpoint, normalizedCode);
         }
 
         /// <inheritdoc />
@@ -417,6 +496,11 @@ namespace AlpineLib.Sessions {
 
         private void OnDestroy() {
             TearDownSession(SessionEndReason.HostClosed);
+
+            // Disposed rather than stopped: the launcher holds editor and quit hooks that would keep it
+            // alive past this service, and there is no session left to reuse a warm server for.
+            _localServer?.Dispose();
+            _localServer = null;
 
             if (!Injector.HasInstance) return;
 
@@ -469,6 +553,83 @@ namespace AlpineLib.Sessions {
 
         private NetEndpoint LoopbackEndpoint() {
             return NetEndpoint.Direct("127.0.0.1", _netConfig.Port);
+        }
+
+        /// <summary>
+        /// Answers which server a session hosted right now should be created on, standing one up first
+        /// when the mode says to.
+        /// </summary>
+        /// <remarks>
+        /// The failure detail travels in <c>_hostEndpointFailure</c> rather than out of this
+        /// method, because an invalid endpoint is the only failure the caller has to branch on and a
+        /// second return value would be read at exactly one call site.
+        /// </remarks>
+        private async Task<NetEndpoint> ResolveHostEndpointAsync() {
+            _hostEndpointFailure = string.Empty;
+
+            if (hostingMode == SessionHostingMode.ListenHost) return StartListenHost();
+            if (hostingMode == SessionHostingMode.LocalServerProcess) return await StartLocalServerAsync();
+
+            return await ResolveServerEndpointAsync();
+        }
+
+        /// <summary>
+        /// Launches — or reuses — the server executable beside this build and reports where it came up.
+        /// </summary>
+        /// <remarks>
+        /// The launcher outlives a single host attempt so that hosting twice in a row cannot leave two
+        /// servers behind: the second start reaps the first server through the same object rather than
+        /// racing it for the port. Its failures are reported rather than thrown, because a menu asking
+        /// to host wants a denial to show the player, not an exception to catch.
+        /// </remarks>
+        private async Task<NetEndpoint> StartLocalServerAsync() {
+            WarnIfServerAddressOverrideIgnored();
+
+            if (localServer == null) {
+                _hostEndpointFailure = "No local server config.";
+                Debug.LogError("SessionService::StartLocalServerAsync->No local server config; assign one or call ConfigureLocalServer.");
+                return NetEndpoint.None;
+            }
+
+            _localServer ??= new LocalServerLauncher(localServer);
+
+            try {
+                return await _localServer.StartAsync(CancellationToken.None);
+            } catch (Exception exception) {
+                _hostEndpointFailure = "The local server did not start.";
+                Debug.LogError($"SessionService::StartLocalServerAsync->{exception.Message}");
+                return NetEndpoint.None;
+            }
+        }
+
+        /// <summary>
+        /// Says once per run that an address override is being ignored, because a build hosting its own
+        /// server dials the port that server reported and nothing else.
+        /// </summary>
+        /// <remarks>
+        /// Silence here is the trap this exists to avoid: a tester who set the override for a staging
+        /// server, then switched to local hosting, would otherwise have no way to tell whether the
+        /// override was in force.
+        /// </remarks>
+        private void WarnIfServerAddressOverrideIgnored() {
+            if (_hasWarnedOverrideIgnored) return;
+            if (!ServerAddressOverride.TryResolve(out string address, out string source)) return;
+
+            _hasWarnedOverrideIgnored = true;
+            Debug.LogWarning($"SessionService::WarnIfServerAddressOverrideIgnored->Hosting a local server process, so '{address}' from {source} is ignored.");
+        }
+
+        private string ResolveHostFailureMessage() {
+            return string.IsNullOrEmpty(_hostEndpointFailure) ? "No server endpoint." : _hostEndpointFailure;
+        }
+
+        /// <summary>Travels the connect and attach half of a join, once the server is known.</summary>
+        private async Task<SessionJoinResult> JoinResolvedAsync(NetEndpoint endpoint, string normalizedCode) {
+            SessionJoinResult connectResult = await ConnectAsync(endpoint);
+
+            if (!connectResult.IsSuccess) return connectResult;
+
+            return await _sessionClient.JoinSessionAsync(normalizedCode);
         }
 
         /// <summary>Asks the configured locator where this build's server lives.</summary>
@@ -779,8 +940,13 @@ namespace AlpineLib.Sessions {
             // change happened to name something else.
             _collisionWorld = null;
             _currentSceneName = string.Empty;
+            _hostEndpoint = NetEndpoint.None;
 
             _networkService?.Shutdown();
+
+            // After the shutdown, not before: the client's disconnect should reach a server that is
+            // still listening, so it can retire the session rather than notice a socket going quiet.
+            _localServer?.Stop();
         }
 
         private string ResolveProfileId() {

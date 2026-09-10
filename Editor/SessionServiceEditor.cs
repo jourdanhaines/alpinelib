@@ -1,4 +1,5 @@
 using AlpineLib.Netcode.Sessions;
+using AlpineLib.Netcode.Transport;
 using AlpineLib.Networking;
 using AlpineLib.Sessions;
 using UnityEditor;
@@ -46,6 +47,7 @@ namespace AlpineLib.Editor {
             EditorGUILayout.LabelField("Phase", service.Phase.ToString());
             EditorGUILayout.LabelField("Ping", ResolvePing(service));
             EditorGUILayout.LabelField("Session Id", Displayed(service.SessionId));
+            EditorGUILayout.LabelField("Host Endpoint", ResolveHostEndpoint(service));
             EditorGUILayout.LabelField("Local Player", DescribeIdentity(service.Identity));
             EditorGUILayout.LabelField("Owner", service.IsOwner ? "This client" : "Another member");
         }
@@ -139,9 +141,24 @@ namespace AlpineLib.Editor {
             NetworkService networkService = ResolveNetworkService(service);
             string mode = networkService != null ? networkService.Mode.ToString() : "No NetworkService";
 
-            if (!service.IsListenHosting) return mode;
+            if (service.IsListenHosting) return $"{mode} (listen hosting)";
 
-            return $"{mode} (listen hosting)";
+            return $"{mode} ({service.HostingMode})";
+        }
+
+        /// <summary>
+        /// The address a friend types to reach a session hosted from this client, blank on a guest.
+        /// </summary>
+        /// <remarks>
+        /// Worth a row of its own because a locally launched server may have taken an ephemeral port, so
+        /// the configured address is not necessarily the one that works.
+        /// </remarks>
+        private static string ResolveHostEndpoint(SessionService service) {
+            NetEndpoint endpoint = service.HostEndpoint;
+
+            if (!endpoint.IsValid) return missingValue;
+
+            return endpoint.ToString();
         }
 
         private static string ResolvePing(SessionService service) {
