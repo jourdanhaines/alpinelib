@@ -599,6 +599,18 @@ namespace AlpineLib.Netcode.Replication {
         /// is not a repeat and is refused outright, so the free window cannot be farmed.
         /// </para>
         /// <para>
+        /// <b>At most one resync is adopted per pawn per server tick.</b> The window is counted in server
+        /// ticks, and how many datagrams share a tick is chosen by the sender, not by the server: the
+        /// owner channel is unreliable-sequenced, so every packet with a newer sequence is delivered and
+        /// the whole arrival queue is handled at one value of <c>currentTick</c>. Without this rule a
+        /// client that flags everything and sends two hundred times between two ticks gets two hundred
+        /// free continuations for one charged slot, each judged at the full one-tick bar, silently — the
+        /// free tail stops being bounded by anything. An honest owner sends one sample per send tick and
+        /// so never trips it; a later claim in the same tick falls back to the measured verdict, which
+        /// means a violation and a correction like any other refused move. A byte-identical duplicate
+        /// leaves the pawn unmoved and unstamped and so stays free, which is right — it moves nothing.
+        /// </para>
+        /// <para>
         /// An accepted resync never corrects the owner: the whole point is that the state the server
         /// holds is the stale one, so handing it back is the harm being removed. A resync arriving with a
         /// frame change is left to the frame-change path so the two cannot charge the budget twice.
@@ -609,6 +621,8 @@ namespace AlpineLib.Netcode.Replication {
             if (entity.State.CarrierId != message.State.CarrierId) return false;
 
             if (IsInsideResyncBurst(entity)) {
+                if (HasMovedThisTick(entity)) return false;
+
                 if (!validator.IsResyncBurstContinuation(
                         entity.PrefabId,
                         entity.State,
@@ -642,6 +656,22 @@ namespace AlpineLib.Netcode.Replication {
             if (!entity.HasAcceptedResync) return false;
 
             return currentTick - entity.LastAcceptedResyncTick < MovementValidator.ResyncBurstTicks;
+        }
+
+        /// <summary>
+        /// Whether something has already moved this pawn on the tick being handled, so a further claim
+        /// arriving on it cannot be the last one carried on.
+        /// </summary>
+        /// <remarks>
+        /// <see cref="NetEntity.LastDirtyTick"/> is the right stamp to read: every accepted, clamped or
+        /// refused claim writes the resolved state through <c>ApplyState</c>, so equality means this tick
+        /// already produced a pose. It is deliberately not extended to the charged path — that one is
+        /// bounded by <see cref="MovementValidator.MaxCarrierSwitchesPerWindow"/> whatever the arrival
+        /// pattern — nor to ordinary measured updates, where two sends bunching into one tick interval is
+        /// something jitter does to an honest client and each of them is measured anyway.
+        /// </remarks>
+        private bool HasMovedThisTick(NetEntity entity) {
+            return currentTick == entity.LastDirtyTick;
         }
 
         /// <summary>Takes a resync claim whole, which is what an unmeasured move means.</summary>

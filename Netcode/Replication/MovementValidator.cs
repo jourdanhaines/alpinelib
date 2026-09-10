@@ -59,6 +59,17 @@ namespace AlpineLib.Netcode.Replication {
     /// again — see <see cref="IsResyncBurstContinuation"/>.
     /// </para>
     /// <para>
+    /// <b>What the free tail of a burst is worth.</b> The repeats are judged at the held velocity, which
+    /// nothing validates, so the wire is the only ceiling: <c>NetQuantization</c> clamps each axis to
+    /// 127.996 m/s, a planar 181.02 m/s, which at the tolerance multiplier over one tick plus slack times
+    /// <see cref="RejectDistanceRatio"/> is 27.30 m per repeat and 81.88 m for the three that fit a
+    /// window. At the eight bursts a second <see cref="ResyncBurstTicks"/> allows that is 655 m/s of free
+    /// travel — sitting behind eight charged teleports a second that are each unbounded in distance, so
+    /// the tail is strictly dominated by the thing that opens it and cannot be had without a charged,
+    /// violation-raising opener. Against the sprint gait alone the same repeat carries under a metre,
+    /// which is the size of the prize for a velocity sanity check on the claim that opens a burst.
+    /// </para>
+    /// <para>
     /// <b>What the interval cap costs an honest client.</b> The gap a move is measured over is capped at
     /// <c>ServerReplication.MaxMeasuredIntervalSeconds</c>, so silence stops buying allowance — and the
     /// bill for that lands on a client whose datagrams were merely lost. With the cap at <c>T</c>, a gap
@@ -70,6 +81,17 @@ namespace AlpineLib.Netcode.Replication {
     /// (see <c>NetActorSync.SendOwnerSample</c>) covers the loss of a resync the owner did raise, and
     /// nothing more. The fix for the gap itself is a receipt clock on the server side, stamping when an
     /// owner update last <em>arrived</em> and treating an overlong gap as a resync.
+    /// </para>
+    /// <para>
+    /// <b>And there is no recovery if the whole burst is lost.</b> The owner's flag is spent on each send
+    /// and nothing re-raises it, so losing every repeat means the resumption is never adopted: the next
+    /// plain update is measured over a clamped gap, rejected as a teleport, and the owner is corrected
+    /// back onto the pre-withhold pose — for a rider who jumped off a consist, back onto the moving train
+    /// they left. It converges within a second and produces a wrong-place snap rather than an exploit, so
+    /// it is a residual rather than a hole. The honest way to state its likelihood is not three
+    /// independent losses but "three sends inside 67 ms, which one loss burst covers": widening the
+    /// repeat count spreads them over more ticks and buys nothing against an outage of the same length,
+    /// and only the receipt clock above addresses the mechanism rather than the dice.
     /// </para>
     /// <para>
     /// What the hole cannot buy, either way, is speed: every tick that keeps the same carrier is
@@ -138,13 +160,18 @@ namespace AlpineLib.Netcode.Replication {
         /// broke its silence — one per resumption, whatever the transport does to the datagrams. The
         /// repeats the owner sends behind it land on the following send ticks with nothing silent in
         /// front of them, and they are exactly why <see cref="ResyncBurstTicks"/> exists: they are the
-        /// same claim arriving again and are charged nothing.
+        /// same claim arriving again and are charged nothing. It survives the transport bunching those
+        /// datagrams too, because the caller adopts at most one of them per server tick — see
+        /// <c>ServerReplication.TryAcceptResync</c> — so a tick that carries a hundred flagged arrivals
+        /// still resolves to one pose, and the interleaving argument is counting the same ticks it was.
         /// </para>
         /// <para>
         /// The count is also the ceiling on a client that lies, and that ceiling is a rate rather than a
         /// distance: nothing bounds how far one unmeasured move may travel, so each slot is a teleport of
-        /// any size and three slots is twelve of them a second at the default tick rate. Widening it for
-        /// an interleaving nobody can produce would widen that in the same proportion.
+        /// any size and three slots is twelve of them a second at the default tick rate — a peak, and one
+        /// only the frame-change path reaches, because on the resync path the binding constraint is
+        /// <see cref="ResyncBurstTicks"/> and the measured ceiling is eight a second. Widening it for an
+        /// interleaving nobody can produce would widen that in the same proportion.
         /// </para>
         /// </remarks>
         public const int MaxCarrierSwitchesPerWindow = 3;
@@ -165,6 +192,13 @@ namespace AlpineLib.Netcode.Replication {
         /// unmeasured move of any size per window this long — fewer than the budget alone would give it
         /// — because the claims in between must pass
         /// <see cref="IsResyncBurstContinuation"/>, which a teleport does not.
+        /// </para>
+        /// <para>
+        /// This is a window of ticks <em>and</em> a window of one adoption per tick. Counting only the
+        /// ticks would leave the free side of the burst unbounded, since the sender chooses how many
+        /// datagrams share a tick and each would be judged at the full one-tick bar; the caller therefore
+        /// refuses a flagged claim arriving on a tick that already moved this pawn. So the free tail is
+        /// at most <c>this - 1</c> repeats per burst, which is the bound the class remarks price.
         /// </para>
         /// </remarks>
         public const uint ResyncBurstTicks = 4;
@@ -278,6 +312,11 @@ namespace AlpineLib.Netcode.Replication {
         /// every other peer; a client wanting half-kilometre repeats has to have announced the speed
         /// that covers them, to everybody, and pay for the burst that opened it.
         /// </para>
+        /// <para>
+        /// A gap of no time is not a continuation of anything and is refused rather than waved through:
+        /// the caller measures at least one tick, so this only answers a caller that has none, and the
+        /// permissive reading is the one that made a same-tick flood free.
+        /// </para>
         /// </remarks>
         public bool IsResyncBurstContinuation(
             ushort prefabId,
@@ -286,7 +325,8 @@ namespace AlpineLib.Netcode.Replication {
             float deltaSeconds) {
             MovementProfile profile = config.GetMovementProfile(prefabId);
 
-            if (profile == null || deltaSeconds <= 0f) return true;
+            if (deltaSeconds <= 0f) return false;
+            if (profile == null) return true;
 
             float carriedSpeed = PlanarLength(held.Velocity) * config.MovementToleranceMultiplier;
             float allowedSpeed = Math.Max(ResolveAllowedSpeed(profile, in held, in claim), carriedSpeed);

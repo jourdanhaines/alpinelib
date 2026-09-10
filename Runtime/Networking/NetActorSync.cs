@@ -101,7 +101,12 @@ namespace AlpineLib.Networking {
         /// How many consecutive sends carry the resync flag once it is raised. See
         /// <see cref="SendOwnerSample"/> for why one datagram is not enough.
         /// </summary>
-        private const int ResyncSendRepeats = 3;
+        /// <remarks>
+        /// Derived from the authority's window rather than written again: a repeat landing outside
+        /// <see cref="MovementValidator.ResyncBurstTicks"/> is charged a budget slot of its own, which is
+        /// the harm the burst window exists to prevent, so raising this on its own must not be possible.
+        /// </remarks>
+        private const int ResyncSendRepeats = (int)MovementValidator.ResyncBurstTicks - 1;
 
         private NetEntityView _view;
         private Actor _actor;
