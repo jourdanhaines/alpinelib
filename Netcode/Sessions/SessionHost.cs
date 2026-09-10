@@ -6,7 +6,7 @@ using AlpineLib.Netcode.Transport;
 
 namespace AlpineLib.Netcode.Sessions {
     /// <summary>
-    /// One session — one igloo and every match played out of it — as an authoritative object.
+    /// One session — one lobby and every match played out of it — as an authoritative object.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -323,7 +323,7 @@ namespace AlpineLib.Netcode.Sessions {
             OnMatchEnded?.Invoke(resolved);
         }
 
-        /// <summary>Cuts the results hold short and takes everyone back to the igloo now.</summary>
+        /// <summary>Cuts the results hold short and takes everyone back to the lobby now.</summary>
         public void ReturnToLobbyNow() {
             if (_phase != SessionPhase.MatchResults) {
                 return;
@@ -758,7 +758,7 @@ namespace AlpineLib.Netcode.Sessions {
                 return;
             }
 
-            // DropToLobby: the straggler stays a member of the igloo, it just misses this match.
+            // DropToLobby: the straggler stays a member of the lobby, it just misses this match.
             if (!straggler.IsConnected) {
                 return;
             }

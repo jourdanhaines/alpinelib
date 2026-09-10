@@ -8,7 +8,7 @@ namespace AlpineLib.Chat {
     /// <remarks>
     /// The Unity-side <c>ChatConfig</c> asset converts into one of these, and the dedicated server reads
     /// the same values out of its exported JSON, so both ends enforce identical policy from a single
-    /// authored source. Defaults here are the shipping Penguin values — a settings object built with
+    /// authored source. Defaults here are the shipping defaults — a settings object built with
     /// <c>new</c> and nothing else is already a working configuration.
     /// </remarks>
     public sealed class ChatSettings {

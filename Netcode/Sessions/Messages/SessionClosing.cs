@@ -6,7 +6,7 @@ namespace AlpineLib.Netcode.Sessions.Messages {
     /// </summary>
     /// <remarks>
     /// The reason is the <see cref="SessionEndReason"/> enum, not free text, because clients branch on
-    /// it: an owner closing the igloo returns to the main menu quietly, while a version mismatch or an
+    /// it: an owner closing the lobby returns to the main menu quietly, while a version mismatch or an
     /// auth failure needs its own copy and its own retry behaviour.
     /// </remarks>
     public struct SessionClosing : INetMessage {

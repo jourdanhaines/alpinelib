@@ -3,7 +3,7 @@ using System.Text;
 
 namespace AlpineLib.Netcode.Sessions {
     /// <summary>
-    /// Mints the short codes friends type to join an igloo.
+    /// Mints the short codes friends type to join a lobby.
     /// </summary>
     /// <remarks>
     /// A join code is a pure selector: the server registry mints one per session and looks it up when

@@ -8,7 +8,7 @@ namespace AlpineLib.Chat {
     /// reserved so their byte encodings are fixed now — adding them later must not renumber the wire.
     /// </remarks>
     public enum ChatChannelKind : byte {
-        /// <summary>Everyone in one session (the igloo and the matches it launches). The v1 workhorse.</summary>
+        /// <summary>Everyone in one session (the lobby and the matches it launches). The v1 workhorse.</summary>
         Room = 0,
 
         /// <summary>Reserved: the launched party once parties stop being "everyone in the lobby".</summary>

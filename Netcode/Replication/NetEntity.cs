@@ -113,7 +113,7 @@ namespace AlpineLib.Netcode.Replication {
         /// </summary>
         /// <remarks>
         /// The server steps every pawn every tick whether or not anyone is pressing anything, so
-        /// unconditional stamping would mark a lobby full of idle penguins dirty forever and turn the
+        /// unconditional stamping would mark a lobby full of idle pawns dirty forever and turn the
         /// dirty-tracked snapshot into a full one. Comparison is at wire resolution — see
         /// <see cref="PawnState.ApproximatelyEquals"/> — so a difference no peer could have received does
         /// not count as movement.

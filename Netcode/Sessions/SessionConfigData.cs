@@ -14,6 +14,9 @@ namespace AlpineLib.Netcode.Sessions {
     /// There is no protocol version field — <c>NetProtocol.Version</c> is the single constant.
     /// </remarks>
     public sealed class SessionConfigData {
+        /// <summary>Name a player is given when they never chose one and none was configured.</summary>
+        public const string FallbackDisplayName = "Player";
+
         private const int MaxMatchCount = 1024;
 
         /// <summary>Creates an empty config with default profile and lobby sections.</summary>
@@ -21,7 +24,7 @@ namespace AlpineLib.Netcode.Sessions {
             Profile = new SessionProfileData();
             Lobby = new LobbyConfigData();
             Matches = new List<MatchDefinitionData>();
-            DefaultDisplayName = "Penguin";
+            DefaultDisplayName = FallbackDisplayName;
             AuthMode = AuthMethod.Anonymous;
         }
 

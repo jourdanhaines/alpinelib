@@ -216,7 +216,7 @@ namespace AlpineLib.Networking {
         /// <remarks>
         /// The impulse and the announcement are two different jobs. The input's jump bit is what makes
         /// the authority's motor push the pawn upwards; this event is what makes every other client's
-        /// penguin actually play the jump, because a remote pawn is driven from interpolated state and an
+        /// pawn actually play the jump, because a remote pawn is driven from interpolated state and an
         /// impulse leaves nothing in that state to read back. Sent from here rather than from
         /// <see cref="QueueJump"/> so the two always leave on the same tick, and after
         /// <see cref="BuildInput"/> has read the latch.

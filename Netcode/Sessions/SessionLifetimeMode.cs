@@ -7,7 +7,7 @@ namespace AlpineLib.Netcode.Sessions {
         /// <summary>Session exists only for one match and closes once results are done.</summary>
         MatchScoped = 0,
 
-        /// <summary>Session lives as long as the lobby has members (Penguin igloos).</summary>
+        /// <summary>Session lives as long as the lobby has members.</summary>
         LobbyScoped = 1,
 
         /// <summary>Session survives an empty roster until an operator closes it.</summary>

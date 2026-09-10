@@ -61,7 +61,7 @@ namespace AlpineLib.Editor {
         /// <remarks>
         /// The estimated server tick is the number worth watching: prediction, interpolation and every
         /// correction are stamped against it, so a clock that has not synchronised explains a whole class
-        /// of "the remote penguin is standing still" reports on its own.
+        /// of "the remote pawn is standing still" reports on its own.
         /// </remarks>
         private static void DrawClock(NetClock clock) {
             if (clock == null) return;

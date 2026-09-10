@@ -10,7 +10,7 @@ namespace AlpineLib.Netcode.Sessions {
     /// whatever the join target says.
     /// </summary>
     /// <remarks>
-    /// Deliberately ignores the target. Hosting an igloo and joining one both go to the same server —
+    /// Deliberately ignores the target. Hosting a lobby and joining one both go to the same server —
     /// what differs is the request sent afterwards (create versus join by code). Keeping that
     /// asymmetry out of the locator is why join codes never encode endpoints.
     /// </remarks>

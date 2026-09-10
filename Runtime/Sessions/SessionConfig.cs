@@ -49,7 +49,7 @@ namespace AlpineLib.Sessions {
         [Tooltip("Scene loaded when a session ends and there is nowhere else to be — usually the main menu.")]
         public string offlineFallbackSceneName;
         [Tooltip("Name given to a player who has never chosen one.")]
-        public string defaultDisplayName = "Penguin";
+        public string defaultDisplayName = "Player";
         [Tooltip("How players prove who they are. Anonymous in v1; Steam is a reserved seam.")]
         public AuthMethod authMode = AuthMethod.Anonymous;
 

@@ -13,9 +13,9 @@ namespace AlpineLib.Netcode.Replication {
     /// <remarks>
     /// <para>
     /// <b>One per session, not one per server.</b> Every broadcast goes through
-    /// <see cref="PeerSource"/> — the session's own member list — so a process hosting several igloos
+    /// <see cref="PeerSource"/> — the session's own member list — so a process hosting several lobbies
     /// keeps their worlds apart without any of this code knowing that sessions exist. That is also why
-    /// nothing here reads <c>NetServer.Peers</c>, which would silently leak one igloo's pawns into
+    /// nothing here reads <c>NetServer.Peers</c>, which would silently leak one lobby's pawns into
     /// another's.
     /// </para>
     /// <para>
@@ -226,7 +226,7 @@ namespace AlpineLib.Netcode.Replication {
         /// <remarks>
         /// <para>
         /// This is the scene-change path: a session moving from the lobby to a match calls it once, and
-        /// everything downstream follows. Pawns are deliberately left alone — the same penguins walk into
+        /// everything downstream follows. Pawns are deliberately left alone — the same pawns walk into
         /// the new scene, and their positions are the session's problem, not the geometry's — while every
         /// mover entity is despawned and respawned, because a mover's identity is its row in a particular
         /// scene's export and carrying one across a scene change would leave a platform following a path

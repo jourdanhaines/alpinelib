@@ -8,7 +8,7 @@ namespace AlpineLib.Netcode.Sessions {
     /// Lobby -&gt; MatchLoading -&gt; MatchActive -&gt; MatchResults -&gt; Lobby.
     /// </remarks>
     public enum SessionPhase : byte {
-        /// <summary>Members are in the igloo; the owner may launch a match.</summary>
+        /// <summary>Members are in the lobby; the owner may launch a match.</summary>
         Lobby = 0,
 
         /// <summary>Match scene is loading on every participant; the ready barrier is open.</summary>

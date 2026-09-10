@@ -13,7 +13,7 @@ namespace AlpineLib.Netcode.Sessions {
         /// <summary>Slot is reserved for <c>rejoinWindowSeconds</c>, then swept.</summary>
         TimedWindow = 1,
 
-        /// <summary>Slot is reserved for as long as the session lives (Penguin default).</summary>
+        /// <summary>Slot is reserved for as long as the session lives.</summary>
         AnyTime = 2
     }
 }

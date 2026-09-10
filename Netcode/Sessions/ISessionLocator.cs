@@ -9,7 +9,7 @@ namespace AlpineLib.Netcode.Sessions {
     /// <remarks>
     /// A locator resolves the SERVER, never a session. Join codes select a session after the
     /// connection exists, so they never travel through here — that separation is what lets one
-    /// dedicated server host many igloos behind a single address. <c>ConfiguredServerLocator</c> is
+    /// dedicated server host many lobbies behind a single address. <c>ConfiguredServerLocator</c> is
     /// the v1 implementation; a backend-directory locator is the seam for multi-server deployments.
     /// </remarks>
     public interface ISessionLocator {

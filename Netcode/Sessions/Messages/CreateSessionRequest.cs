@@ -6,7 +6,7 @@ namespace AlpineLib.Netcode.Sessions.Messages {
     /// </summary>
     /// <remarks>
     /// The profile id is optional — an empty value means "use the server's default profile", which is
-    /// the normal case for a player hosting an igloo. Naming one is the seam for a server that offers
+    /// the normal case for a player hosting a lobby. Naming one is the seam for a server that offers
     /// several rule sets. The answer is <see cref="SessionCreated"/> followed by
     /// <see cref="JoinAccepted"/>.
     /// </remarks>

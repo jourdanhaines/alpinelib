@@ -2,7 +2,7 @@ using AlpineLib.Netcode.Protocol;
 
 namespace AlpineLib.Netcode.Sessions {
     /// <summary>
-    /// Engine-free mirror of the <c>LobbyConfig</c> authoring asset: the igloo players return to
+    /// Engine-free mirror of the <c>LobbyConfig</c> authoring asset: the lobby players return to
     /// between matches.
     /// </summary>
     public sealed class LobbyConfigData {

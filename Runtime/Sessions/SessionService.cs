@@ -127,8 +127,8 @@ namespace AlpineLib.Sessions {
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Hosting has two shapes behind one method. Against a dedicated server — what Project Penguin
-    /// ships — hosting is just a create request: the server mints the session and the join code, and the
+    /// Hosting has two shapes behind one method. Against a dedicated server — the shape a shipped game
+    /// runs — hosting is just a create request: the server mints the session and the join code, and the
     /// hosting player is a client like any other. Listen hosting instead stands a server up in this
     /// process, hands it a <see cref="ListenServerFrontDesk"/>, and dials loopback, so the local player
     /// still travels the whole handshake and nothing downstream can tell the two apart. That symmetry is
@@ -297,10 +297,10 @@ namespace AlpineLib.Sessions {
         /// <remarks>
         /// The registry is normally dragged onto the serialized field in the inspector, which is the
         /// right answer whenever this service is authored into a scene or a prefab. A game that installs
-        /// its app root entirely from code — Project Penguin does — has no inspector to drag it onto, so
-        /// it hands the asset over here instead, alongside the session config, before anything asks for a
-        /// world. Passing null leaves whatever the field already holds alone: a caller with no registry to
-        /// offer should not be able to unassign an authored one by accident.
+        /// its app root entirely from code has no inspector to drag it onto, so it hands the asset over
+        /// here instead, alongside the session config, before anything asks for a world. Passing null
+        /// leaves whatever the field already holds alone: a caller with no registry to offer should not
+        /// be able to unassign an authored one by accident.
         /// </remarks>
         public void ConfigureGeometry(SceneGeometryRegistry registry) {
             if (registry == null) {
@@ -575,7 +575,7 @@ namespace AlpineLib.Sessions {
         /// <remarks>
         /// The fallback is loud when a scene was actually asked for, because it is the shape of the worst
         /// bug this system can produce: the client predicts on a plane, the server simulates the real
-        /// igloo, and the owner's pawn is dragged back by a correction on every single tick. A session with
+        /// lobby, and the owner's pawn is dragged back by a correction on every single tick. A session with
         /// no scene name asked for nothing and gets flat ground quietly, which is what a headless test or
         /// an unconfigured lobby wants.
         /// </remarks>

@@ -6,7 +6,7 @@ namespace AlpineLib.Netcode.Sessions.Messages {
     /// </summary>
     /// <remarks>
     /// An enum rather than free text: the client shows different copy and offers different recovery for
-    /// a mistyped code, a full igloo, and a match already in progress, so the reason has to be
+    /// a mistyped code, a full lobby, and a match already in progress, so the reason has to be
     /// machine-readable. The connection survives the refusal — it stays authenticated at the front desk
     /// and may try another code.
     /// </remarks>

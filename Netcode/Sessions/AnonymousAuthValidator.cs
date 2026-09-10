@@ -14,13 +14,13 @@ namespace AlpineLib.Netcode.Sessions {
     public sealed class AnonymousAuthValidator : IAuthValidator {
         private readonly string _defaultDisplayName;
 
-        /// <summary>Creates a validator that falls back to "Penguin" for blank names.</summary>
-        public AnonymousAuthValidator() : this("Penguin") { }
+        /// <summary>Creates a validator that falls back to the neutral default name for blank names.</summary>
+        public AnonymousAuthValidator() : this(SessionConfigData.FallbackDisplayName) { }
 
         /// <summary>Creates a validator with a specific fallback display name.</summary>
         public AnonymousAuthValidator(string defaultDisplayName) {
             _defaultDisplayName = string.IsNullOrWhiteSpace(defaultDisplayName)
-                ? "Penguin"
+                ? SessionConfigData.FallbackDisplayName
                 : defaultDisplayName.Trim();
         }
 

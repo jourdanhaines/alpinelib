@@ -17,7 +17,7 @@ namespace AlpineLib.Sessions {
     /// <remarks>
     /// <para>
     /// A dedicated server's front desk hosts many sessions and hands each connection to the right one.
-    /// A listen host is the degenerate case — one machine, one igloo, one session — but it still needs a
+    /// A listen host is the degenerate case — one machine, one lobby, one session — but it still needs a
     /// front desk, because a <see cref="SessionHost"/> deliberately knows nothing about join codes,
     /// session lookup or the one-session-per-connection rule, and something must claim the create and
     /// join message ids on the shared router. This is that something, kept to the single-session case.
@@ -26,7 +26,7 @@ namespace AlpineLib.Sessions {
     /// It also owns the session's <see cref="ServerReplication"/>, because on a listen host the pawn
     /// simulation is server work like any other and has to be ticked from the same pump. The collision
     /// world it steps against is the scene's exported geometry — the same bytes a dedicated server
-    /// loads, so a listen host and a dedicated one simulate the same igloo rather than two of them.
+    /// loads, so a listen host and a dedicated one simulate the same lobby rather than two of them.
     /// </para>
     /// </remarks>
     public class ListenServerFrontDesk : ISessionFrontDesk {
@@ -281,7 +281,7 @@ namespace AlpineLib.Sessions {
 
         /// <summary>
         /// Drops the pawns of a member the session has finished with, so a leave does not leave a body
-        /// standing in the igloo.
+        /// standing in the lobby.
         /// </summary>
         private void HandleMemberLeft(SessionMember member, LeaveReason reason) {
             if (_replication == null || member == null) return;

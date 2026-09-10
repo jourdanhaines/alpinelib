@@ -101,7 +101,7 @@ namespace AlpineLib.Netcode.Sessions {
         /// <summary>The match finished; results are being held before the return to the lobby.</summary>
         public event Action<MatchResultData> OnMatchEnded;
 
-        /// <summary>Back to the igloo, either after results or because this client was left behind.</summary>
+        /// <summary>Back to the lobby, either after results or because this client was left behind.</summary>
         public event Action OnReturnedToLobby;
 
         /// <summary>Ownership of the session moved to this player id.</summary>

@@ -748,7 +748,7 @@ namespace AlpineLib.Netcode.Replication {
         /// <remarks>
         /// The kind and the mover id are carried through onto the entity rather than dropped here, because
         /// <see cref="OnEntitySpawned"/> is where the presentation layer decides what to build around an
-        /// entity — a possessable penguin or a platform driven from the shared path — and it reads them
+        /// entity — a possessable pawn or a platform driven from the shared path — and it reads them
         /// off the <see cref="NetEntity"/> it is handed. They are also what keeps a mover out of the
         /// prediction bookkeeping below.
         /// </remarks>
