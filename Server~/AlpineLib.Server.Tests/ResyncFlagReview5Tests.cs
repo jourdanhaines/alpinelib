@@ -190,13 +190,13 @@ namespace AlpineLib.Server.Tests {
 
         /// <summary>
         /// The burst the fourth budget slot was added for cannot happen: a resync needs a silent send
-        /// tick in front of it, and by the time one has passed after a conforming source's third change
+        /// tick in front of it, and by the time one has passed after a dwelling source's third change
         /// the window has already reopened.
         /// </summary>
         /// <remarks>
         /// An owner pushes at most one sample per send tick — <c>NetActorSync.AccumulateAndSend</c> is a
         /// single guarded send, not a drain — so a resync at tick <c>k</c> means nothing at all was sent
-        /// at <c>k-1</c>, and a frame change cannot have been charged there either. A conforming source's
+        /// at <c>k-1</c>, and a frame change cannot have been charged there either. A dwelling source's
         /// densest burst is ticks 0, 3 and 6 of an eight-tick window, so the earliest resync that can
         /// follow it is tick 8, which reopens the window. That is why the budget does not need a fourth
         /// slot for the resync; the burst itself is pinned by
@@ -217,7 +217,7 @@ namespace AlpineLib.Server.Tests {
                 AuthorityMode.OwnerClient,
                 At(OnTheDeck, PawnState.WorldCarrierId));
 
-            // Ticks 0, 3 and 6 of one window: the fastest a source honouring the dwell can change frame.
+            // Ticks 0, 3 and 6 of one window: the fastest a source dwelling between coupled cars can change frame.
             Report(world, owner, pawn, At(OnTheDeck, DeckCarrierId));
             world.Pump(3);
             Report(world, owner, pawn, At(OnTheDeck, SecondCarrierId));

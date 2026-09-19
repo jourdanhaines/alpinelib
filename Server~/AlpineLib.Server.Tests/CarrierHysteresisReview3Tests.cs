@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Numerics;
 using AlpineLib.Netcode.Replication;
@@ -6,15 +7,17 @@ using Xunit;
 
 namespace AlpineLib.Server.Tests {
     /// <summary>
-    /// What the dwell <c>INetCarrierSource</c> demands costs when the two frames are not moving together,
-    /// and where the switch budget's boundaries actually sit.
+    /// What a flat dwell would cost when the two frames are not moving together, and where the switch
+    /// budget's boundaries actually sit.
     /// </summary>
     /// <remarks>
     /// The dwell is free for the case it was written for — a contact alternating between two cars of one
     /// consist, which share a velocity — and these tests measure the case it is not: a rider leaving a
     /// moving deck for the ground, where the reported frame recedes at the consist's own speed for the
-    /// whole dwell and every tick of it is measured against a walking gait. That residue is what pins the
-    /// dwell to the shortest length the server's budget allows rather than to a comfortable one.
+    /// whole dwell and every tick of it is measured against a walking gait. That residue is why
+    /// <c>CarrierSettlePolicy</c> reports a change between frames moving apart at once and dwells only
+    /// between frames moving together; the first two tests pin the bill a source that dwelt anyway
+    /// would pay.
     /// </remarks>
     public sealed class CarrierHysteresisReview3Tests {
         private const ushort DeckCarrierId = 1;
@@ -27,17 +30,16 @@ namespace AlpineLib.Server.Tests {
         private const float DeckTravelPerTick = 1f;
 
         /// <summary>
-        /// Ticks in the dwell the interface mandates: <c>NetCarrier.SourceHysteresisSeconds</c>, 0.1 s, at
-        /// the server's 30 Hz. Kept as a literal because the constant lives in the Unity assembly, which
-        /// these engine-free tests cannot reference; the two are meant to move together.
+        /// Ticks in the dwell between frames moving together: <c>CarrierSettlePolicy.DwellSeconds</c> at
+        /// the server's 30 Hz.
         /// </summary>
-        private const int DwellTicks = 3;
+        private static readonly int DwellTicks = (int)Math.Ceiling(CarrierSettlePolicy.DwellSeconds * 30f);
 
         private static readonly Vector3 OnTheDeck = new Vector3(0.5f, 0f, 2f);
 
         /// <summary>
-        /// A rider who steps off a moving deck keeps reporting that deck for the mandated dwell, and its
-        /// deck-local position recedes at the consist's speed the whole time.
+        /// A rider who stepped off a moving deck and dwelt anyway would keep reporting that deck for the
+        /// whole dwell, with its deck-local position receding at the consist's speed the whole time.
         /// </summary>
         [Fact]
         public void SteppingOffAMovingDeckIsRefusedForEveryTickOfTheMandatedDwell() {

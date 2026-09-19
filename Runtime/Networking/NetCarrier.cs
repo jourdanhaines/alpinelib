@@ -59,28 +59,12 @@ namespace AlpineLib.Networking {
         public const float ScaleTolerance = 1e-3f;
 
         /// <summary>
-        /// How long a game's <see cref="INetCarrierSource"/> must see a new carrier before it may report
-        /// the change. The hysteresis every source owes the replication side; see that interface.
+        /// How long a new carrier must hold before a rider reports the change when the two frames move
+        /// together. The reporting side dwells through <see cref="CarrierSettlePolicy"/>, which owns the
+        /// constant and the immediate-settle rule for frames moving apart; this is the same number,
+        /// kept here for the Unity side and the gates that read it.
         /// </summary>
-        /// <remarks>
-        /// <para>
-        /// Three ticks of a thirty-hertz server, and deliberately not one tick more. What a dwell has to
-        /// clear is the server's <em>sustained</em> rate of unmeasured moves, and that floor is a count of
-        /// ticks rather than a ratio of seconds: a source's changes land on send ticks, so what matters is
-        /// that a budget's worth of dwells outlasts the window — <c>CarrierSwitchCooldownTicks /
-        /// (ServerTickRate × MaxCarrierSwitchesPerWindow)</c>, 8 / 90 = 0.089 s. Three ticks clears that
-        /// by about a tenth and no more, so the dwell and the budget are one decision: lowering the
-        /// budget means lengthening this first; see <c>MovementValidator.MaxCarrierSwitchesPerWindow</c>.
-        /// It cannot go to zero either: a hop or a step over a rail breaks ground contact for a handful
-        /// of frames without the rider leaving the deck, and this outlasts that at sixty frames a second.
-        /// </para>
-        /// <para>
-        /// Every tick of dwell is paid for by a rider whose two frames are not moving together — see
-        /// <see cref="INetCarrierSource"/> — which is why the constant sits at the bottom of the range
-        /// rather than in the middle of it.
-        /// </para>
-        /// </remarks>
-        public const float SourceHysteresisSeconds = 0.1f;
+        public const float SourceHysteresisSeconds = CarrierSettlePolicy.DwellSeconds;
 
         [Tooltip("Session-wide id riders name in their replicated state. Must match on every peer; leave at zero for a carrier whose id is assigned at runtime.")]
         [SerializeField] private ushort carrierId;

@@ -43,6 +43,8 @@ namespace AlpineLib.Netcode.Replication {
             CarrierSwitchesInWindow = 0;
             LastAcceptedResyncTick = 0u;
             HasAcceptedResync = false;
+            CarriedPlanarSpeed = 0f;
+            CarriedMomentumOpenedTick = 0u;
             LastAcknowledgedInputSequence = 0u;
             HighestReceivedInputSequence = 0u;
             StarvedTicks = 0;
@@ -130,6 +132,17 @@ namespace AlpineLib.Netcode.Replication {
         /// first tick by the stamp alone.
         /// </summary>
         public bool HasAcceptedResync { get; set; }
+
+        /// <summary>
+        /// Planar speed this pawn carried off a carrier into the air, latched on the frame change that
+        /// was accepted, or zero while no momentum is live. Widens the airborne allowance until a
+        /// grounded accept closes it or <see cref="CarriedMomentumOpenedTick"/> ages out; see the
+        /// carried-momentum note on <see cref="MovementValidator"/>.
+        /// </summary>
+        public float CarriedPlanarSpeed { get; set; }
+
+        /// <summary>Tick the live carried momentum was latched on; meaningful while <see cref="CarriedPlanarSpeed"/> is positive.</summary>
+        public uint CarriedMomentumOpenedTick { get; set; }
 
         /// <summary>
         /// The owner's input sequence this state accounts for. Rides on every correction so the owner's

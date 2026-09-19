@@ -347,13 +347,15 @@ namespace AlpineLib.Server.Tests {
         }
 
         /// <summary>
-        /// A source dwelling for exactly <c>NetCarrier.SourceHysteresisSeconds</c> fills the switch
-        /// budget inside one window, exactly and with nothing to spare.
+        /// A source dwelling for exactly <c>CarrierSettlePolicy.DwellSeconds</c> between frames moving
+        /// together fills the switch budget inside one window, exactly and with nothing to spare.
         /// </summary>
         /// <remarks>
         /// The dwell is three ticks of a thirty-hertz send clock, and the window is eight ticks, so a
-        /// conforming source's changes land on ticks 0, 3 and 6 — all inside one window, because it only
-        /// reopens at elapsed ≥ 8. That is the arithmetic behind
+        /// dwelling source's changes land on ticks 0, 3 and 6 — all inside one window, because it only
+        /// reopens at elapsed ≥ 8. Frames moving apart are reported without dwelling, but no rider can
+        /// cross such a boundary three times in a window by walking, so this is still the densest
+        /// honest burst. That is the arithmetic behind
         /// <c>MovementValidator.MaxCarrierSwitchesPerWindow</c> being three: honest play produces exactly
         /// this and the count cannot be lowered without lengthening the dwell first. A resync does not
         /// need a slot of its own here, because it cannot land inside this burst —
@@ -372,7 +374,7 @@ namespace AlpineLib.Server.Tests {
                 AuthorityMode.OwnerClient,
                 At(OnTheDeck, PawnState.WorldCarrierId));
 
-            // Ticks 0, 3 and 6 of one eight-tick window: the fastest a source honouring the dwell can go.
+            // Ticks 0, 3 and 6 of one eight-tick window: the fastest a source dwelling between coupled cars can go.
             Report(world, owner, pawn, At(OnTheDeck, DeckCarrierId));
             world.Pump(3);
             Report(world, owner, pawn, At(OnTheDeck, SecondCarrierId));

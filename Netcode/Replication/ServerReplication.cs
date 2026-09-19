@@ -549,19 +549,25 @@ namespace AlpineLib.Netcode.Replication {
                 return;
             }
 
+            PawnState previous = entity.State;
             float deltaSeconds = MeasuredIntervalSince(entity.LastDirtyTick);
             bool carrierChangeAllowed = IsCarrierChangeAllowed(entity, message.State.CarrierId);
             MovementVerdict verdict = validator.Validate(
                 entity.PrefabId,
-                entity.State,
+                in previous,
                 message.State,
                 deltaSeconds,
-                carrierChangeAllowed);
+                carrierChangeAllowed,
+                ResolveLiveCarriedSpeed(entity));
 
-            if (verdict.RequiresCorrection && TryAcceptResync(entity, in message, deltaSeconds)) return;
+            if (verdict.RequiresCorrection && TryAcceptResync(entity, in message, deltaSeconds)) {
+                UpdateCarriedMomentum(entity, in previous);
+                return;
+            }
 
             entity.ApplyState(verdict.ResolvedState, currentTick);
             entity.LastAcknowledgedInputSequence = message.ClientTick;
+            UpdateCarriedMomentum(entity, in previous);
 
             if (!verdict.RequiresCorrection) {
                 return;
@@ -569,6 +575,43 @@ namespace AlpineLib.Netcode.Replication {
 
             OnMovementViolation?.Invoke(entity, verdict);
             SendCorrection(entity, sender);
+        }
+
+        /// <summary>
+        /// The carried speed still widening this pawn's airborne allowance, or zero once it has aged
+        /// past <see cref="MovementValidator.CarriedMomentumTicks"/>. Unsigned subtraction, so it stays
+        /// correct across the tick counter wrapping.
+        /// </summary>
+        private float ResolveLiveCarriedSpeed(NetEntity entity) {
+            if (entity.CarriedPlanarSpeed <= 0f) return 0f;
+            if (currentTick - entity.CarriedMomentumOpenedTick >= validator.CarriedMomentumTicks) return 0f;
+
+            return entity.CarriedPlanarSpeed;
+        }
+
+        /// <summary>
+        /// Latches momentum on an accepted change off a carrier into the air, and closes it the moment
+        /// the held state is grounded again; see <see cref="MovementValidator.ResolveCarriedSpeed"/>.
+        /// </summary>
+        /// <remarks>
+        /// Read from the state the server now holds rather than the claim, so a refused claim opens
+        /// nothing: momentum is only ever latched from numbers the server adopted and replicated.
+        /// </remarks>
+        private void UpdateCarriedMomentum(NetEntity entity, in PawnState previous) {
+            PawnState held = entity.State;
+
+            if (held.IsGrounded) {
+                entity.CarriedPlanarSpeed = 0f;
+                return;
+            }
+
+            if (previous.CarrierId == held.CarrierId) return;
+
+            float carried = MovementValidator.ResolveCarriedSpeed(in previous, in held);
+            if (carried <= 0f) return;
+
+            entity.CarriedPlanarSpeed = carried;
+            entity.CarriedMomentumOpenedTick = currentTick;
         }
 
         /// <summary>

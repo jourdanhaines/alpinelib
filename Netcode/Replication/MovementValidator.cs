@@ -44,8 +44,21 @@ namespace AlpineLib.Netcode.Replication {
     /// changes in quick succession, and a hop off a deck and back is another two, so real riders were
     /// corrected for several ticks running while a cheat merely switched more slowly. A budget refuses
     /// only the alternation nobody produces by walking — and honest play is held to the same edge from
-    /// the other end, because <c>INetCarrierSource</c> owes this side hysteresis and a source honouring
-    /// that dwell fills the budget exactly rather than overrunning it.
+    /// the other end, because <see cref="CarrierSettlePolicy"/> dwells on a change between frames moving
+    /// together, and a source dwelling that long fills the budget exactly rather than overrunning it.
+    /// Frames moving apart are reported at once; they cannot be crossed three times in a window by
+    /// walking.
+    /// </para>
+    /// <para>
+    /// <b>Carried momentum.</b> A pawn that leaves a carrier at speed keeps that speed through the air,
+    /// and in world frame it is a metre a tick against a walking gait's quarter of one. While the held
+    /// state is airborne, the planar allowance is therefore the faster of the gait and a carried speed
+    /// latched on the tick the frame change was accepted — see <see cref="ResolveCarriedSpeed"/>. It is
+    /// bounded on every side: latched from the accepted claim rather than read fresh each tick, so a
+    /// client cannot raise its own ceiling; capped at <see cref="MaxCarriedSpeed"/>; airborne-only, so
+    /// the first grounded accept closes it; expired after <see cref="CarriedMomentumSeconds"/>; and
+    /// opened only by a frame change, which is already an unmeasured move of any size — the tail is
+    /// strictly dominated by the thing that opens it, exactly as the resync tail below is.
     /// </para>
     /// <para>
     /// <b>The other unmeasured move.</b> An owner that stopped reporting because it had nothing truthful
@@ -140,13 +153,15 @@ namespace AlpineLib.Netcode.Replication {
         /// </summary>
         /// <remarks>
         /// <para>
-        /// Three is what a conforming source produces at its fastest, and it fills the window exactly.
-        /// The window is eight ticks of a thirty-hertz clock and <c>NetCarrier.SourceHysteresisSeconds</c>
-        /// is three of them, so a source honouring the dwell lands changes on ticks 0, 3 and 6 — all
-        /// inside one window, which only reopens at elapsed ≥ 8 — and that is the honest burst itself, a
-        /// hop off a deck and back or a walk across a coupler, seen at the dwell's own cadence. There is
-        /// no margin against honest play in those three, which is the fact a future reader needs: the
-        /// count cannot be lowered without lengthening the dwell first.
+        /// Three is what a dwelling source produces at its fastest, and it fills the window exactly.
+        /// The window is eight ticks of a thirty-hertz clock and <see cref="CarrierSettlePolicy.DwellSeconds"/>
+        /// is three of them, so a source dwelling between frames that move together lands changes on
+        /// ticks 0, 3 and 6 — all inside one window, which only reopens at elapsed ≥ 8 — and that is the
+        /// honest burst itself, a hop off a deck and back or a walk across a coupler, seen at the dwell's
+        /// own cadence. There is no margin against honest play in those three, which is the fact a
+        /// future reader needs: the count cannot be lowered without lengthening the dwell first. A
+        /// change between frames moving apart is reported without dwelling, but no rider can cross such
+        /// a boundary three times in a quarter of a second.
         /// </para>
         /// <para>
         /// <b>A resync does not need a fourth slot, because it cannot coincide with a charge.</b> An
@@ -204,6 +219,18 @@ namespace AlpineLib.Netcode.Replication {
         /// </remarks>
         public const uint ResyncBurstTicks = 4;
 
+        /// <summary>
+        /// Ceiling on the planar speed a pawn may carry off a carrier into the air, in metres per
+        /// second. Above any consist the shipped games run; a claim past it is clamped, not refused.
+        /// </summary>
+        public const float MaxCarriedSpeed = 45f;
+
+        /// <summary>
+        /// How long carried momentum keeps widening the airborne allowance after the frame change that
+        /// opened it. A drop from a deck lands well inside a second; two covers any fall the games have.
+        /// </summary>
+        public const float CarriedMomentumSeconds = 2f;
+
         private readonly NetConfig config;
 
         public MovementValidator(NetConfig config) {
@@ -224,6 +251,12 @@ namespace AlpineLib.Netcode.Replication {
         /// </remarks>
         public uint CarrierSwitchCooldownTicks =>
             (uint)Math.Max(1, (int)Math.Ceiling(CarrierSwitchCooldownSeconds * config.ServerTickRate));
+
+        /// <summary>
+        /// <see cref="CarriedMomentumSeconds"/> in server ticks, rounded up, never less than one.
+        /// </summary>
+        public uint CarriedMomentumTicks =>
+            (uint)Math.Max(1, (int)Math.Ceiling(CarriedMomentumSeconds * config.ServerTickRate));
 
         /// <summary>
         /// Judges one reported move, honouring any carrier change it carries.
@@ -254,6 +287,24 @@ namespace AlpineLib.Netcode.Replication {
             in PawnState next,
             float deltaSeconds,
             bool carrierChangeAllowed) {
+            return Validate(prefabId, in previous, in next, deltaSeconds, carrierChangeAllowed, 0f);
+        }
+
+        /// <summary>
+        /// Judges one reported move, widening the airborne allowance by momentum the pawn carried off a
+        /// carrier; see the carried-momentum note on the type.
+        /// </summary>
+        /// <param name="carriedSpeed">
+        /// Planar speed latched by the caller on the frame change that opened it, zero when none is
+        /// live. Only an airborne held state reads it.
+        /// </param>
+        public MovementVerdict Validate(
+            ushort prefabId,
+            in PawnState previous,
+            in PawnState next,
+            float deltaSeconds,
+            bool carrierChangeAllowed,
+            float carriedSpeed) {
             if (previous.CarrierId != next.CarrierId) {
                 // Two origins, no displacement to measure; see the trust-boundary note on the type.
                 if (!carrierChangeAllowed) {
@@ -272,7 +323,7 @@ namespace AlpineLib.Netcode.Replication {
                 return MovementVerdict.Accept(in next, 0f, 0f);
             }
 
-            float allowedSpeed = ResolveAllowedSpeed(profile, in previous, in next);
+            float allowedSpeed = ResolveAllowedSpeed(profile, in previous, in next, carriedSpeed);
             float allowedDistance = allowedSpeed * deltaSeconds + PositionSlackMetres;
 
             Vector3 travel = PlanarTravel(in previous, in next);
@@ -357,11 +408,45 @@ namespace AlpineLib.Netcode.Replication {
         /// gaits and applying the configured tolerance.
         /// </summary>
         private float ResolveAllowedSpeed(MovementProfile profile, in PawnState previous, in PawnState next) {
+            return ResolveAllowedSpeed(profile, in previous, in next, 0f);
+        }
+
+        /// <summary>
+        /// The gait ceiling, or the carried speed when it is faster and the held state is still in the
+        /// air. Grounded states never read it: feet on the ground are gait again.
+        /// </summary>
+        private float ResolveAllowedSpeed(
+            MovementProfile profile,
+            in PawnState previous,
+            in PawnState next,
+            float carriedSpeed) {
             float previousGaitSpeed = profile.GetSpeedForGait((int)previous.Locomotion);
             float nextGaitSpeed = profile.GetSpeedForGait((int)next.Locomotion);
             float gaitSpeed = Math.Max(previousGaitSpeed, nextGaitSpeed);
 
+            if (!previous.IsGrounded && carriedSpeed > 0f) {
+                gaitSpeed = Math.Max(gaitSpeed, carriedSpeed);
+            }
+
             return gaitSpeed * config.MovementToleranceMultiplier;
+        }
+
+        /// <summary>
+        /// The planar speed a pawn carries into the air when an accepted frame change takes it off a
+        /// carrier into the world, capped at <see cref="MaxCarriedSpeed"/>; zero for every other
+        /// change. Latched by the caller and handed back through <see cref="Validate(ushort, in PawnState, in PawnState, float, bool, float)"/>.
+        /// </summary>
+        /// <remarks>
+        /// Only carrier→world opens it: a boarding or a car-to-car change reports deck-local numbers,
+        /// where the carrier's motion is not part of the measurement. A change that lands grounded opens
+        /// nothing either — a rider stepping onto a platform has feet on it and walks at gait.
+        /// </remarks>
+        public static float ResolveCarriedSpeed(in PawnState previous, in PawnState accepted) {
+            if (!previous.IsCarrierRelative) return 0f;
+            if (accepted.IsCarrierRelative) return 0f;
+            if (accepted.IsGrounded) return 0f;
+
+            return Math.Min(PlanarLength(accepted.Velocity), MaxCarriedSpeed);
         }
 
         /// <summary>
