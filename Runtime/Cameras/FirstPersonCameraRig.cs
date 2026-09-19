@@ -14,10 +14,16 @@ namespace AlpineLib.Cameras {
     /// <c>LateUpdate</c>, which also means retargeting needs no snap flag the way
     /// <see cref="ThirdPersonCameraRig"/> does.
     ///
-    /// The eye also rides the target's <see cref="CharacterController"/> capsule rather than a fixed
-    /// height, so an actor that crouches takes the camera down with it. Without that the capsule shrinks
-    /// under a low ceiling while the camera stays at standing height, and the player crawls through a
-    /// crouch tunnel looking out through the roof.
+    /// The eye also rides the target's capsule height, read through <see cref="ICameraTarget"/>, rather
+    /// than a fixed height, so an actor that crouches takes the camera down with it. Without that the
+    /// capsule shrinks under a low ceiling while the camera stays at standing height, and the player
+    /// crawls through a crouch tunnel looking out through the roof.
+    ///
+    /// Yaw is kept relative to the target's <see cref="ICameraTarget.YawFrame"/> — the deck it stands
+    /// on — and resolved against that frame's heading whenever it is read. A target carried round a
+    /// curve therefore turns the view with the deck on the very frame the deck turns, before any brain
+    /// reads <see cref="PlanarForward"/>, with nothing feeding deltas in from outside. Switching frames
+    /// preserves the world yaw, so nothing moves on screen when a rider boards or alights.
     ///
     /// Like the third-person rig it reads no input device of its own — look deltas arrive through
     /// <see cref="AddLookInput"/> and accumulate until the next <c>LateUpdate</c> consumes them, and
@@ -32,7 +38,7 @@ namespace AlpineLib.Cameras {
         [Tooltip("Eye position relative to the target, in the target's local space. Y is eye height while standing.")]
         [SerializeField] private Vector3 eyeOffset = new Vector3(0f, 1.5f, 0f);
 
-        [Tooltip("Drop the eye with the target's CharacterController capsule, so crouching lowers the camera instead of leaving it inside the ceiling.")]
+        [Tooltip("Drop the eye with the target's capsule height, so crouching lowers the camera instead of leaving it inside the ceiling.")]
         [SerializeField] private bool trackCapsuleHeight = true;
 
         [Header("Look")]
@@ -49,16 +55,21 @@ namespace AlpineLib.Cameras {
         public Transform CameraAnchor => cameraAnchor;
 
         /// <inheritdoc />
-        public float Yaw => _yaw;
+        public float Yaw {
+            get {
+                ResolveYawFrame();
+                return Mathf.Repeat(FrameHeading() + _frameYaw, 360f);
+            }
+        }
 
         /// <inheritdoc />
         public float Pitch => _pitch;
 
         /// <inheritdoc />
-        public Vector3 PlanarForward => Quaternion.Euler(0f, _yaw, 0f) * Vector3.forward;
+        public Vector3 PlanarForward => Quaternion.Euler(0f, Yaw, 0f) * Vector3.forward;
 
         /// <inheritdoc />
-        public Vector3 PlanarRight => Quaternion.Euler(0f, _yaw, 0f) * Vector3.right;
+        public Vector3 PlanarRight => Quaternion.Euler(0f, Yaw, 0f) * Vector3.right;
 
         /// <summary>
         /// Target the eye rides on, or null while the rig is parked.
@@ -66,17 +77,18 @@ namespace AlpineLib.Cameras {
         public Transform Target => _target;
 
         private Transform _target;
-        private CharacterController _targetCapsule;
+        private ICameraTarget _cameraTarget;
+        private Transform _yawFrame;
+        private float _frameYaw;
         private float _eyeInset;
         private Vector2 _pendingLook;
-        private float _yaw;
         private float _pitch;
 
         private void Awake() {
             ResolveCameraAnchor();
 
             Vector3 startingAngles = transform.rotation.eulerAngles;
-            _yaw = startingAngles.y;
+            _frameYaw = startingAngles.y;
             _pitch = Mathf.Clamp(Mathf.DeltaAngle(0f, startingAngles.x), pitchMin, pitchMax);
         }
 
@@ -87,7 +99,8 @@ namespace AlpineLib.Cameras {
         /// </remarks>
         public void SetTarget(Transform target) {
             _target = target;
-            ResolveTargetCapsule();
+            ResolveCameraTarget();
+            ResolveYawFrame();
             SnapToTarget();
         }
 
@@ -108,8 +121,9 @@ namespace AlpineLib.Cameras {
 
         /// <inheritdoc />
         public void SetLookAngles(float yawDegrees, float pitchDegrees) {
+            ResolveYawFrame();
             _pendingLook = Vector2.zero;
-            _yaw = Mathf.Repeat(yawDegrees, 360f);
+            _frameYaw = Mathf.Repeat(yawDegrees, 360f) - FrameHeading();
             _pitch = Mathf.Clamp(pitchDegrees, pitchMin, pitchMax);
         }
 
@@ -118,6 +132,7 @@ namespace AlpineLib.Cameras {
         /// on the frame a target finally arrives, matching <see cref="ThirdPersonCameraRig"/>.
         /// </remarks>
         private void LateUpdate() {
+            ResolveYawFrame();
             ConsumeLookInput();
 
             if (_target == null) return;
@@ -127,9 +142,26 @@ namespace AlpineLib.Cameras {
         }
 
         private void ConsumeLookInput() {
-            _yaw = Mathf.Repeat(_yaw + _pendingLook.x * lookSensitivity, 360f);
+            _frameYaw += _pendingLook.x * lookSensitivity;
             _pitch = Mathf.Clamp(_pitch - _pendingLook.y * lookSensitivity, pitchMin, pitchMax);
             _pendingLook = Vector2.zero;
+        }
+
+        /// <summary>
+        /// Adopts the target's current yaw frame, carrying the world yaw across so a change of frame
+        /// moves nothing.
+        /// </summary>
+        private void ResolveYawFrame() {
+            Transform frame = _cameraTarget != null ? _cameraTarget.YawFrame : null;
+            if (ReferenceEquals(frame, _yawFrame)) return;
+
+            float worldYaw = FrameHeading() + _frameYaw;
+            _yawFrame = frame;
+            _frameYaw = worldYaw - FrameHeading();
+        }
+
+        private float FrameHeading() {
+            return _yawFrame != null ? _yawFrame.eulerAngles.y : 0f;
         }
 
         /// <remarks>
@@ -144,7 +176,7 @@ namespace AlpineLib.Cameras {
 
             transform.SetPositionAndRotation(
                 _target.position + _target.rotation * offset,
-                Quaternion.Euler(_pitch, _yaw, 0f)
+                Quaternion.Euler(_pitch, Yaw, 0f)
             );
         }
 
@@ -152,42 +184,28 @@ namespace AlpineLib.Cameras {
         /// Eye height above the target's feet for this frame: the authored height while standing, and
         /// the same distance below the crown of the capsule once something resizes it.
         /// </summary>
-        /// <remarks>
-        /// Read fresh every frame rather than cached, because whatever shrinks the capsule — a crouch
-        /// system easing <c>height</c> down over several frames, say — is then followed exactly, with no
-        /// smoothing of its own to fight the one already driving the capsule.
-        /// </remarks>
         private float ResolveEyeHeight() {
-            if (_targetCapsule == null) return eyeOffset.y;
+            if (_cameraTarget == null || !trackCapsuleHeight) return eyeOffset.y;
 
-            return Mathf.Max(_targetCapsule.height - _eyeInset, 0f);
+            return Mathf.Max(_cameraTarget.Height - _eyeInset, 0f);
         }
 
         /// <summary>
-        /// Caches the target's capsule, and how far below the top of it the authored eye sits.
+        /// Finds what the target knows about itself beyond its transform, and how far below the crown of
+        /// its capsule the authored eye sits.
         /// </summary>
         /// <remarks>
-        /// The inset is measured once, against the height the capsule has when it is first targeted —
-        /// its standing height, since actors are targeted upright — rather than re-derived per frame, so
-        /// the eye keeps the head position the offset was authored for instead of being redefined by
-        /// every resize. The eye then drops exactly as far as the crown does, which is what makes
-        /// crouching in first person duck the camera under a low ceiling instead of leaving it hanging
-        /// inside the roof while the capsule fits underneath.
-        ///
-        /// Searched up the hierarchy rather than on the target alone so a rig aimed at a dedicated head
-        /// or eye transform still finds the actor's capsule. Targets with no capsule — a spectator
-        /// point, a cutscene dolly — simply keep the authored eye height.
+        /// The inset is measured once, against the height the target has when first targeted — its
+        /// standing height — so the eye keeps the head position the offset was authored for and drops
+        /// exactly as far as the crown does. Searched up the hierarchy so a rig aimed at a dedicated head
+        /// transform still finds the actor. Targets with nothing to say keep the authored eye height and
+        /// the world yaw frame.
         /// </remarks>
-        private void ResolveTargetCapsule() {
-            _targetCapsule = null;
+        private void ResolveCameraTarget() {
+            _cameraTarget = _target != null ? _target.GetComponentInParent<ICameraTarget>() : null;
+            if (_cameraTarget == null) return;
 
-            if (!trackCapsuleHeight) return;
-            if (_target == null) return;
-
-            _targetCapsule = _target.GetComponentInParent<CharacterController>();
-            if (_targetCapsule == null) return;
-
-            _eyeInset = Mathf.Max(_targetCapsule.height - eyeOffset.y, 0f);
+            _eyeInset = Mathf.Max(_cameraTarget.Height - eyeOffset.y, 0f);
         }
 
         private void PositionAnchor() {

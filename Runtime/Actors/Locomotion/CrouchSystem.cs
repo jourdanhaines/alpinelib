@@ -3,8 +3,8 @@ using UnityEngine;
 
 namespace AlpineLib.Actors.Locomotion {
     /// <summary>
-    /// Drives the actor's <see cref="CharacterController"/> capsule between a standing and a crouched
-    /// height, and refuses to stand back up while something is directly overhead.
+    /// Drives the actor's capsule between a standing and a crouched height, and refuses to stand back
+    /// up while something is directly overhead.
     /// </summary>
     /// <remarks>
     /// This owns capsule geometry only. It deliberately does not touch move speed or noise — that is
@@ -21,13 +21,11 @@ namespace AlpineLib.Actors.Locomotion {
     ///
     /// Extends <see cref="ActorSubsystem"/> for the standard death behaviour: the base disables this
     /// component when the owner dies, freezing the capsule at whatever height it had. That is correct
-    /// here — <see cref="Actor.Kill"/> switches the controller off anyway, and a corpse resizing its
-    /// capsule would only fight whatever ragdoll or death animation takes over.
+    /// here — <see cref="Actor.Kill"/> switches collision off anyway, and a corpse resizing its capsule
+    /// would only fight whatever ragdoll or death animation takes over.
     ///
-    /// The <see cref="CharacterController"/> requirement is declared here as well, even though
-    /// <see cref="Actor"/> already implies it: the capsule is the one thing this component exists to
-    /// resize, and relying on another component's requirement to guarantee it leaves a per-frame null
-    /// dereference waiting on any object where that chain is broken.
+    /// The capsule itself belongs to the actor's motor; this asks it to resize and to check headroom, so
+    /// the probe uses the motor's own mask and skin and can never hit the actor's own collider.
     ///
     /// Crouch state is mirrored into the animator's <c>Crouching</c> bool whenever the actor's
     /// controller declares it, following the same opt-in convention as the actor's <c>Grounded</c>
@@ -36,10 +34,9 @@ namespace AlpineLib.Actors.Locomotion {
     /// — there is nothing to re-derive between changes.
     /// </remarks>
     [RequireComponent(typeof(Actor))]
-    [RequireComponent(typeof(CharacterController))]
     public class CrouchSystem : ActorSubsystem {
         [Header("Heights")]
-        [Tooltip("Capsule height in metres while standing. Should match the CharacterController height authored on the prefab.")]
+        [Tooltip("Capsule height in metres while standing. Should match the capsule height authored on the prefab.")]
         [SerializeField] private float standingHeight = 1.8f;
         [Tooltip("Capsule height in metres while crouched.")]
         [SerializeField] private float crouchHeight = 0.9f;
@@ -47,10 +44,6 @@ namespace AlpineLib.Actors.Locomotion {
         [Header("Transition")]
         [Tooltip("How fast the capsule approaches its target height. Higher is snappier; this is an exponential approach rate, not metres per second.")]
         [SerializeField] private float transitionSpeed = 8f;
-
-        [Header("Ceiling Check")]
-        [Tooltip("Layers that can block standing up. Should exclude the actor's own layer so the check cannot hit the actor's own colliders.")]
-        [SerializeField] private LayerMask ceilingMask = Physics.DefaultRaycastLayers;
 
         /// <summary>
         /// True while the actor is crouched or transitioning into a crouch.
@@ -78,17 +71,6 @@ namespace AlpineLib.Actors.Locomotion {
         public event Action<bool> OnCrouchChanged;
 
         /// <summary>
-        /// Metres subtracted from the controller radius to size the ceiling probe, so the probe cannot
-        /// graze the actor's own capsule or a wall it is already flush against.
-        /// </summary>
-        /// <remarks>
-        /// An absolute clearance rather than a fraction of the radius: the gap that has to be cleared is
-        /// the collision skin and the wall the actor is leaning on, both of which are measured in metres
-        /// and neither of which grows with the width of the actor.
-        /// </remarks>
-        private const float ProbeRadiusClearance = 0.05f;
-
-        /// <summary>
         /// Height difference in metres below which the capsule is snapped to its target, ending the
         /// exponential approach that would otherwise never quite arrive.
         /// </summary>
@@ -100,7 +82,7 @@ namespace AlpineLib.Actors.Locomotion {
         /// </summary>
         private const string CrouchingParameter = "Crouching";
 
-        private CharacterController _controller;
+        private Actor _actor;
         private Animator _animator;
         private int _crouchingParameterHash;
         private bool _hasCrouchingParameter;
@@ -108,8 +90,8 @@ namespace AlpineLib.Actors.Locomotion {
         protected override void Start() {
             base.Start();
 
-            _controller = GetComponent<CharacterController>();
-            _animator = GetComponent<Actor>().Animator;
+            _actor = GetComponent<Actor>();
+            _animator = _actor.Animator;
             _crouchingParameterHash = Animator.StringToHash(CrouchingParameter);
             _hasCrouchingParameter = DeclaresCrouchingParameter();
             WriteCrouchingParameter();
@@ -140,29 +122,11 @@ namespace AlpineLib.Actors.Locomotion {
         /// Reports whether there is room above the actor to return to <c>standingHeight</c>.
         /// </summary>
         /// <returns>True when standing is clear, or when the actor is already standing.</returns>
-        /// <remarks>
-        /// Sweeps a sphere upward from the capsule's top hemisphere centre across exactly the height the
-        /// actor is missing, using a slightly shrunk controller radius. The shrink matters twice: it keeps
-        /// the probe from starting inside the actor's own collider, and it stops an actor pressed against
-        /// a wall from reading that wall as a ceiling. The mask is still the real defence against
-        /// self-hits — <c>ceilingMask</c> should not include the actor's own layer.
-        ///
-        /// The origin is built from <c>transform.position + controller.center</c> rather than
-        /// <c>TransformPoint</c> because a character controller capsule is world-axis-aligned regardless
-        /// of the transform's yaw; going through the transform would only introduce scale artefacts.
-        /// </remarks>
         public bool CanStand() {
-            if (_controller == null) return true;
+            if (_actor == null) return true;
+            if (standingHeight - _actor.CapsuleHeight <= 0f) return true;
 
-            float missingHeight = standingHeight - _controller.height;
-            if (missingHeight <= 0f) return true;
-
-            float probeRadius = Mathf.Max(_controller.radius - ProbeRadiusClearance, 0.01f);
-            Vector3 capsuleTop = transform.position + _controller.center + Vector3.up * (_controller.height * 0.5f - probeRadius);
-
-            return !Physics.SphereCast(
-                capsuleTop, probeRadius, Vector3.up, out _, missingHeight, ceilingMask, QueryTriggerInteraction.Ignore
-            );
+            return _actor.HasHeadroom(standingHeight);
         }
 
         private void Update() {
@@ -184,35 +148,31 @@ namespace AlpineLib.Actors.Locomotion {
         }
 
         /// <summary>
-        /// Moves the capsule one frame closer to its target height and keeps its centre at half that
-        /// height, so the actor's feet stay planted while the top of the capsule moves.
+        /// Moves the capsule one frame closer to its target height; the actor keeps its feet planted and
+        /// moves the top.
         /// </summary>
         /// <remarks>
         /// The blend is framerate independent — <c>1 - e^(-rate * dt)</c> rather than <c>rate * dt</c> —
         /// so the same <c>transitionSpeed</c> produces the same curve at 60 and 144 fps. The result is
         /// snapped once it is within a millimetre because an exponential approach is asymptotic, and a
         /// capsule that is forever 0.4 mm short of standing height would make <see cref="CanStand"/>
-        /// keep casting a hair-thin probe every frame.
-        ///
-        /// The controller is guarded the same way <see cref="CanStand"/> guards it, so an actor whose
-        /// capsule has been removed at runtime degrades to doing nothing instead of throwing once per
-        /// frame for the rest of the session.
+        /// keep probing a hair-thin gap every frame.
         /// </remarks>
         private void ApplyHeight() {
-            if (_controller == null) return;
+            if (_actor == null) return;
 
+            float currentHeight = _actor.CapsuleHeight;
             float targetHeight = IsCrouching ? crouchHeight : standingHeight;
-            if (Mathf.Approximately(_controller.height, targetHeight)) return;
+            if (Mathf.Approximately(currentHeight, targetHeight)) return;
 
             float blend = 1f - Mathf.Exp(-transitionSpeed * Time.deltaTime);
-            float nextHeight = Mathf.Lerp(_controller.height, targetHeight, blend);
+            float nextHeight = Mathf.Lerp(currentHeight, targetHeight, blend);
 
             if (Mathf.Abs(nextHeight - targetHeight) < HeightSnapEpsilon) {
                 nextHeight = targetHeight;
             }
 
-            _controller.height = nextHeight;
-            _controller.center = Vector3.up * (nextHeight * 0.5f);
+            _actor.SetCapsuleHeight(nextHeight);
         }
 
         /// <summary>

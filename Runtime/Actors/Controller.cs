@@ -12,11 +12,10 @@ namespace AlpineLib.Actors {
         /// movement intents.
         /// </summary>
         /// <remarks>
-        /// The actor reads this to stand down its own integrators: gravity and air locomotion are
-        /// second writers to the same <see cref="CharacterController"/>, and an externally placed pawn
-        /// fought by its own physics vibrates. Possession is the seam on purpose — the same actor is
-        /// self-simulated under a player brain and externally placed under a replication brain, with
-        /// nothing configured anywhere else.
+        /// The actor reads this to stand down its motor: a pawn placed from outside and stepped by its
+        /// own simulation has two writers, and it vibrates. Possession is the seam on purpose — the same
+        /// actor is self-simulated under a player brain and externally placed under a replication brain,
+        /// with nothing configured anywhere else.
         /// </remarks>
         public virtual bool DrivesPawnExternally => false;
 
