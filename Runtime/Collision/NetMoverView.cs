@@ -41,7 +41,7 @@ namespace AlpineLib.Collision {
     /// </para>
     /// <para>
     /// <b>The view needs a Unity collider.</b> The shared simulation stands the pawn on the mover's
-    /// exported box, but the locally-owned pawn's <c>CharacterController</c> also runs Unity physics —
+    /// exported box, but the locally-owned pawn's capsule motor also sweeps Unity physics —
     /// gravity grounds it against Unity colliders, and against nothing else. A mover view without a
     /// collider leaves Unity believing there is no deck at all: gravity drags the visible pawn down to
     /// whatever static floor is underneath while the simulation insists its feet are on the platform,
@@ -187,7 +187,7 @@ namespace AlpineLib.Collision {
             if (GetComponent<Collider>() == null) {
                 Debug.LogWarning(
                     $"NetMoverView::Start->{name} has no Collider. The simulation stands pawns on this " +
-                    "mover, but the locally-owned pawn's CharacterController grounds against Unity " +
+                    "mover, but the locally-owned pawn's capsule motor grounds against Unity " +
                     "colliders — without one it sinks through the deck. Add a collider matching the " +
                     "exported mover box.");
             }

@@ -52,9 +52,9 @@ namespace AlpineLib.Networking {
         public float airDrag;
 
         [Header("Collision Capsule")]
-        [Tooltip("Radius of the capsule the shared motor collides with. Must match this prefab's CharacterController radius.")]
+        [Tooltip("Radius of the capsule the shared motor collides with. Must match this prefab's CapsuleCollider radius.")]
         public float capsuleRadius = 0.35f;
-        [Tooltip("Total capsule height in metres measured from the feet. Must match this prefab's CharacterController height.")]
+        [Tooltip("Total capsule height in metres measured from the feet. Must match this prefab's CapsuleCollider height.")]
         public float capsuleHeight = 1.1f;
         [Tooltip("Tallest ledge the pawn steps onto instead of walking into, in metres. Also the reach of the motor's downward support probe.")]
         public float stepOffset = 0.3f;

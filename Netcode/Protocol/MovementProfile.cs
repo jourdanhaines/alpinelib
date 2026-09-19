@@ -56,7 +56,7 @@ namespace AlpineLib.Netcode.Protocol {
 
         /// <summary>
         /// Radius of the pawn's collision capsule, in metres. The shared motor sweeps this against the
-        /// scene's collision world, so it must match the engine-side CharacterController the player sees
+        /// scene's collision world, so it must match the engine-side capsule motor the player sees
         /// themselves inside — a client whose capsule is fatter than the server's stops short of walls the
         /// server lets it through, and every one of those disagreements is a correction.
         /// </summary>

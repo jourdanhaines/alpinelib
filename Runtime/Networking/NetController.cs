@@ -23,14 +23,16 @@ namespace AlpineLib.Networking {
     /// locomotion works on remote pawns for free.
     /// </para>
     /// <para>
-    /// Position, though, is written to the transform outright. The interpolated stream is already
-    /// smooth, already collision-resolved by the authority, and already the truth; walking the actor
-    /// toward it through its own motor re-integrates that truth through a second movement model — one
-    /// whose grounded flag flickers, whose gravity writes the same controller, and whose closing speed
-    /// caps into a deadband — and every one of those seams is visible as vibration. The actor's own
-    /// integrators stand down while this brain possesses it (see
+    /// Position, though, is placed outright through <see cref="Actor.PlaceAt(Vector3, Transform)"/>.
+    /// The interpolated stream is already smooth, already collision-resolved by the authority, and
+    /// already the truth; walking the actor toward it through its own motor would re-integrate that
+    /// truth through a second movement model, and every seam between the two is visible as vibration.
+    /// The actor's motor stands down while this brain possesses it (see
     /// <see cref="Controller.DrivesPawnExternally"/>); the animator is fed from the wire state instead
-    /// of from displacement.
+    /// of from displacement. Placing rather than writing the transform also parents the pawn under the
+    /// carrier it rides, so a frame that produces no pose — a carrier not yet resolved — leaves it
+    /// riding the deck at its last deck-local pose instead of standing still in the world while the
+    /// deck moves on.
     /// </para>
     /// <para>
     /// <b>Carrier frames are resolved here.</b> A pawn riding a train replicates in that train's local
@@ -181,8 +183,11 @@ namespace AlpineLib.Networking {
                 return;
             }
 
-            _character.transform.position = world.Position.ToUnity();
-            _character.transform.rotation = Quaternion.Euler(0f, world.YawDegrees, 0f);
+            _character.PlaceAt(world.Position.ToUnity(), world.YawDegrees, ResolveCarrierRoot(state.CarrierId));
+        }
+
+        private static Transform ResolveCarrierRoot(ushort carrierId) {
+            return NetCarrierRegistry.TryResolve(carrierId, out NetCarrier carrier) ? carrier.transform : null;
         }
 
         /// <summary>
@@ -259,6 +264,7 @@ namespace AlpineLib.Networking {
             if (!replication.SampleRemote(_view.EntityId, out PawnState sampled)) return;
 
             bool wasCarrierRelative = sampled.IsCarrierRelative;
+            ushort carrierId = sampled.CarrierId;
 
             if (!TryResolveWorldFrame(in sampled, out PawnState state)) return;
 
@@ -271,7 +277,7 @@ namespace AlpineLib.Networking {
                 state.Position += moverOffset;
             }
 
-            Drive(in state);
+            Drive(in state, ResolveCarrierRoot(carrierId));
         }
 
         /// <summary>
@@ -314,10 +320,10 @@ namespace AlpineLib.Networking {
         /// Applies one sampled pose: gait and crouch first, then the transform, then grounding and the
         /// animator's view of the motion.
         /// </summary>
-        private void Drive(in PawnState state) {
+        private void Drive(in PawnState state, Transform carrierRoot) {
             ApplyLocomotionState(in state);
 
-            _character.transform.position = state.Position.ToUnity();
+            _character.PlaceAt(state.Position.ToUnity(), carrierRoot);
             _character.SetExternalGrounded(state.IsGrounded);
 
             AnimateFromState(in state);

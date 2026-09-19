@@ -33,7 +33,15 @@ namespace AlpineLib.Networking {
     /// ships in the library and knows nothing about a game's action maps, while every game's actor
     /// already carries the resolved motion, gait and crouch. The one thing an actor cannot express after
     /// the fact is a jump — it is an impulse, gone by the next sample — so a controller announces that
-    /// through <see cref="QueueJump"/>.
+    /// through <see cref="Jump"/>.
+    /// </para>
+    /// <para>
+    /// The carrier a pawn is reported relative to is the one its actor stands on, settled through
+    /// <see cref="CarrierSettlePolicy"/>: a change between frames moving together waits out a short
+    /// dwell, because a foot straddling a coupler flickers between two cars every frame and each report
+    /// spends the authority's frame-change budget; a change between frames moving apart — boarding or
+    /// leaving a moving deck — is reported at once, because every tick spent in the wrong frame there
+    /// is a rejection and a snap.
     /// </para>
     /// </remarks>
     [DefaultExecutionOrder(NetExecutionOrder.PawnDrivers)]
@@ -48,7 +56,7 @@ namespace AlpineLib.Networking {
         [SerializeField] private float followSharpness = 20f;
 
         [Header("Corrections")]
-        [Tooltip("Metres the actor may differ from the prediction before it is placed outright. Below this the difference is walked off by the follow, never teleported.")]
+        [Tooltip("Metres the actor may differ from the authority before it is placed outright. Below this the difference is walked off through the motor, never teleported.")]
         [SerializeField] private float correctionSnapDistance = 1f;
         [Tooltip("Seconds a correction under the snap distance is spread over. Zero applies every correction the moment it lands.")]
         [SerializeField] private float correctionSmoothingSeconds = 0.12f;
@@ -110,16 +118,16 @@ namespace AlpineLib.Networking {
 
         private NetEntityView _view;
         private Actor _actor;
-        private CharacterController _characterController;
         private LocomotionSystem _locomotion;
         private CrouchSystem _crouch;
-        private INetCarrierSource _carrierSource;
         private INetworkService _networkService;
         private ISessionService _sessionService;
         private ClientReplication _boundReplication;
+        private readonly CarrierSettlePolicy _settle = new CarrierSettlePolicy();
+        private Transform _liveRoot;
+        private NetCarrier _liveCarrier;
         private float _sendAccumulatorSeconds;
         private bool _jumpQueued;
-        private Vector3 _correctionResidual;
         private PawnState _predictedState;
         private bool _hasPredictedState;
         private uint _placedForEntityId;
@@ -142,6 +150,58 @@ namespace AlpineLib.Networking {
         /// </summary>
         public bool IsNetworked =>
             _view != null && _view.IsBound && _view.IsOwned && ResolveReplication() != null;
+
+        /// <summary>True while the next owner updates still carry the resync flag.</summary>
+        public bool IsResyncPending => _resyncSendsRemaining > 0;
+
+        /// <summary>
+        /// The carrier this pawn's state is currently reported relative to, or null for the world. Lags
+        /// the actor's own <see cref="Actor.CarrierRoot"/> by whatever <see cref="CarrierSettlePolicy"/>
+        /// decides.
+        /// </summary>
+        public NetCarrier ReportedCarrier =>
+            NetCarrierRegistry.TryResolve(_settle.ReportedCarrierId, out NetCarrier carrier) ? carrier : null;
+
+        /// <summary>
+        /// Jumps, the way a networked pawn should: offline the actor simply jumps; an owner-simulated
+        /// pawn jumps now and announces it so every other client plays the same impulse; a
+        /// server-predicted pawn latches it for the next input.
+        /// </summary>
+        public void Jump() {
+            if (!IsNetworked || _actor == null) {
+                if (_actor != null) _actor.Jump();
+                return;
+            }
+
+            if (_view.Authority != AuthorityMode.OwnerClient) {
+                QueueJump();
+                return;
+            }
+
+            if (!_actor.Jump()) return;
+
+            RaiseEvent(NetController.JumpEventId, 0);
+        }
+
+        /// <summary>
+        /// Tells the sync the game has placed the pawn by its own hand — a vault, a scripted teleport — so
+        /// the carrier it now stands on is reported at once and the next updates say the pose either
+        /// side of the placement belongs to two different stories.
+        /// </summary>
+        /// <remarks>
+        /// Adopting the live carrier here rather than letting it settle is what makes a vault onto a
+        /// stopped car free: the first report after it is a frame change, which the authority accepts
+        /// unmeasured, instead of the vault's whole displacement measured against a walking gait.
+        /// </remarks>
+        public void NotifyPlaced() {
+            if (_actor == null) return;
+
+            RefreshLiveCarrier();
+            _settle.Reset(_liveCarrier != null && _liveCarrier.IsRegistered ? _liveCarrier.CarrierId : PawnState.WorldCarrierId);
+            if (!IsNetworked) return;
+
+            RequestResync();
+        }
 
         /// <summary>
         /// Flags a jump on the next input sent to the authority. The visible impulse is applied on that
@@ -188,13 +248,8 @@ namespace AlpineLib.Networking {
         private void Awake() {
             _view = GetComponent<NetEntityView>();
             _actor = GetComponent<Actor>();
-            _characterController = GetComponent<CharacterController>();
             _locomotion = GetComponent<LocomotionSystem>();
             _crouch = GetComponent<CrouchSystem>();
-
-            // Matched to the codebase's other interface lookup. TryGetComponent's silent false would
-            // quietly demote this pawn to world-space replication with nothing in the log to say so.
-            _carrierSource = GetComponent<INetCarrierSource>();
         }
 
         /// <remarks>
@@ -220,8 +275,6 @@ namespace AlpineLib.Networking {
         /// in the same phase, on the same frame.
         /// </remarks>
         private void Update() {
-            DecayCorrectionResidual();
-
             ClientReplication replication = ResolveReplication();
 
             if (replication == null) return;
@@ -266,7 +319,7 @@ namespace AlpineLib.Networking {
             RecordSpawnState();
 
             if (NetCarrierFrame.TryToWorld(in _spawnState, out PawnState world)) {
-                PlaceOnResolvedCarrier(in world);
+                PlaceOnResolvedCarrier(in world, _spawnState.CarrierId);
                 return;
             }
 
@@ -289,9 +342,9 @@ namespace AlpineLib.Networking {
         /// <see cref="SpawnDeferralGraceSeconds"/>, or a player who has walked the pawn off the holding
         /// position, is not healed at all — see <see cref="AbandonDeferredSpawn"/>.
         /// </remarks>
-        private void PlaceOnResolvedCarrier(in PawnState world) {
+        private void PlaceOnResolvedCarrier(in PawnState world, ushort carrierId) {
             if (!_hasDeferredPlacement) {
-                PlaceAt(in world, flagResync: false);
+                PlaceAt(in world, carrierId, flagResync: false);
                 return;
             }
 
@@ -300,7 +353,7 @@ namespace AlpineLib.Networking {
                 return;
             }
 
-            PlaceAt(in world, flagResync: true);
+            PlaceAt(in world, carrierId, flagResync: true);
         }
 
         /// <summary>
@@ -401,7 +454,7 @@ namespace AlpineLib.Networking {
             }
 
             Debug.LogWarning($"NetActorSync::PlaceOnExpiredSpawnDeferral->{name} spawned on carrier {_spawnState.CarrierId}, which never registered; entity {_view.EntityId} holds the authority's current world pose until that carrier appears.");
-            MoveTo(in current);
+            MoveTo(in current, PawnState.WorldCarrierId);
 
             _hasHoldingPosition = true;
             _commandedTravelSinceHold = 0f;
@@ -436,8 +489,8 @@ namespace AlpineLib.Networking {
         /// measured like any other report — the first thing a fresh client says should not be free.
         /// See <see cref="Netcode.Replication.Messages.OwnerPawnUpdate.ResyncFlag"/>.
         /// </param>
-        private void PlaceAt(in PawnState world, bool flagResync) {
-            MoveTo(in world);
+        private void PlaceAt(in PawnState world, ushort carrierId, bool flagResync) {
+            MoveTo(in world, carrierId);
 
             _placedForEntityId = _view.EntityId;
             _hasSpawnState = false;
@@ -448,14 +501,23 @@ namespace AlpineLib.Networking {
         }
 
         /// <summary>
-        /// Moves the actor to a world-space state and hands its motion to the actor's own integrators,
-        /// deciding nothing about the placement itself.
+        /// Moves the actor to a world-space state on the carrier the state named, hands its motion to
+        /// the actor's motor, and reports that carrier from the very next update.
         /// </summary>
-        private void MoveTo(in PawnState world) {
-            _correctionResidual = Vector3.zero;
-            Teleport(world.Position.ToUnity());
-            transform.rotation = Quaternion.Euler(0f, world.YawDegrees, 0f);
+        /// <remarks>
+        /// The carrier is adopted outright rather than settled: a rejoin onto a moving train that dwelt
+        /// in world space for the first three ticks would eat three rejections before the pawn had
+        /// moved a step.
+        /// </remarks>
+        private void MoveTo(in PawnState world, ushort carrierId) {
+            _actor.PlaceAt(world.Position.ToUnity(), world.YawDegrees, ResolveCarrierRoot(carrierId));
             SyncActorMotion(in world);
+            RefreshLiveCarrier();
+            _settle.Reset(carrierId);
+        }
+
+        private static Transform ResolveCarrierRoot(ushort carrierId) {
+            return NetCarrierRegistry.TryResolve(carrierId, out NetCarrier carrier) ? carrier.transform : null;
         }
 
         /// <summary>
@@ -486,7 +548,50 @@ namespace AlpineLib.Networking {
             if (_view.Authority != AuthorityMode.OwnerClient) return;
 
             BindReplication(replication);
+            SettleCarrier(Time.deltaTime);
             AccumulateAndSend(replication);
+        }
+
+        /// <summary>
+        /// Advances the reported carrier towards the one the actor stands on. Public so a gate can walk
+        /// a rider across a coupler without a running player loop.
+        /// </summary>
+        /// <remarks>
+        /// The relative speed handed to the policy is between the frame still being reported and the
+        /// frame the actor is now in, from the carriers' own measured velocities: zero between two
+        /// coupled cars, the whole line speed between a moving deck and the ground. A reported carrier
+        /// that has since unregistered is dropped for the live answer, because there is no frame left to
+        /// keep reporting in.
+        /// </remarks>
+        public void SettleCarrier(float deltaTime) {
+            RefreshLiveCarrier();
+            ushort liveId = _liveCarrier != null && _liveCarrier.IsRegistered ? _liveCarrier.CarrierId : PawnState.WorldCarrierId;
+            if (_liveCarrier != null && !_liveCarrier.IsRegistered) return;
+
+            NetCarrier reported = ReportedCarrier;
+            if (_settle.ReportedCarrierId != PawnState.WorldCarrierId && reported == null) {
+                _settle.Reset(liveId);
+                return;
+            }
+
+            float relativeSpeed = (VelocityOf(reported) - VelocityOf(_liveCarrier)).magnitude;
+            _settle.Advance(liveId, relativeSpeed, deltaTime);
+        }
+
+        /// <summary>
+        /// Re-reads the carrier component behind the actor's current root, only when the root changes: a
+        /// parent search up a train car's hierarchy every tick would be paid by every rider in the session.
+        /// </summary>
+        private void RefreshLiveCarrier() {
+            Transform root = _actor != null ? _actor.CarrierRoot : null;
+            if (ReferenceEquals(root, _liveRoot)) return;
+
+            _liveRoot = root;
+            _liveCarrier = root != null ? root.GetComponentInParent<NetCarrier>() : null;
+        }
+
+        private static Vector3 VelocityOf(NetCarrier carrier) {
+            return carrier != null ? carrier.Velocity : Vector3.zero;
         }
 
         /// <summary>
@@ -527,7 +632,7 @@ namespace AlpineLib.Networking {
         /// </summary>
         /// <remarks>
         /// <para>
-        /// <b>The jump is never gated on the report.</b> What <see cref="TryCaptureState"/> withholds is
+        /// <b>The jump is never gated on the report.</b> What <see cref="TryCapture"/> withholds is
         /// this pawn's <em>position</em>, not the things that happen to it: the impulse is local, the
         /// player pressed the button, and swallowing it would freeze the one input that ends the
         /// withhold — breaking ground contact is what makes a game let go of a carrier it cannot name.
@@ -553,7 +658,7 @@ namespace AlpineLib.Networking {
         /// </para>
         /// </remarks>
         private void SendOwnerSample(ClientReplication replication) {
-            bool hasState = TryCaptureState(out PawnState captured);
+            bool hasState = TryCapture(out PawnState captured);
 
             ApplyDeferredJump();
 
@@ -643,48 +748,46 @@ namespace AlpineLib.Networking {
         }
 
         /// <summary>
-        /// Reads the actor's current pose as an authoritative state, for owner-simulated pawns.
+        /// Reads the actor's simulated pose as an authoritative state, for owner-simulated pawns. Public
+        /// so a gate can see exactly what would go on the wire.
         /// </summary>
         /// <remarks>
         /// <para>
-        /// A pawn whose game reports a carrier is captured in that carrier's frame instead of the
-        /// world's, so what leaves the wire is the metre a second it is walking rather than the forty the
-        /// train is doing. Only this owner-simulated path converts: a server-authoritative pawn is
-        /// stepped by the shared motor, which knows only world space, and reporting anything else would
-        /// be reporting a pose the authority cannot act on.
+        /// The pose is the motor's, not the transform's: the transform holds a render pose interpolated
+        /// between steps, and reporting that would put a phase term that breathes against the send clock
+        /// into every measured travel. A pawn standing on a reported carrier is captured in that
+        /// carrier's frame, so what leaves the wire is the metre a second it is walking rather than the
+        /// forty the train is doing.
         /// </para>
         /// <para>
         /// <b>A carrier that is present but unusable withholds the update instead of reporting one.</b> A
-        /// game only hands out a carrier for a body it is also carrying, so a carrier the registry cannot
-        /// resolve back to itself — see <see cref="NetCarrier.IsRegistered"/> — leaves this component with
-        /// two lies to choose between: deck-local metres under a label nobody could invert, or world
+        /// carrier the registry cannot resolve back to itself — see <see cref="NetCarrier.IsRegistered"/> —
+        /// leaves two lies to choose between: deck-local metres under a label nobody could invert, or world
         /// coordinates sliding past at the deck's speed while the pawn's own gait says it is walking. The
         /// second is what the server sees as a movement violation every single tick, so neither is sent.
-        /// See <see cref="IsCarrierUsable"/> for what the pawn looks like meanwhile.
-        /// </para>
-        /// <para>
-        /// What is withheld is the <em>position</em> and nothing else. The pawn's events still go out on
-        /// their own tick, and its jump still plays locally — see <see cref="SendOwnerSample"/>.
+        /// What is withheld is the position and nothing else; see <see cref="SendOwnerSample"/>.
         /// </para>
         /// </remarks>
         /// <returns>False when nothing truthful can be said about this pawn's position this tick.</returns>
-        private bool TryCaptureState(out PawnState state) {
+        public bool TryCapture(out PawnState state) {
             bool isGrounded = _actor != null && _actor.IsGrounded;
             bool isCrouching = _crouch != null && _crouch.IsCrouching;
             byte flags = PawnState.PackFlags(ResolveGait(), isCrouching, isGrounded);
+            Vector3 position = _actor != null ? _actor.SimulatedWorldPosition : transform.position;
 
             state = new PawnState(
-                transform.position.ToNumerics(),
+                position.ToNumerics(),
                 transform.eulerAngles.y,
                 _actor != null ? _actor.Velocity.ToNumerics() : Numerics.Vector3.Zero,
                 flags);
 
-            NetCarrier carrier = _carrierSource?.CurrentCarrier;
+            RefreshLiveCarrier();
+            if (_liveCarrier != null && !IsCarrierUsable(_liveCarrier)) return false;
 
-            if (carrier == null) return true;
-            if (!IsCarrierUsable(carrier)) return false;
+            NetCarrier reported = ReportedCarrier;
+            if (reported == null) return true;
 
-            state = NetCarrierFrame.ToLocal(in state, carrier);
+            state = NetCarrierFrame.ToLocal(in state, reported);
             return true;
         }
 
@@ -753,50 +856,31 @@ namespace AlpineLib.Networking {
 
         /// <summary>
         /// Closes part of the gap between the actor and where the simulation says it is, once per frame,
-        /// through the character controller.
+        /// through the actor's motor.
         /// </summary>
         /// <remarks>
-        /// <para>
-        /// This replaces the old teleport-when-far-enough write, which was the source of the owner's
-        /// grounded jitter: the gap between actor and prediction is a phase term that breathes with the
-        /// send accumulator and crosses any fixed tolerance twice per second at ordinary gaits, so the
-        /// pawn spent its life alternating between drifting forward and being yanked back a frame's worth
-        /// of travel. A continuous pull has no threshold to cross and therefore nothing to oscillate
-        /// about.
-        /// </para>
-        /// <para>
         /// The step is exponential — <c>1 - exp(-sharpness * dt)</c> — so the same fraction of the gap is
-        /// paid off per unit of time whatever the frame rate, and the displacement goes through
-        /// <c>CharacterController.Move</c> rather than the transform: a move keeps the controller's
-        /// own grounding, its collision and its step offset intact, while disabling the controller to
-        /// write a position throws all three away. Only a gap wider than
-        /// <see cref="correctionSnapDistance"/> — a rejoin, a respawn, a rejected move — is placed
-        /// outright.
-        /// </para>
-        /// <para>
-        /// Owner-simulated pawns are skipped: nothing predicts them, so the recorded state is only ever
-        /// the last correction and following it would drag the actor back to where it stood packets ago.
-        /// </para>
+        /// paid off per unit of time whatever the frame rate, and the displacement is a swept nudge, so
+        /// collision and grounding survive it. Only a gap of <see cref="correctionSnapDistance"/> or more
+        /// — a rejoin, a respawn, a rejected move — is placed outright. Owner-simulated pawns are skipped:
+        /// nothing predicts them, and their corrections are applied as they land.
         /// </remarks>
         private void FollowPrediction() {
             if (!applyPredictedPosition || !_hasPredictedState) return;
             if (_view.Authority != AuthorityMode.Server) return;
 
-            // The residual is what is left of a correction the pawn has not visually paid back yet, so the
-            // target is drawn offset by it and the debt shrinks to nothing over the smoothing window.
-            Vector3 target = _predictedState.Position.ToUnity() + _correctionResidual;
-            Vector3 gap = target - transform.position;
+            Vector3 target = _predictedState.Position.ToUnity();
+            Vector3 gap = target - _actor.SimulatedWorldPosition;
 
-            if (gap.sqrMagnitude > correctionSnapDistance * correctionSnapDistance) {
-                _correctionResidual = Vector3.zero;
-                Teleport(_predictedState.Position.ToUnity());
+            if (gap.sqrMagnitude >= correctionSnapDistance * correctionSnapDistance) {
+                _actor.PlaceAt(target, transform.eulerAngles.y, null);
                 SyncActorMotion(in _predictedState);
                 return;
             }
 
             if (gap.sqrMagnitude < ResidualEpsilon * ResidualEpsilon) return;
 
-            MoveBy(gap * ResolveFollowFraction());
+            _actor.Nudge(gap * ResolveFollowFraction(), 0f);
         }
 
         /// <summary>
@@ -810,64 +894,21 @@ namespace AlpineLib.Networking {
         }
 
         /// <summary>
-        /// Displaces the actor by a delta the simulation asked for, through the character controller so
-        /// collision and grounding survive the write.
-        /// </summary>
-        private void MoveBy(Vector3 delta) {
-            if (_characterController == null || !_characterController.enabled) {
-                transform.position += delta;
-                return;
-            }
-
-            _characterController.Move(delta);
-        }
-
-        /// <summary>
-        /// Places the actor at a position the simulation decided on, taking the character controller out
-        /// of the way first.
-        /// </summary>
-        /// <remarks>
-        /// A <see cref="CharacterController"/> caches its own position and overwrites a bare transform
-        /// write on its next move, so a placement applied without this dance is undone within the frame.
-        /// The dance is not free — cycling <c>enabled</c> clears the controller's grounding, which the
-        /// actor's air model then has to be told to ignore — so it is reserved for genuine placements
-        /// beyond <see cref="correctionSnapDistance"/>. Everything smaller goes through
-        /// <see cref="MoveBy"/>.
-        /// </remarks>
-        private void Teleport(Vector3 position) {
-            if (_characterController == null) {
-                transform.position = position;
-                return;
-            }
-
-            bool wasEnabled = _characterController.enabled;
-            _characterController.enabled = false;
-            transform.position = position;
-            _characterController.enabled = wasEnabled;
-        }
-
-        /// <summary>
-        /// Applies the state the client world resolved after rewinding and replaying pending inputs
-        /// against the server's verdict.
+        /// Applies the authority's verdict on this pawn's pose.
         /// </summary>
         /// <remarks>
         /// Only a large disagreement is placed outright. Most corrections are centimetres of drift that
-        /// prediction and authority will never agree on exactly, and teleporting for those makes a pawn
-        /// that twitches every time a packet lands. Anything under
-        /// <see cref="correctionSnapDistance" /> is therefore taken on as a residual and walked off over
-        /// the smoothing window instead — a rejoin, a teleport or a rejected move is far enough out that
-        /// walking it back would look worse than the jump.
-        ///
-        /// The resolved state also becomes what <see cref="FollowPrediction"/> aims at until the next
-        /// send, all three axes of it: it is the client world's best account of where the pawn now is,
-        /// and seeding the residual with the whole error means the target starts exactly where the actor
-        /// already stands, so nothing moves on the frame the packet lands.
+        /// the two sides will never agree on exactly, and teleporting for those makes a pawn that
+        /// twitches every time a packet lands; anything under <see cref="correctionSnapDistance"/> is
+        /// walked off through the motor over the smoothing window instead. The boundary is inclusive on
+        /// the snap side because a rider corrected by exactly one tick of line speed has been rejected,
+        /// not clamped, and walking a whole tick back would look worse than the jump.
         ///
         /// A correction for a pawn on a carrier comes back in that carrier's frame — the validator's
         /// clamp preserves the frame it measured in — so it is converted before a single number is
-        /// treated as a place. One whose carrier this client cannot resolve is dropped whole: the next
-        /// tick produces another, while applying it would teleport a rider off a moving train to
-        /// wherever the deck's origin coordinates happen to land in the world.
+        /// treated as a place, and the pawn is kept on that carrier. One whose carrier this client cannot
+        /// resolve is dropped whole: the next tick produces another, while applying it would teleport a
+        /// rider off a moving train to wherever the deck's origin coordinates happen to land.
         /// </remarks>
         private void HandleAuthorityCorrected(NetEntity entity, PawnState state) {
             if (entity == null || !_view.IsBound || entity.Id != _view.EntityId) return;
@@ -885,16 +926,15 @@ namespace AlpineLib.Networking {
             _hasPredictedState = true;
 
             Vector3 corrected = world.Position.ToUnity();
-            Vector3 error = transform.position - corrected;
+            Vector3 error = corrected - _actor.SimulatedWorldPosition;
 
             if (!CanSmoothCorrection(error)) {
-                _correctionResidual = Vector3.zero;
-                Teleport(corrected);
+                _actor.PlaceAt(corrected, transform.eulerAngles.y, ResolveCarrierRoot(state.CarrierId));
                 SyncActorMotion(in world);
                 return;
             }
 
-            _correctionResidual = error;
+            _actor.Nudge(error, correctionSmoothingSeconds);
             SyncActorMotion(in world);
         }
 
@@ -909,8 +949,8 @@ namespace AlpineLib.Networking {
         }
 
         /// <summary>
-        /// Hands the simulation's velocity and grounding to the actor's own integrators, so they carry
-        /// on from the state the pawn was just placed in rather than the one it was yanked out of.
+        /// Hands the simulation's velocity and grounding to the actor's motor, so it carries on from the
+        /// state the pawn was just placed in rather than the one it was yanked out of.
         /// </summary>
         private void SyncActorMotion(in PawnState state) {
             if (_actor == null) return;
@@ -921,35 +961,11 @@ namespace AlpineLib.Networking {
         /// <summary>
         /// Whether a correction of this size may be paid back gradually rather than placed.
         /// </summary>
-        /// <remarks>
-        /// Smoothing needs somewhere to apply the residual, and <see cref="FollowPrediction"/> is the only
-        /// place it exists — with <see cref="applyPredictedPosition"/> off nothing here ever moves the
-        /// actor except this correction, so the correction has to land whole.
-        /// </remarks>
         private bool CanSmoothCorrection(Vector3 error) {
             if (!applyPredictedPosition) return false;
             if (correctionSmoothingSeconds <= 0f) return false;
 
-            return error.sqrMagnitude <= correctionSnapDistance * correctionSnapDistance;
-        }
-
-        /// <summary>
-        /// Shrinks the outstanding correction debt towards zero, exponentially, so the pawn closes the
-        /// last of it slowly rather than arriving with a visible stop.
-        /// </summary>
-        private void DecayCorrectionResidual() {
-            if (_correctionResidual == Vector3.zero) return;
-
-            if (correctionSmoothingSeconds <= 0f) {
-                _correctionResidual = Vector3.zero;
-                return;
-            }
-
-            _correctionResidual *= Mathf.Exp(-Time.deltaTime / correctionSmoothingSeconds);
-
-            if (_correctionResidual.sqrMagnitude > ResidualEpsilon * ResidualEpsilon) return;
-
-            _correctionResidual = Vector3.zero;
+            return error.sqrMagnitude < correctionSnapDistance * correctionSnapDistance;
         }
 
         private WireLocomotion ResolveGait() {
@@ -990,7 +1006,7 @@ namespace AlpineLib.Networking {
             _boundReplication.OnAuthorityCorrected -= HandleAuthorityCorrected;
             _boundReplication = null;
             _hasPredictedState = false;
-            _correctionResidual = Vector3.zero;
+            _settle.Reset(PawnState.WorldCarrierId);
             _placedForEntityId = 0u;
             _hasSpawnState = false;
             _hasHandledSpawnDeferralExpiry = false;
