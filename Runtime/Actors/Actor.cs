@@ -117,6 +117,17 @@ namespace AlpineLib.Actors {
         /// <summary>Where the simulation has the actor's feet, in world space.</summary>
         public Vector3 SimulatedWorldPosition => CarrierFrame.ToWorldPoint(_current.CarrierRoot, _current.LocalPosition);
 
+        /// <summary>
+        /// How far above or below level the actor is looking, in degrees; positive looks down, the way
+        /// a camera rig reports pitch. Yaw needs no twin: it is the transform's own facing.
+        /// </summary>
+        /// <remarks>
+        /// Held here rather than on a camera so everything that needs it reads one place whoever the
+        /// brain is: a player's controller copies its rig, a networked proxy copies the wire, and the
+        /// body pose and the replicated state both read it back.
+        /// </remarks>
+        public float LookPitch { get; private set; }
+
         public float CapsuleHeight => _capsule != null ? _capsule.height : 0f;
         public float CapsuleRadius => _capsule != null ? _capsule.radius : 0f;
 
@@ -168,6 +179,9 @@ namespace AlpineLib.Actors {
         [SerializeField] private string jumpParameter = "Jump";
         [Tooltip("Seconds of damping applied to the speed parameter, so digital keys ease a blend tree instead of snapping it.")]
         [SerializeField] private float speedDampTime = 0.12f;
+
+        /// <summary>Furthest a look can pitch either way, in degrees: straight up or straight down.</summary>
+        public const float MaxLookPitch = 90f;
 
         private const string StrafeXParameter = "StrafeX";
         private const string StrafeYParameter = "StrafeY";
@@ -508,6 +522,14 @@ namespace AlpineLib.Actors {
 
             Vector3 localDirection = Quaternion.Inverse(transform.rotation) * direction;
             _currentStrafe = new Vector2(localDirection.x, localDirection.z) * speedRatio;
+        }
+
+        /// <summary>
+        /// Declares where the actor is looking above or below level; read back through
+        /// <see cref="LookPitch"/>. Clamped to straight up and straight down.
+        /// </summary>
+        public void SetLookPitch(float pitchDegrees) {
+            LookPitch = Mathf.Clamp(pitchDegrees, -MaxLookPitch, MaxLookPitch);
         }
 
         /// <summary>

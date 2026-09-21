@@ -78,6 +78,7 @@ namespace AlpineLib.Cameras {
 
         private Transform _target;
         private ICameraTarget _cameraTarget;
+        private ICameraEyeModel _eyeModel;
         private Transform _yawFrame;
         private float _frameYaw;
         private float _eyeInset;
@@ -174,6 +175,12 @@ namespace AlpineLib.Cameras {
             Vector3 offset = eyeOffset;
             offset.y = ResolveEyeHeight();
 
+            // A body that bends with the look carries the eye with it, so a downward gaze leans out
+            // over the chest instead of staring into it.
+            if (_eyeModel != null) {
+                offset += _eyeModel.ResolveEyeOffset(_pitch, offset);
+            }
+
             transform.SetPositionAndRotation(
                 _target.position + _target.rotation * offset,
                 Quaternion.Euler(_pitch, Yaw, 0f)
@@ -203,6 +210,7 @@ namespace AlpineLib.Cameras {
         /// </remarks>
         private void ResolveCameraTarget() {
             _cameraTarget = _target != null ? _target.GetComponentInParent<ICameraTarget>() : null;
+            _eyeModel = _target != null ? _target.GetComponentInParent<ICameraEyeModel>() : null;
             if (_cameraTarget == null) return;
 
             _eyeInset = Mathf.Max(_cameraTarget.Height - eyeOffset.y, 0f);
