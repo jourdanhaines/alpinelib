@@ -342,10 +342,10 @@ namespace AlpineLib.Networking {
         }
 
         /// <summary>
-        /// Feeds the animator the motion the wire reports — direction of travel and speed as a fraction
-        /// of the current gait — rather than any locally measured displacement. Measured displacement of
-        /// an externally placed pawn is the chase error of whatever wrote the transform last, and legs
-        /// driven by it flicker between idle and locomotion.
+        /// Feeds the animator the motion the wire reports — direction of travel and speed as a multiple
+        /// of the walk speed, the scale a locally moved actor reports — rather than any locally measured
+        /// displacement. Measured displacement of an externally placed pawn is the chase error of
+        /// whatever wrote the transform last, and legs driven by it flicker between idle and locomotion.
         /// </summary>
         private void AnimateFromState(in PawnState state) {
             Vector3 horizontalVelocity = state.HorizontalVelocity.ToUnity();
@@ -356,8 +356,10 @@ namespace AlpineLib.Networking {
                 return;
             }
 
+            float walkSpeed = ResolveWalkSpeed();
             float gaitSpeed = ResolveGaitSpeed(in state);
-            float speedRatio = gaitSpeed > 0f ? Mathf.Clamp01(speed / gaitSpeed) : 1f;
+            float reportedSpeed = gaitSpeed > 0f ? Mathf.Min(speed, gaitSpeed) : speed;
+            float speedRatio = walkSpeed > 0f ? reportedSpeed / walkSpeed : 1f;
 
             _character.AnimateLocomotion(horizontalVelocity / speed * speedRatio, 1f);
         }
@@ -377,6 +379,17 @@ namespace AlpineLib.Networking {
             if (profile == null) return 0f;
 
             return profile.GetSpeedForGait((int)state.Locomotion);
+        }
+
+        /// <summary>
+        /// Speed the animator reads as ratio one; zero when no profile is configured for this prefab.
+        /// </summary>
+        private float ResolveWalkSpeed() {
+            MovementProfile profile = ResolveMovementProfile();
+
+            if (profile == null) return 0f;
+
+            return profile.GetSpeedForGait((int)WireLocomotion.Walk);
         }
 
         private MovementProfile ResolveMovementProfile() {
