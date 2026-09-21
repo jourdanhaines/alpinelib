@@ -186,6 +186,7 @@ namespace AlpineLib.Actors {
         private const string StrafeXParameter = "StrafeX";
         private const string StrafeYParameter = "StrafeY";
         private const string GroundedParameter = "Grounded";
+        private const string AirTimeParameter = "AirTime";
         private const float StrafeDampTime = 0.1f;
 
         private CapsuleCollider _capsule;
@@ -210,8 +211,11 @@ namespace AlpineLib.Actors {
         private int _strafeXHash;
         private int _strafeYHash;
         private int _groundedParameterHash;
+        private int _airTimeParameterHash;
         private bool _hasStrafeParameters;
         private bool _hasGroundedParameter;
+        private bool _hasAirTimeParameter;
+        private readonly AnimatorAirState _airState = new AnimatorAirState();
         private float _currentSpeed;
         private float _currentTurn;
         private Vector2 _currentStrafe;
@@ -231,6 +235,7 @@ namespace AlpineLib.Actors {
             _strafeXHash = UnityEngine.Animator.StringToHash(StrafeXParameter);
             _strafeYHash = UnityEngine.Animator.StringToHash(StrafeYParameter);
             _groundedParameterHash = UnityEngine.Animator.StringToHash(GroundedParameter);
+            _airTimeParameterHash = UnityEngine.Animator.StringToHash(AirTimeParameter);
 
             Stats = GetComponent<StatSheet>();
             _capsule = GetComponent<CapsuleCollider>();
@@ -249,8 +254,9 @@ namespace AlpineLib.Actors {
             if (Animator == null) return;
 
             Animator.applyRootMotion = useRootMotion;
-            _hasStrafeParameters = DeclaresStrafeParameters();
-            _hasGroundedParameter = DeclaresGroundedParameter();
+            _hasStrafeParameters = DeclaresParameter(StrafeXParameter) && DeclaresParameter(StrafeYParameter);
+            _hasGroundedParameter = DeclaresParameter(GroundedParameter);
+            _hasAirTimeParameter = DeclaresParameter(AirTimeParameter);
 
             if (useRootMotion && Animator.gameObject != gameObject && Animator.GetComponent<RootMotionForwarder>() == null) {
                 Animator.gameObject.AddComponent<RootMotionForwarder>();
@@ -265,24 +271,11 @@ namespace AlpineLib.Actors {
             return body.GetComponent<Actor>() == null;
         }
 
-        private bool DeclaresStrafeParameters() {
-            if (Animator.runtimeAnimatorController == null) return false;
-
-            bool hasStrafeX = false;
-            bool hasStrafeY = false;
-            foreach (AnimatorControllerParameter parameter in Animator.parameters) {
-                hasStrafeX |= parameter.name == StrafeXParameter;
-                hasStrafeY |= parameter.name == StrafeYParameter;
-            }
-
-            return hasStrafeX && hasStrafeY;
-        }
-
-        private bool DeclaresGroundedParameter() {
+        private bool DeclaresParameter(string parameterName) {
             if (Animator.runtimeAnimatorController == null) return false;
 
             foreach (AnimatorControllerParameter parameter in Animator.parameters) {
-                if (parameter.name == GroundedParameter) return true;
+                if (parameter.name == parameterName) return true;
             }
 
             return false;
@@ -433,6 +426,8 @@ namespace AlpineLib.Actors {
         }
 
         protected virtual void LateUpdate() {
+            _airState.Tick(IsGrounded, Time.deltaTime);
+
             if (!_isLocomotionSuppressed) {
                 WriteLocomotionParameters();
             }
@@ -455,7 +450,11 @@ namespace AlpineLib.Actors {
             Animator.SetFloat(_turnParameterHash, _currentTurn);
 
             if (_hasGroundedParameter) {
-                Animator.SetBool(_groundedParameterHash, IsGrounded);
+                Animator.SetBool(_groundedParameterHash, _airState.Grounded);
+            }
+
+            if (_hasAirTimeParameter) {
+                Animator.SetFloat(_airTimeParameterHash, _airState.AirTime);
             }
 
             if (!_hasStrafeParameters) return;
@@ -486,6 +485,8 @@ namespace AlpineLib.Actors {
         private void TriggerJumpAnimation() {
             if (Animator == null) return;
 
+            // Ground contact lags the jump it belongs to; the air state bridges the gap.
+            _airState.NoteJump();
             Animator.SetTrigger(_jumpParameterHash);
         }
 

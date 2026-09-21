@@ -16,14 +16,18 @@ namespace AlpineLib.Animation {
     /// animator controller declares both, which is what lets a controller blend movement against a facing
     /// the camera or a skill stage is steering independently. Controllers that declare neither are never
     /// written to.</description></item>
+    /// <item><description><c>AirTime</c> — seconds the actor has really been off the ground, zero while on
+    /// it. Driven every frame by the actor whenever its animator controller declares it, so a controller
+    /// can hold a fall loop back until a drop is long enough to deserve one.</description></item>
     /// </list>
     ///
     /// Bool parameters:
     /// <list type="bullet">
     /// <item><description><c>Grounded</c> — whether the actor's character controller reports ground
     /// contact. Driven every frame by the actor whenever its animator controller declares it, so a
-    /// controller can leave locomotion while airborne and land when contact returns. Controllers
-    /// that do not declare it are never written to.</description></item>
+    /// controller can leave locomotion while airborne and land when contact returns. Reads false
+    /// from the moment a jump is triggered, even while the contact itself still lags behind it.
+    /// Controllers that do not declare it are never written to.</description></item>
     /// <item><description><c>Crouching</c> — whether the actor is crouched or crouching. Driven on
     /// state change by the crouch system whenever the controller declares it, so a controller can
     /// swap between standing and crouched locomotion. Controllers that do not declare it are never
@@ -67,7 +71,10 @@ namespace AlpineLib.Animation {
         /// <summary>Float. Turn rate.</summary>
         public static readonly int Turn = Animator.StringToHash("Turn");
 
-        /// <summary>Bool. Character controller ground contact.</summary>
+        /// <summary>Float. Seconds really spent off the ground, zero while on it.</summary>
+        public static readonly int AirTime = Animator.StringToHash("AirTime");
+
+        /// <summary>Bool. Ground contact, false from the moment a jump is triggered.</summary>
         public static readonly int Grounded = Animator.StringToHash("Grounded");
 
         /// <summary>Bool. Crouch state, written by the crouch system on change.</summary>

@@ -135,6 +135,7 @@ stagger that never resolves.
 | `Turn` | Signed turn rate. Written every frame by `Actor`. |
 | `SlowWalk` | 0 to 1 blend towards the slow walk / aiming gait. |
 | `StrafeX`, `StrafeY` | Local-space strafe direction, used while the actor holds a facing independent of its movement direction. |
+| `AirTime` | Seconds really spent off the ground, zero while on it. Written every frame by `Actor`, but only when the controller declares it — lets a controller hold a fall loop back until a drop is long enough. |
 
 The `Speed` and `Turn` parameter names are serialized on `Actor` and may be renamed per actor;
 the rest are fixed.
@@ -143,7 +144,7 @@ the rest are fixed.
 
 | Parameter | Meaning |
 | --- | --- |
-| `Grounded` | Character controller ground contact. Written every frame by `Actor`, but only when the controller declares it — controllers with no airborne states are never written to. |
+| `Grounded` | Ground contact. Written every frame by `Actor`, but only when the controller declares it — controllers with no airborne states are never written to. Reads false from the moment a jump is triggered (`AnimatorAirState` bridges the frame, or the interpolation delay on a replicated actor, before contact agrees), so a land-on-contact transition cannot fire at takeoff. |
 | `Crouching` | Crouch state, written by `CrouchSystem` on change, but only when the controller declares it — controllers without crouched locomotion are never written to. |
 
 **Trigger parameters**
