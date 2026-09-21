@@ -48,7 +48,8 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
 
         /// <summary>Height of the floor under a spawn place, or the nominal height where the scene offers none.</summary>
         public float ResolveHeight(CollisionWorld world, float x, float z, float nominalHeight, uint serverTick) {
-            if (world == null) {
+            // A fallback world's floor is invented; the authored height is the only real one on offer.
+            if (world == null || world.IsFallback) {
                 return nominalHeight;
             }
 

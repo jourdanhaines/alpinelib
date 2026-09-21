@@ -85,8 +85,14 @@ namespace AlpineLib.Netcode.Collision {
         public static CollisionWorld Flat(float groundHeight = 0f) {
             var shapes = new[] { CollisionShape.MakePlane(groundHeight) };
             var geometry = new SceneGeometry(string.Empty, 0u, shapes, Array.Empty<MoverDefinition>());
-            return new CollisionWorld(geometry, DefaultTickIntervalSeconds);
+            return new CollisionWorld(geometry, DefaultTickIntervalSeconds) { IsFallback = true };
         }
+
+        /// <summary>
+        /// Whether this is the <see cref="Flat"/> stand-in rather than a scene's exported geometry. Its
+        /// floor is a guess, so nothing authored against the real scene should be corrected to it.
+        /// </summary>
+        public bool IsFallback { get; private set; }
 
         /// <summary>The geometry this world was built from.</summary>
         public SceneGeometry Geometry { get; }

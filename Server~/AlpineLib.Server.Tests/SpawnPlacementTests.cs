@@ -93,6 +93,16 @@ namespace AlpineLib.Server.Tests {
         }
 
         [Fact]
+        public void APointAboveTheFallbackFloorKeepsItsAuthoredHeight() {
+            // No geometry was exported, so the plane at zero is a guess and the marker is not.
+            var placement = new ListSpawnPlacement(new[] { new SpawnPoint(new Vector3(10f, 2.5f, 0f), 0f) });
+
+            PawnState state = placement.NextSpawnState(Member(), false, CollisionWorld.Flat(), AnyTick);
+
+            Assert.Equal(2.5f, state.Position.Y, 4);
+        }
+
+        [Fact]
         public void AListIsHandedOutInOrderAndThenStartsOver() {
             var placement = new ListSpawnPlacement(new[] {
                 new SpawnPoint(new Vector3(10f, 0f, 0f), 90f),
