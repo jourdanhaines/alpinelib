@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using AlpineLib.Actors;
 using AlpineLib.Actors.Locomotion;
@@ -142,6 +143,13 @@ namespace AlpineLib.Networking {
         private int _resyncSendsRemaining;
         private readonly HashSet<ushort> _warnedCarrierIds = new HashSet<ushort>();
         private readonly HashSet<int> _warnedUnusableCarriers = new HashSet<int>();
+
+        /// <summary>
+        /// Raised once the pawn stands on the authority's spawn pose. Whatever owns the pawn's facing —
+        /// a first-person camera, typically — takes it from the actor again here, because a spawn that
+        /// waited for its carrier was instantiated facing the prefab's way rather than the spawn's.
+        /// </summary>
+        public event Action OnSpawnPlaced;
 
         /// <summary>
         /// True while this pawn is actually being replicated: bound to an entity this client owns inside
@@ -495,9 +503,11 @@ namespace AlpineLib.Networking {
             _placedForEntityId = _view.EntityId;
             _hasSpawnState = false;
 
-            if (!flagResync) return;
+            if (flagResync) {
+                RequestResync();
+            }
 
-            RequestResync();
+            OnSpawnPlaced?.Invoke();
         }
 
         /// <summary>
