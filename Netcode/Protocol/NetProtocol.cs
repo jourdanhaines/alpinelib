@@ -18,8 +18,10 @@ namespace AlpineLib.Netcode.Protocol {
         /// <remarks>
         /// 5 — <c>OwnerPawnUpdate</c> gained a flags byte between the client tick and the state, so a
         /// version-4 client's update reads as a corrupt pose against a version-5 server.
+        /// 6 — <c>PawnState</c> gained a look pitch byte after the carrier id, lengthening every message
+        /// that nests one.
         /// </remarks>
-        public const ushort Version = 5;
+        public const ushort Version = 6;
 
         private const uint Fnv1aOffsetBasis = 2166136261u;
         private const uint Fnv1aPrime = 16777619u;

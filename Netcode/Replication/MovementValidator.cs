@@ -466,7 +466,10 @@ namespace AlpineLib.Netcode.Replication {
                 next.Position.Y,
                 previous.Position.Z + travel.Z * scale);
 
-            return new PawnState(position, next.YawDegrees, next.Velocity, next.Flags, next.CarrierId);
+            // Only the position is in dispute; everything else the owner reported stands.
+            PawnState clamped = next;
+            clamped.Position = position;
+            return clamped;
         }
     }
 }

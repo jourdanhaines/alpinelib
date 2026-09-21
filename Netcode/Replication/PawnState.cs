@@ -5,7 +5,7 @@ using AlpineLib.Netcode.Protocol;
 namespace AlpineLib.Netcode.Replication {
     /// <summary>
     /// Everything the network needs to know about where a pawn is and what it is doing: a position, a
-    /// facing, a velocity and one byte of packed locomotion bits.
+    /// facing, a velocity, one byte of packed locomotion bits and where it is looking.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -20,8 +20,8 @@ namespace AlpineLib.Netcode.Replication {
     /// reader can tell "old sender" from "garbage".
     /// </para>
     /// <para>
-    /// Position travels as full floats because it is what everything else is measured against; yaw and
-    /// velocity travel quantized (see <see cref="NetQuantization"/>). <see cref="Quantized"/> exists so
+    /// Position travels as full floats because it is what everything else is measured against; yaw,
+    /// velocity and look pitch travel quantized (see <see cref="NetQuantization"/>). <see cref="Quantized"/> exists so
     /// prediction can compare like with like: a client that predicted in full precision and compares
     /// against a wire-rounded authoritative state would see a correction on every single tick.
     /// </para>
@@ -38,7 +38,8 @@ namespace AlpineLib.Netcode.Replication {
     /// a stretched displacement to measure against an unscaled gait ceiling. A banked one is excluded
     /// for a different reason — the yaw arithmetic survives a bank exactly — but one yaw cannot say that
     /// a rider on a canted deck stands tilted, so what replicates is a rider drawn upright on a deck that
-    /// is not.
+    /// is not. <see cref="LookPitchDegrees"/> is measured against level in every frame, and no
+    /// conversion touches it.
     /// </para>
     /// </remarks>
     public struct PawnState : INetMessage {
@@ -59,12 +60,17 @@ namespace AlpineLib.Netcode.Replication {
             : this(position, yawDegrees, velocity, flags, WorldCarrierId) { }
 
         /// <summary>Creates a state in the frame of a named carrier; see the frame note on the type.</summary>
-        public PawnState(Vector3 position, float yawDegrees, Vector3 velocity, byte flags, ushort carrierId) {
+        public PawnState(Vector3 position, float yawDegrees, Vector3 velocity, byte flags, ushort carrierId)
+            : this(position, yawDegrees, velocity, flags, carrierId, 0f) { }
+
+        /// <summary>Creates a state in the frame of a named carrier, looking above or below level.</summary>
+        public PawnState(Vector3 position, float yawDegrees, Vector3 velocity, byte flags, ushort carrierId, float lookPitchDegrees) {
             Position = position;
             YawDegrees = yawDegrees;
             Velocity = velocity;
             Flags = flags;
             CarrierId = carrierId;
+            LookPitchDegrees = lookPitchDegrees;
         }
 
         /// <summary>Position in metres, in the frame <see cref="CarrierId"/> names.</summary>
@@ -84,6 +90,12 @@ namespace AlpineLib.Netcode.Replication {
         /// world space. See the frame note on the type.
         /// </summary>
         public ushort CarrierId { get; set; }
+
+        /// <summary>
+        /// How far above or below level the pawn is looking, in degrees; positive looks down. What a
+        /// remote body bends its neck by, and nothing the simulation or the validator reads.
+        /// </summary>
+        public float LookPitchDegrees { get; set; }
 
         /// <summary>True when this state is measured against a carrier rather than the world.</summary>
         public bool IsCarrierRelative => CarrierId != WorldCarrierId;
@@ -125,7 +137,8 @@ namespace AlpineLib.Netcode.Replication {
 
             return IsClose(left.Position, right.Position, PositionEpsilon)
                 && IsClose(left.Velocity, right.Velocity, NetQuantization.VelocityTolerance)
-                && IsCloseAngle(left.YawDegrees, right.YawDegrees, NetQuantization.YawToleranceDegrees);
+                && IsCloseAngle(left.YawDegrees, right.YawDegrees, NetQuantization.YawToleranceDegrees)
+                && MathF.Abs(left.LookPitchDegrees - right.LookPitchDegrees) <= NetQuantization.PitchToleranceDegrees;
         }
 
         /// <summary>Packs a gait plus the two state bits into the flags byte.</summary>
@@ -145,7 +158,9 @@ namespace AlpineLib.Netcode.Replication {
 
         /// <summary>Returns the same state with a rebuilt flags byte.</summary>
         public PawnState WithFlags(WireLocomotion locomotion, bool isCrouching, bool isGrounded) {
-            return new PawnState(Position, YawDegrees, Velocity, PackFlags(locomotion, isCrouching, isGrounded), CarrierId);
+            PawnState reflagged = this;
+            reflagged.Flags = PackFlags(locomotion, isCrouching, isGrounded);
+            return reflagged;
         }
 
         /// <summary>
@@ -154,27 +169,28 @@ namespace AlpineLib.Netcode.Replication {
         /// carrier is downgraded to world space.
         /// </summary>
         public PawnState WithCarrier(ushort carrierId) {
-            return new PawnState(Position, YawDegrees, Velocity, Flags, carrierId);
+            PawnState relabelled = this;
+            relabelled.CarrierId = carrierId;
+            return relabelled;
         }
 
         /// <summary>
-        /// The state as it would come back off the wire: yaw and velocity pushed through their
-        /// quantizers, position untouched. Prediction compares against this so wire rounding alone never
+        /// The state as it would come back off the wire: yaw, velocity and look pitch pushed through
+        /// their quantizers, position untouched. Prediction compares against this so wire rounding alone never
         /// looks like a divergence.
         /// </summary>
         public PawnState Quantized() {
-            return new PawnState(
-                Position,
-                NetQuantization.QuantizeYaw(YawDegrees),
-                NetQuantization.QuantizeVelocity(Velocity),
-                Flags,
-                CarrierId);
+            PawnState quantized = this;
+            quantized.YawDegrees = NetQuantization.QuantizeYaw(YawDegrees);
+            quantized.Velocity = NetQuantization.QuantizeVelocity(Velocity);
+            quantized.LookPitchDegrees = NetQuantization.QuantizePitch(LookPitchDegrees);
+            return quantized;
         }
 
         /// <inheritdoc />
         /// <remarks>
-        /// The carrier id goes last so the frame is appended to the layout every older build already
-        /// knew, rather than shifting it.
+        /// Fields are appended in the order they were introduced — the carrier id, then the look pitch —
+        /// so each addition extends the layout every older build already knew, rather than shifting it.
         /// </remarks>
         public void Serialize(ref NetWriter writer) {
             writer.WriteVector3(Position);
@@ -182,6 +198,7 @@ namespace AlpineLib.Netcode.Replication {
             writer.WriteQuantizedVelocity(Velocity);
             writer.WriteByte(Flags);
             writer.WriteUShort(CarrierId);
+            writer.WriteQuantizedPitch(LookPitchDegrees);
         }
 
         /// <inheritdoc />
@@ -191,6 +208,7 @@ namespace AlpineLib.Netcode.Replication {
             Velocity = reader.ReadQuantizedVelocity();
             Flags = reader.ReadByte();
             CarrierId = reader.ReadUShort();
+            LookPitchDegrees = reader.ReadQuantizedPitch();
         }
 
         private static bool IsClose(Vector3 left, Vector3 right, float epsilon) {

@@ -325,6 +325,7 @@ namespace AlpineLib.Networking {
 
             _character.PlaceAt(state.Position.ToUnity(), carrierRoot);
             _character.SetExternalGrounded(state.IsGrounded);
+            _character.SetLookPitch(state.LookPitchDegrees);
 
             AnimateFromState(in state);
             ApplyFacing(state.YawDegrees);

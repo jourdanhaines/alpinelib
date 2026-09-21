@@ -95,7 +95,7 @@ namespace AlpineLib.Networking {
             Vector3 velocity = intoFrame * (world.Velocity.ToUnity() - carrier.Velocity);
             float yaw = WrapDegrees(world.YawDegrees - frame.eulerAngles.y);
 
-            return new PawnState(position.ToNumerics(), yaw, velocity.ToNumerics(), world.Flags, carrier.CarrierId);
+            return new PawnState(position.ToNumerics(), yaw, velocity.ToNumerics(), world.Flags, carrier.CarrierId, world.LookPitchDegrees);
         }
 
         /// <summary>
@@ -118,7 +118,7 @@ namespace AlpineLib.Networking {
             Vector3 velocity = outOfFrame * local.Velocity.ToUnity();
             float yaw = WrapDegrees(local.YawDegrees + frame.eulerAngles.y);
 
-            return new PawnState(position.ToNumerics(), yaw, velocity.ToNumerics(), local.Flags, PawnState.WorldCarrierId);
+            return new PawnState(position.ToNumerics(), yaw, velocity.ToNumerics(), local.Flags, PawnState.WorldCarrierId, local.LookPitchDegrees);
         }
 
         /// <summary>Folds a yaw back into [0, 360), so a subtraction never hands out a negative facing.</summary>

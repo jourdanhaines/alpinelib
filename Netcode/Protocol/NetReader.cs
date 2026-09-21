@@ -201,6 +201,11 @@ namespace AlpineLib.Netcode.Protocol {
             return NetQuantization.DecodeYaw(ReadUShort());
         }
 
+        /// <summary>Decodes a quantized pitch back into degrees within [-90, 90].</summary>
+        public float ReadQuantizedPitch() {
+            return NetQuantization.DecodePitch(ReadSByte());
+        }
+
         /// <summary>Decodes a fixed-point velocity triple.</summary>
         public Vector3 ReadQuantizedVelocity() {
             float x = NetQuantization.DecodeVelocityComponent(ReadShort());

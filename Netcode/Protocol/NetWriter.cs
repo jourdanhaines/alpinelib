@@ -195,6 +195,11 @@ namespace AlpineLib.Netcode.Protocol {
             WriteUShort(NetQuantization.EncodeYaw(degrees));
         }
 
+        /// <summary>Pitch compressed to an sbyte — see <see cref="NetQuantization"/> for the tolerance.</summary>
+        public void WriteQuantizedPitch(float degrees) {
+            WriteSByte(NetQuantization.EncodePitch(degrees));
+        }
+
         /// <summary>Velocity compressed to three fixed-point shorts: six bytes instead of twelve.</summary>
         public void WriteQuantizedVelocity(Vector3 velocity) {
             WriteShort(NetQuantization.EncodeVelocityComponent(velocity.X));

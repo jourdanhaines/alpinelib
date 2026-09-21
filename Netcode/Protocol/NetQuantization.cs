@@ -17,6 +17,15 @@ namespace AlpineLib.Netcode.Protocol {
         /// <summary>Worst-case error in degrees introduced by a yaw encode/decode round trip.</summary>
         public const float YawToleranceDegrees = YawStepDegrees * 0.5f;
 
+        /// <summary>Furthest a pitch can lean either way, in degrees: straight up or straight down.</summary>
+        public const float MaxPitchDegrees = 90f;
+
+        /// <summary>Degrees represented by one pitch step: a quarter turn mapped onto half an sbyte.</summary>
+        public const float PitchStepDegrees = MaxPitchDegrees / sbyte.MaxValue;
+
+        /// <summary>Worst-case error in degrees introduced by a pitch encode/decode round trip.</summary>
+        public const float PitchToleranceDegrees = PitchStepDegrees * 0.5f;
+
         /// <summary>Fixed-point scale for velocity components: 1/256 m/s resolution.</summary>
         public const float VelocityScale = 256f;
 
@@ -74,6 +83,26 @@ namespace AlpineLib.Netcode.Protocol {
                 DecodeVelocityComponent(EncodeVelocityComponent(velocity.X)),
                 DecodeVelocityComponent(EncodeVelocityComponent(velocity.Y)),
                 DecodeVelocityComponent(EncodeVelocityComponent(velocity.Z)));
+        }
+
+        /// <summary>
+        /// Packs a pitch in degrees into an sbyte, clamped to straight up and straight down. Signed so
+        /// that level is exactly zero: a pawn that never looks anywhere costs no rounding at all.
+        /// </summary>
+        public static sbyte EncodePitch(float degrees) {
+            float clamped = Math.Clamp(degrees, -MaxPitchDegrees, MaxPitchDegrees);
+
+            return (sbyte)MathF.Round(clamped / PitchStepDegrees);
+        }
+
+        /// <summary>Unpacks a pitch into degrees within [-90, 90].</summary>
+        public static float DecodePitch(sbyte encoded) {
+            return Math.Max(encoded, (sbyte)-sbyte.MaxValue) * PitchStepDegrees;
+        }
+
+        /// <summary>Convenience round trip for pitch, mirroring <see cref="QuantizeYaw"/>.</summary>
+        public static float QuantizePitch(float degrees) {
+            return DecodePitch(EncodePitch(degrees));
         }
 
         /// <summary>Convenience round trip for yaw, mirroring <see cref="QuantizeVelocity"/>.</summary>

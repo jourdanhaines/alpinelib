@@ -342,8 +342,8 @@ namespace AlpineLib.Netcode.Replication {
         /// and the incoming tangent is the following sample's, when one exists. Both arrive already
         /// carry-augmented; the velocity handed back is deliberately the raw replicated pair, so a
         /// standing rider still reports standing still to whoever animates from it. Yaw blends the short
-        /// way around; the discrete bits describe the motion across the span and therefore come from the
-        /// later sample.
+        /// way around and look pitch, which never wraps, blends straight; the discrete bits describe the
+        /// motion across the span and therefore come from the later sample.
         /// </summary>
         private static PawnState Blend(
             in TimedSample earlier,
@@ -372,7 +372,9 @@ namespace AlpineLib.Netcode.Replication {
             Vector3 velocity = Vector3.Lerp(later.State.Velocity, rawIncomingVelocity, normalized);
             float yaw = LerpYaw(earlier.State.YawDegrees, later.State.YawDegrees, normalized);
 
-            return new PawnState(position, yaw, velocity, later.State.Flags, later.State.CarrierId);
+            float lookPitch = earlier.State.LookPitchDegrees + (later.State.LookPitchDegrees - earlier.State.LookPitchDegrees) * normalized;
+
+            return new PawnState(position, yaw, velocity, later.State.Flags, later.State.CarrierId, lookPitch);
         }
 
         /// <summary>
@@ -432,12 +434,9 @@ namespace AlpineLib.Netcode.Replication {
             Vector3 position = newest.State.Position + projectionVelocity * clampedAhead;
             LastOutputPosition = position;
 
-            return new PawnState(
-                position,
-                newest.State.YawDegrees,
-                newest.State.Velocity,
-                newest.State.Flags,
-                newest.State.CarrierId);
+            PawnState projected = newest.State;
+            projected.Position = position;
+            return projected;
         }
 
         /// <summary>The position handed out by the most recent sample, extrapolated or not.</summary>

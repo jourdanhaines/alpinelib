@@ -789,7 +789,9 @@ namespace AlpineLib.Networking {
                 position.ToNumerics(),
                 transform.eulerAngles.y,
                 _actor != null ? _actor.Velocity.ToNumerics() : Numerics.Vector3.Zero,
-                flags);
+                flags,
+                PawnState.WorldCarrierId,
+                _actor != null ? _actor.LookPitch : 0f);
 
             RefreshLiveCarrier();
             if (_liveCarrier != null && !IsCarrierUsable(_liveCarrier)) return false;

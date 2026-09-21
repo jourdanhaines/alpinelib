@@ -13,8 +13,8 @@ namespace AlpineLib.Server.Tests {
     /// never mistakes two frames for one.
     /// </summary>
     public sealed class PawnStateCarrierCodecTests {
-        /// <summary>Position, quantized yaw, quantized velocity, flags and the carrier id.</summary>
-        private const int CarrierStateWireBytes = 23;
+        /// <summary>Position, quantized yaw, quantized velocity, flags, the carrier id and the look pitch.</summary>
+        private const int CarrierStateWireBytes = 24;
 
         [Fact]
         public void AWorldStateStillRoundTripsAndReportsTheWorldFrame() {

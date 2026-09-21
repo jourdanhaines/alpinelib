@@ -176,7 +176,7 @@ namespace AlpineLib.Netcode.Replication {
             float yawDegrees = ResolveYaw(moveDirection, state.YawDegrees);
             byte flags = PawnState.PackFlags(input.Gait, input.Crouch, isGrounded);
 
-            return new PawnState(position, yawDegrees, velocity, flags);
+            return new PawnState(position, yawDegrees, velocity, flags, PawnState.WorldCarrierId, state.LookPitchDegrees);
         }
 
         /// <summary>
