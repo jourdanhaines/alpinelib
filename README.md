@@ -31,6 +31,13 @@ Add one of the following to `Packages/manifest.json`:
 The `file:` form is for developing the library alongside a game — edits are picked up by the
 consuming project's next compile.
 
+`AlpineLib.Motion` is built on [LitMotion](https://github.com/annulusgames/LitMotion). UPM cannot
+declare a git dependency from a package, so a consumer adds it itself:
+
+```json
+"com.annulusgames.lit-motion": "https://github.com/annulusgames/LitMotion.git?path=src/LitMotion/Assets/LitMotion#v2.0.2"
+```
+
 ## Modules
 
 | Namespace | What it provides | Key types |
@@ -59,6 +66,7 @@ consuming project's next compile.
 | `AlpineLib.Actors.Locomotion` | Gait handling: `LocomotionSystem` translates the current gait into move-speed and noise-radius stat modifiers, swapped out whenever the gait changes. Walk is neutral. `CrouchSystem` owns capsule geometry only — it lerps the `CharacterController` between a standing and a crouched height, recentring so the feet stay planted, and refuses to stand while an upward sphere cast finds a ceiling. Standing is a request, not a command: releasing crouch under a low ceiling latches `WantsToStand` and the actor pops up on its own the first frame the ceiling clears, which is what makes a crouch tunnel feel right. The two are independent — a controller that crouches an actor calls both, because neither speed nor noise is this system's business. | `LocomotionSystem`, `LocomotionState`, `CrouchSystem` |
 | `AlpineLib.Animation` | Animator parameter hashes shared by the actor systems (see the contract below), plus a helper that re-rolls a blend tree index whenever a watched parameter crosses a threshold, so idles vary, `ExpressionSystem`, which fires face-expression triggers (auto-blink plus a scripted `Play`) on a masked expressions layer, and `IdleVariationSystem`, which fires a random variation trigger (optionally paired with an expression) after a random stretch of genuine idleness. | `AnimatorParameters`, `AnimateRandomIndex`, `ExpressionSystem`, `IdleVariationSystem`, `IdleVariation` |
 | `AlpineLib.Animation.Procedural` | Procedural motion laid over the animated pose. A `PoseModifierStack` on the actor runs its `PoseModifier` layers once per `LateUpdate`, in authored order, through `PoseBones` — which keeps additive bone writes additive even while a culled animator is not re-posing the skeleton. `LookPoseModifier` is the first layer: it shares `Actor.LookPitch` out along the spine, neck and head (separate shares for looking down and up), and implements `ICameraEyeModel` from the same chain so a first-person eye swings out exactly as far as the head does. `LookPoseSolver` holds the arithmetic, engine-light and gate-testable. New layers — a lean, a recoil, hand placement — derive from `PoseModifier` and need nothing else. | `PoseModifierStack`, `PoseModifier`, `PoseBones`, `LookPoseModifier`, `LookPoseLink`, `LookPoseSolver`, `LookPoseJoint` |
+| `AlpineLib.Motion` | LitMotion-backed tweens in their own assembly, `FluxInteractive.AlpineLib.Motion`. `ToggleMotion` is a reversible 0..1 fraction that retargets from wherever it is, so a door toggled mid-travel reverses without a jump; `SlideMotion` drives a transform between a closed pose the owner captures with `Initialise` and that pose plus a local offset. Outside play mode every move snaps, because LitMotion's editor ticker never runs inside a batchmode call. | `ToggleMotion`, `SlideMotion` |
 | `AlpineLib.Utilities` | Weighted random selection over any read-only list. | `WeightedRandom` |
 | `AlpineLib.Editor` | Editor tooling. `BootSceneLoader` redirects play mode to a designated boot scene (`AlpineLib/Editor/Play From Boot Scene`). `RegenerateProjectFiles` syncs the external script editor's project files on demand or after every script reload, for scripts added outside Unity. `AssetValidator` is a batch-mode integrity gate over prefabs, ScriptableObjects and build scenes: `-batchmode -quit -executeMethod AlpineLib.Editor.AssetValidator.ValidateAll`. `BodySystemEditor` adds a play-mode inspector showing injuries, bleed rate breakdown and condition progress per body part. | `BootSceneLoader`, `RegenerateProjectFiles`, `AssetValidator`, `BodySystemEditor` |
 
