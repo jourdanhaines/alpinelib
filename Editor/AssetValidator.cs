@@ -44,7 +44,11 @@ namespace AlpineLib.Editor {
             { "MatchDefinition", "matchId" },
             { "SessionConfig", "profile" },
             { "LobbyConfig", "lobbySceneName" },
-            { "PossessionGate", "localOnly" }
+            { "PossessionGate", "localOnly" },
+            { "CharacterModel", "slots" },
+            { "AppearanceItem", "variants" },
+            { "AppearanceCatalog", "models" },
+            { "CharacterAppearance", "model" }
         };
 
         /// <summary>

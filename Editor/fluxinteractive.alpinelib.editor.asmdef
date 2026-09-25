@@ -2,7 +2,8 @@
   "name": "FluxInteractive.AlpineLib.Editor",
   "references": [
     "FluxInteractive.AlpineLib",
-    "FluxInteractive.AlpineLib.Netcode"
+    "FluxInteractive.AlpineLib.Netcode",
+    "FluxInteractive.AlpineLib.Appearance"
   ],
   "includePlatforms": [
     "Editor"
