@@ -1,0 +1,16 @@
+{
+  "name": "FluxInteractive.AlpineLib.Appearance",
+  "rootNamespace": "AlpineLib.Appearance",
+  "references": [
+    "FluxInteractive.AlpineLib.Netcode"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}
