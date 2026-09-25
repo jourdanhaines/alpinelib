@@ -137,8 +137,13 @@ namespace AlpineLib.Appearance {
         }
 
         /// <summary>Destroys every piece, including orphans left by a domain reload.</summary>
+        /// <remarks>
+        /// In play mode the picks are emptied too, so <see cref="CurrentOutfit"/> matches the bare body; in
+        /// edit mode the authored picks stay, since clearing only takes down the preview.
+        /// </remarks>
         public void Clear() {
             ClearPieces();
+            if (Application.isPlaying) ClearPicks();
             PiecesChanged?.Invoke();
         }
 
@@ -243,6 +248,11 @@ namespace AlpineLib.Appearance {
             for (int index = 0; index < slots.Length; index++) {
                 if (slots[index] == null) slots[index] = new AppearanceSlotSelection();
             }
+        }
+
+        private void ClearPicks() {
+            EnsureSlots();
+            for (int index = 0; index < slots.Length; index++) slots[index] = new AppearanceSlotSelection();
         }
 
         private AppearanceSlotPick PickOf(AppearanceSlotSelection selection) {

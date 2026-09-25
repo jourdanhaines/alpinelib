@@ -16,7 +16,7 @@ namespace AlpineLib.Netcode.Appearance {
         /// <summary>Slots an outfit for this model carries, in wire order.</summary>
         public byte SlotCount { get; }
 
-        /// <summary>Net prefab id of the pawn wearing this model, or 0 for the session's default pawn.</summary>
+        /// <summary>Net prefab registry row of the pawn wearing this model; 0 is row 0, not "none".</summary>
         public ushort PawnPrefabId { get; }
 
         /// <inheritdoc />

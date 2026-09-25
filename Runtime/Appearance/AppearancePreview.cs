@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace AlpineLib.Appearance {
@@ -8,6 +9,11 @@ namespace AlpineLib.Appearance {
     public static class AppearancePreview {
         /// <summary>Flags on every preview object, so a saved prefab or scene stays bare.</summary>
         public const HideFlags PreviewFlags = HideFlags.DontSaveInEditor | HideFlags.DontSaveInBuild | HideFlags.NotEditable;
+
+#if UNITY_EDITOR
+        // Every sweep meets the same locked object again; warn about each once per domain.
+        private static readonly HashSet<int> WarnedLocked = new HashSet<int>();
+#endif
 
         /// <summary>Marks <paramref name="root"/> and everything under it as preview.</summary>
         public static void MarkPreview(GameObject root) {
@@ -50,7 +56,10 @@ namespace AlpineLib.Appearance {
             if (UnityEditor.PrefabUtility.IsAddedGameObjectOverride(target)) return false;
             if (UnityEditor.PrefabUtility.IsOutermostPrefabInstanceRoot(target)) return false;
 
-            Debug.LogWarning($"AppearancePreview::IsLockedByPrefab->{target.name} is baked into a prefab instance; remove it from the prefab.");
+            if (WarnedLocked.Add(target.GetInstanceID())) {
+                Debug.LogWarning($"AppearancePreview::IsLockedByPrefab->{target.name} is baked into a prefab instance; remove it from the prefab.", target);
+            }
+
             return true;
 #else
             return false;

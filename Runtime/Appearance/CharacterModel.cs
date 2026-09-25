@@ -6,13 +6,17 @@ namespace AlpineLib.Appearance {
     /// A character body items are made for, and its wearable slots. Slot order is wire order, so slots
     /// are append-only.
     /// </summary>
+    /// <remarks>
+    /// An item's wire slot is an index, so a slot key shared by several models must sit at the same index
+    /// in each model's list.
+    /// </remarks>
     [CreateAssetMenu(fileName = "CharacterModel", menuName = "AlpineLib/Appearance/Character Model")]
     public class CharacterModel : ScriptableObject {
         [Tooltip("Stable, human-readable model name (e.g. MaleT).")]
         [SerializeField] private string key;
         [Tooltip("The body's imported model (FBX root). Used by validation and editor tools only.")]
         [SerializeField] private GameObject bodyModel;
-        [Tooltip("Append-only. A slot's index is its position in every outfit on the wire; never reorder or delete.")]
+        [Tooltip("Append-only. A slot's index is its position in every outfit on the wire; never reorder or delete. An item worn by several models needs its slot key at the same index in each.")]
         [SerializeField] private List<AppearanceSlotDefinition> slots = new List<AppearanceSlotDefinition>();
 
         /// <summary>Stable model name.</summary>
