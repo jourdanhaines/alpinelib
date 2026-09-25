@@ -136,6 +136,7 @@ namespace AlpineLib.Editor {
             if (item.Variants.Count == 0) errors.Add($"Item '{item.name}' has no variants.");
 
             ValidateMaterialSets(item, errors);
+            ValidateHiddenBodyNames(item, errors, warnings);
             var seenModels = new HashSet<CharacterModel>();
             for (int index = 0; index < item.Variants.Count; index++) {
                 AppearanceItemVariant variant = item.Variants[index];
@@ -158,6 +159,53 @@ namespace AlpineLib.Editor {
 
                 errors.Add($"Item '{item.name}' material set {index} has no material.");
             }
+        }
+
+        // Each name must pick out exactly one renderer on every body the item is authored for.
+        private static void ValidateHiddenBodyNames(AppearanceItem item, List<string> errors, List<string> warnings) {
+            var seenNames = new HashSet<string>();
+            for (int index = 0; index < item.HidesBodyRenderers.Count; index++) {
+                string bodyName = item.HidesBodyRenderers[index];
+                if (string.IsNullOrWhiteSpace(bodyName)) {
+                    errors.Add($"Item '{item.name}' hidden body renderer {index} has no name.");
+                    continue;
+                }
+
+                if (!seenNames.Add(bodyName)) warnings.Add($"Item '{item.name}' hides body renderer '{bodyName}' more than once.");
+            }
+
+            foreach (CharacterModel model in BodyModelsOf(item)) {
+                ValidateHiddenBodyNamesOn(item, model, seenNames, errors);
+            }
+        }
+
+        private static List<CharacterModel> BodyModelsOf(AppearanceItem item) {
+            var models = new List<CharacterModel>();
+            foreach (AppearanceItemVariant variant in item.Variants) {
+                if (variant == null || variant.Model == null || variant.Model.BodyModel == null) continue;
+                if (!models.Contains(variant.Model)) models.Add(variant.Model);
+            }
+
+            return models;
+        }
+
+        private static void ValidateHiddenBodyNamesOn(AppearanceItem item, CharacterModel model, HashSet<string> bodyNames, List<string> errors) {
+            Dictionary<string, List<Transform>> bodyNodes = MapByName(model.BodyModel.transform);
+            foreach (string bodyName in bodyNames) {
+                string problem = HiddenBodyNameProblem(bodyNodes, bodyName);
+                if (problem == null) continue;
+
+                errors.Add($"Item '{item.name}' on model '{model.name}': hidden body renderer '{bodyName}' {problem}.");
+            }
+        }
+
+        private static string HiddenBodyNameProblem(Dictionary<string, List<Transform>> bodyNodes, string bodyName) {
+            int matchCount = bodyNodes.TryGetValue(bodyName, out List<Transform> matches) ? matches.Count : 0;
+            if (matchCount == 0) return "matched 0 transforms on the body";
+            if (matchCount > 1) return $"is ambiguous on the body ({matchCount} matches)";
+            if (matches[0].GetComponent<Renderer>() == null) return "matched a transform with no Renderer";
+
+            return null;
         }
 
         private static bool HasAnyMaterial(AppearanceMaterialSet set) {

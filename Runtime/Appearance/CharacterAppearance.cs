@@ -30,6 +30,8 @@ namespace AlpineLib.Appearance {
 
         private readonly AppearancePiece[] _pieces = new AppearancePiece[AppearanceOutfit.MaxSlots];
         private readonly List<string> _errors = new List<string>();
+        private readonly List<Renderer> _hiddenBody = new List<Renderer>();
+        private readonly HashSet<string> _warnedBodyNames = new HashSet<string>();
         private AppearanceSkeleton _skeleton;
         private IAppearanceVariantResolver _variantResolver = ExactModelVariantResolver.Instance;
         private bool _built;
@@ -94,6 +96,7 @@ namespace AlpineLib.Appearance {
             }
 
             _built = true;
+            RefreshBodyVisibility();
             PiecesChanged?.Invoke();
             return allBuilt;
         }
@@ -132,6 +135,7 @@ namespace AlpineLib.Appearance {
             _errors.Clear();
             bool allBuilt = BuildSlots();
             _built = true;
+            RefreshBodyVisibility();
             PiecesChanged?.Invoke();
             return allBuilt;
         }
@@ -144,6 +148,7 @@ namespace AlpineLib.Appearance {
         public void Clear() {
             ClearPieces();
             if (Application.isPlaying) ClearPicks();
+            RefreshBodyVisibility();
             PiecesChanged?.Invoke();
         }
 
@@ -160,6 +165,11 @@ namespace AlpineLib.Appearance {
             }
         }
 
+        /// <summary>True while a worn item's <see cref="AppearanceItem.HidesBodyRenderers"/> hides <paramref name="renderer"/>.</summary>
+        public bool IsBodyRendererHidden(Renderer renderer) {
+            return renderer != null && _hiddenBody.Contains(renderer);
+        }
+
         private void Awake() {
             EnsureSlots();
             if (!Application.isPlaying || IsBuilt) return;
@@ -169,6 +179,7 @@ namespace AlpineLib.Appearance {
 
         private void OnEnable() {
             EnsureSlots();
+            if (_built) RefreshBodyVisibility();
 #if UNITY_EDITOR
             QueuePreview();
 #endif
@@ -184,6 +195,7 @@ namespace AlpineLib.Appearance {
         }
 
         private void OnDisable() {
+            RestoreBodyRenderers();
 #if UNITY_EDITOR
             if (Application.isPlaying) return;
 
@@ -192,6 +204,10 @@ namespace AlpineLib.Appearance {
             Transform modelRoot = ModelRoot;
             UnityEditor.EditorApplication.delayCall += () => ClearIfStillDisabled(modelRoot);
 #endif
+        }
+
+        private void OnDestroy() {
+            RestoreBodyRenderers();
         }
 
 #if UNITY_EDITOR
@@ -466,6 +482,82 @@ namespace AlpineLib.Appearance {
             bool built = AppearanceSkeleton.TryBuild(modelRoot, out _skeleton, out error);
             skeleton = _skeleton;
             return built;
+        }
+
+        // forceRenderingOff is not serialized, so an edit-mode preview never dirties the body; it also drops the shadow.
+        private void RefreshBodyVisibility() {
+            if (!isActiveAndEnabled) {
+                RestoreBodyRenderers();
+                return;
+            }
+
+            List<Renderer> wanted = ResolveHiddenBodyRenderers();
+            foreach (Renderer renderer in _hiddenBody) {
+                if (renderer != null && !wanted.Contains(renderer)) renderer.forceRenderingOff = false;
+            }
+
+            _hiddenBody.Clear();
+            foreach (Renderer renderer in wanted) {
+                renderer.forceRenderingOff = true;
+                _hiddenBody.Add(renderer);
+            }
+        }
+
+        private void RestoreBodyRenderers() {
+            foreach (Renderer renderer in _hiddenBody) {
+                if (renderer != null) renderer.forceRenderingOff = false;
+            }
+
+            _hiddenBody.Clear();
+        }
+
+        // Union over the built pieces' items; a name that does not resolve is warned about and skipped.
+        private List<Renderer> ResolveHiddenBodyRenderers() {
+            var resolved = new List<Renderer>();
+            HashSet<string> names = CollectHiddenBodyNames();
+            if (names.Count == 0 || !TryGetSkeleton(out AppearanceSkeleton skeleton, out _)) return resolved;
+
+            foreach (string bodyName in names) {
+                Renderer renderer = FindBodyRenderer(skeleton, bodyName);
+                if (renderer != null && !resolved.Contains(renderer)) resolved.Add(renderer);
+            }
+
+            return resolved;
+        }
+
+        private HashSet<string> CollectHiddenBodyNames() {
+            var names = new HashSet<string>();
+            foreach (AppearancePiece piece in _pieces) {
+                if (piece == null || piece.Item == null) continue;
+
+                AddHiddenBodyNames(piece.Item, names);
+            }
+
+            return names;
+        }
+
+        private static void AddHiddenBodyNames(AppearanceItem item, HashSet<string> names) {
+            foreach (string bodyName in item.HidesBodyRenderers) {
+                if (!string.IsNullOrEmpty(bodyName)) names.Add(bodyName);
+            }
+        }
+
+        // Resolved through the skeleton map, so built pieces are skipped and a duplicated name never matches.
+        private Renderer FindBodyRenderer(AppearanceSkeleton skeleton, string bodyName) {
+            if (!skeleton.TryGet(bodyName, out Transform node)) {
+                WarnBodyRendererOnce(bodyName, skeleton.IsAmbiguous(bodyName) ? "is ambiguous" : "is missing");
+                return null;
+            }
+
+            Renderer renderer = node.GetComponent<Renderer>();
+            if (renderer == null) WarnBodyRendererOnce(bodyName, "has no Renderer");
+            return renderer;
+        }
+
+        private void WarnBodyRendererOnce(string bodyName, string problem) {
+            if (!_warnedBodyNames.Add(bodyName)) return;
+
+            Debug.LogWarning($"CharacterAppearance::RefreshBodyVisibility->{name} body renderer '{bodyName}' {problem} under the model root; it stays visible.");
         }
 
         private bool RecordError(string error) {

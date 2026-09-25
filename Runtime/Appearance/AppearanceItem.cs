@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -16,6 +17,8 @@ namespace AlpineLib.Appearance {
         [SerializeField] private List<AppearanceItemVariant> variants = new List<AppearanceItemVariant>();
         [Tooltip("Append-only. A set's index is the variant on the wire; never reorder or delete. Empty = the prefab's own materials.")]
         [SerializeField] private List<AppearanceMaterialSet> materialSets = new List<AppearanceMaterialSet>();
+        [Tooltip("Body renderers under the model root that stop rendering while this item is worn, by name.")]
+        [SerializeField] private string[] hidesBodyRenderers = Array.Empty<string>();
 
         /// <summary>Key of the slot this item fills.</summary>
         public string SlotKey => slotKey;
@@ -29,18 +32,22 @@ namespace AlpineLib.Appearance {
         /// <summary>Selectable looks, by variant index.</summary>
         public IReadOnlyList<AppearanceMaterialSet> MaterialSets => materialSets;
 
+        /// <summary>Names of the body renderers this item hides while worn; never null.</summary>
+        public IReadOnlyList<string> HidesBodyRenderers => hidesBodyRenderers ?? Array.Empty<string>();
+
         /// <summary>Number of pickable variants: one per material set, and at least one.</summary>
         public int VariantCount => Mathf.Max(1, materialSets?.Count ?? 0);
 
         /// <summary>Creates an in-memory item; for tools and tests.</summary>
         public static AppearanceItem Create(string name, string slotKey, AppearanceFirstPersonVisibility firstPersonVisibility,
-            IEnumerable<AppearanceItemVariant> variants, IEnumerable<AppearanceMaterialSet> materialSets) {
+            IEnumerable<AppearanceItemVariant> variants, IEnumerable<AppearanceMaterialSet> materialSets, string[] hidesBodyRenderers = null) {
             AppearanceItem item = CreateInstance<AppearanceItem>();
             item.name = name;
             item.slotKey = slotKey;
             item.firstPersonVisibility = firstPersonVisibility;
             item.variants = new List<AppearanceItemVariant>(variants);
             item.materialSets = new List<AppearanceMaterialSet>(materialSets);
+            item.hidesBodyRenderers = hidesBodyRenderers ?? Array.Empty<string>();
             return item;
         }
 
