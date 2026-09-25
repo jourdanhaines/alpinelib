@@ -65,5 +65,15 @@ namespace AlpineLib.Server.Sessions {
         /// </para>
         /// </remarks>
         Func<ushort, PeerHandle, ServerClaimRegistry, bool> BuildClaimValidator(SessionHost host) => null;
+
+        /// <summary>
+        /// Which prefab an arriving member is spawned as, given the one the session config names.
+        /// </summary>
+        /// <remarks>
+        /// Asked on every arrival, rejoins included, with the member already in the roster — so
+        /// <see cref="SessionMember.AvatarData"/> is readable. A game with one character model leaves this
+        /// alone; one with several maps the member's choice to that model's pawn prefab here.
+        /// </remarks>
+        ushort ResolvePawnPrefab(SessionMember member, ushort defaultPrefabId) => defaultPrefabId;
     }
 }

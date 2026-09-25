@@ -33,6 +33,9 @@ namespace AlpineLib.Server.Tests {
         /// <summary>Prefab id the fixtures spawn as, distinct from zero so a defaulted field is visible.</summary>
         private const ushort PawnPrefabId = 3;
 
+        /// <summary>Prefab the resolver fixtures give the member named "Guest".</summary>
+        private const ushort GuestPrefabId = 9;
+
         private const float TickInterval = 1f / 30f;
 
         private static int nextPort = 45000;
@@ -49,6 +52,37 @@ namespace AlpineLib.Server.Tests {
             Assert.Equal(EntityKind.Pawn, pawn.Kind);
             Assert.True(world.Spawner.TryGetPawn(member.PlayerId, out uint entityId));
             Assert.Equal(pawn.Id, entityId);
+        }
+
+        [Fact]
+        public void APrefabResolverChoosesEachMembersBody() {
+            var asked = new List<string>();
+            using var world = new SpawnWorld(AuthorityMode.Server, prefabOf: member => ResolveByName(member, asked));
+            SpawnPeer owner = world.Join("Owner");
+            SpawnPeer guest = world.Join("Guest");
+
+            Assert.Equal(new[] { "Owner", "Guest" }, asked);
+            Assert.Equal(PawnPrefabId, world.Spawner.PrefabId);
+            Assert.Equal(PawnPrefabId, PawnOf(world, owner).PrefabId);
+            Assert.Equal(GuestPrefabId, PawnOf(world, guest).PrefabId);
+        }
+
+        [Fact]
+        public void TheFixedPrefabConstructorStillSpawnsEveryoneAsItsPrefab() {
+            using var world = new SpawnWorld(AuthorityMode.Server);
+            SpawnPeer owner = world.Join("Owner");
+            SpawnPeer guest = world.Join("Guest");
+
+            Assert.Equal(PawnPrefabId, PawnOf(world, owner).PrefabId);
+            Assert.Equal(PawnPrefabId, PawnOf(world, guest).PrefabId);
+        }
+
+        [Fact]
+        public void ANullPrefabResolverIsRefused() {
+            using var world = new SpawnWorld(AuthorityMode.Server);
+
+            Assert.Throws<ArgumentNullException>(() => new SessionPawnSpawner(
+                world.Host, world.Replication, PawnPrefabId, null, AuthorityMode.Server, new RingSpawnPlacement()));
         }
 
         [Fact]
@@ -259,21 +293,28 @@ namespace AlpineLib.Server.Tests {
         /// One session with a spawner on it and real connections underneath: the smallest thing that can
         /// raise the membership events the spawner exists to answer.
         /// </summary>
+        private static ushort ResolveByName(SessionMember member, List<string> asked) {
+            asked.Add(member.DisplayName);
+            return member.DisplayName == "Guest" ? GuestPrefabId : PawnPrefabId;
+        }
+
         private sealed class SpawnWorld : IDisposable {
             private readonly int _port;
             private readonly FakeNetTransport _serverTransport = new FakeNetTransport();
             private readonly NetServer _server;
             private readonly List<SpawnPeer> _peers = new List<SpawnPeer>();
 
-            public SpawnWorld(AuthorityMode authority, ISpawnPlacement placement = null) {
+            public SpawnWorld(AuthorityMode authority, ISpawnPlacement placement = null, Func<SessionMember, ushort> prefabOf = null) {
                 _port = Interlocked.Increment(ref nextPort);
                 NetConfig config = BuildConfig(_port);
 
                 _server = new NetServer(_serverTransport, config);
                 Host = new SessionHost("spawn-test", "CODE", BuildSessionConfig(), _server);
                 Replication = new ServerReplication(_server, () => Host.ConnectedPeers, new MovementValidator(config));
-                Spawner = new SessionPawnSpawner(
-                    Host, Replication, PawnPrefabId, authority, placement ?? new RingSpawnPlacement());
+                Spawner = prefabOf == null
+                    ? new SessionPawnSpawner(Host, Replication, PawnPrefabId, authority, placement ?? new RingSpawnPlacement())
+                    : new SessionPawnSpawner(
+                        Host, Replication, PawnPrefabId, prefabOf, authority, placement ?? new RingSpawnPlacement());
 
                 _server.Start();
                 Host.Open();

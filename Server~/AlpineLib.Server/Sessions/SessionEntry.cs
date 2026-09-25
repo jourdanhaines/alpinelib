@@ -94,7 +94,13 @@ namespace AlpineLib.Server.Sessions {
             // afterwards: a registry that is live and unfiltered for even one message has already
             // answered a request it should have refused.
             _claims = new ServerClaimRegistry(server, ResolveBroadcastPeers, moduleFactory?.BuildClaimValidator(host));
-            _spawner = new SessionPawnSpawner(host, _replication, spawn.PawnPrefabId, spawn.PawnAuthority, placement);
+            _spawner = new SessionPawnSpawner(
+                host,
+                _replication,
+                spawn.PawnPrefabId,
+                member => moduleFactory?.ResolvePawnPrefab(member, spawn.PawnPrefabId) ?? spawn.PawnPrefabId,
+                spawn.PawnAuthority,
+                placement);
             _chatHost = new SessionHostChatAdapter(host, clock);
             _chatTransport = new ChatServerEnvelopeTransport(server, ResolvePlayerForPeer, ResolvePeerForPlayer);
             _chatService = new ChatServerService(_chatHost, _chatTransport, chatSettings);

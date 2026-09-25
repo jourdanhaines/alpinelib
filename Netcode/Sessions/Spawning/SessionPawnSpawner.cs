@@ -27,6 +27,7 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
         private readonly SessionHost _host;
         private readonly ServerReplication _replication;
         private readonly ushort _prefabId;
+        private readonly Func<SessionMember, ushort> _prefabOf;
         private readonly AuthorityMode _authority;
         private readonly ISpawnPlacement _placement;
         private readonly Dictionary<PlayerId, uint> _pawnByPlayer = new Dictionary<PlayerId, uint>();
@@ -44,11 +45,29 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
             ServerReplication replication,
             ushort prefabId,
             AuthorityMode authority,
+            ISpawnPlacement placement)
+            : this(host, replication, prefabId, member => prefabId, authority, placement) {
+        }
+
+        /// <summary>Binds a session's roster to its world, choosing each arrival's prefab per member.</summary>
+        /// <param name="host">The session whose arrivals and departures drive the pawns.</param>
+        /// <param name="replication">The world the pawns live in. Its collision is what placements probe.</param>
+        /// <param name="defaultPrefabId">The prefab reported by <see cref="PrefabId"/>; what a resolver usually falls back to.</param>
+        /// <param name="prefabOf">Which prefab one arriving member is spawned as — a game with several character models picks here.</param>
+        /// <param name="authority">Who simulates the pawn once it exists.</param>
+        /// <param name="placement">Where the next arrival appears.</param>
+        public SessionPawnSpawner(
+            SessionHost host,
+            ServerReplication replication,
+            ushort defaultPrefabId,
+            Func<SessionMember, ushort> prefabOf,
+            AuthorityMode authority,
             ISpawnPlacement placement) {
             _host = host ?? throw new ArgumentNullException(nameof(host));
             _replication = replication ?? throw new ArgumentNullException(nameof(replication));
             _placement = placement ?? throw new ArgumentNullException(nameof(placement));
-            _prefabId = prefabId;
+            _prefabOf = prefabOf ?? throw new ArgumentNullException(nameof(prefabOf));
+            _prefabId = defaultPrefabId;
             _authority = authority;
 
             _host.OnMemberJoined += HandleMemberJoined;
@@ -59,7 +78,7 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
         /// <summary>A member's pawn was created. Raised after the spawn has gone out to the session.</summary>
         public event Action<SessionMember, NetEntity> OnPawnSpawned;
 
-        /// <summary>Which entry of the prefab registry these pawns are.</summary>
+        /// <summary>The default entry of the prefab registry; a per-member resolver may pick another.</summary>
         public ushort PrefabId => _prefabId;
 
         /// <summary>Who simulates the pawns this spawner creates.</summary>
@@ -122,7 +141,7 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
             DespawnPawnFor(member.PlayerId);
 
             PawnState spawnState = ResolveSpawnState(member, isRejoin);
-            NetEntity pawn = _replication.SpawnEntity(_prefabId, member.PeerId, _authority, in spawnState);
+            NetEntity pawn = _replication.SpawnEntity(_prefabOf(member), member.PeerId, _authority, in spawnState);
 
             // The spawn raises its own event, and a handler there is free to dispose us mid-flight;
             // recording afterwards would put a row back into a map disposal had just cleared.
