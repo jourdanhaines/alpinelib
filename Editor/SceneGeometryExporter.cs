@@ -121,9 +121,8 @@ namespace AlpineLib.Editor {
         }
 
         /// <summary>
-        /// Builds, validates and writes a scene's geometry: the <c>.geo</c> file for the server and the
-        /// <c>SceneGeometryAsset</c> for the client. Reports validation failures in a dialog and writes
-        /// nothing when there are any.
+        /// Builds, validates and writes a scene's geometry: <see cref="Build"/> then <see cref="Write"/>.
+        /// Reports validation failures in a dialog and writes nothing when there are any.
         /// </summary>
         /// <param name="scene">Scene to export. Must be open and loaded.</param>
         /// <param name="geometryDirectory">Directory the <c>.geo</c> file is written to; empty asks the user.</param>
@@ -141,18 +140,41 @@ namespace AlpineLib.Editor {
             string directory = ResolveGeometryDirectory(geometryDirectory);
             if (string.IsNullOrEmpty(directory)) return false;
 
+            return Write(geometry, directory, assetFolder);
+        }
+
+        /// <summary>
+        /// Writes built geometry to <c>&lt;geometryDirectory&gt;/&lt;Scene&gt;.geo</c> and into the
+        /// <c>SceneGeometryAsset</c> under <paramref name="assetFolder"/>, overwriting an existing asset in
+        /// place so its GUID survives. Never prompts for a folder, so batch callers can use it.
+        /// </summary>
+        /// <param name="geometry">Geometry from <see cref="Build"/>.</param>
+        /// <param name="geometryDirectory">Directory the <c>.geo</c> file is written to; required.</param>
+        /// <param name="assetFolder">Project-relative folder the generated asset lives in; empty means <see cref="DefaultAssetFolder"/>.</param>
+        /// <returns>True when both artefacts were written.</returns>
+        public static bool Write(SceneGeometry geometry, string geometryDirectory, string assetFolder) {
+            if (geometry == null) {
+                Debug.LogError($"{logPrefix}::Write->No geometry to write; build it first.");
+                return false;
+            }
+
+            if (string.IsNullOrEmpty(geometryDirectory)) {
+                Debug.LogError($"{logPrefix}::Write->No geometry directory for '{geometry.SceneName}'; nothing was written.");
+                return false;
+            }
+
             string folder = string.IsNullOrEmpty(assetFolder) ? DefaultAssetFolder : assetFolder;
             byte[] payload = SceneGeometryCodec.Encode(geometry);
 
-            if (!WriteGeometryFile(directory, scene.name, payload)) return false;
-            if (!WriteAsset(folder, scene.name, payload, geometry.ContentHash)) return false;
+            if (!WriteGeometryFile(geometryDirectory, geometry.SceneName, payload)) return false;
+            if (!WriteAsset(folder, geometry.SceneName, payload, geometry.ContentHash)) return false;
 
-            RefreshRegistries(scene.name);
+            RefreshRegistries(geometry.SceneName);
 
             Debug.Log(
                 $"{logPrefix}::Export->Wrote {geometry.StaticShapes.Length} shape(s) and " +
-                $"{geometry.Movers.Length} mover(s) for '{scene.name}' (hash {geometry.ContentHash:X8}) " +
-                $"to {directory} and {folder}.");
+                $"{geometry.Movers.Length} mover(s) for '{geometry.SceneName}' (hash {geometry.ContentHash:X8}) " +
+                $"to {geometryDirectory} and {folder}.");
 
             return true;
         }
