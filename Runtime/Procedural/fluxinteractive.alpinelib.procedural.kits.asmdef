@@ -1,0 +1,16 @@
+{
+  "name": "FluxInteractive.AlpineLib.Procedural.Kits",
+  "rootNamespace": "AlpineLib.Procedural.Kits",
+  "references": [
+    "FluxInteractive.AlpineLib.Procedural"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}
