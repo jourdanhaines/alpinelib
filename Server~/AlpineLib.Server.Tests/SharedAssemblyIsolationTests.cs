@@ -14,6 +14,7 @@ namespace AlpineLib.Server.Tests {
         [InlineData("AlpineLib.Netcode")]
         [InlineData("AlpineLib.Chat")]
         [InlineData("AlpineLib.Server")]
+        [InlineData("AlpineLib.Procedural")]
         public void SharedAssemblyLoadsOutsideUnity(string assemblyName) {
             var assembly = Assembly.Load(assemblyName);
 
@@ -24,6 +25,7 @@ namespace AlpineLib.Server.Tests {
         [InlineData("AlpineLib.Netcode")]
         [InlineData("AlpineLib.Chat")]
         [InlineData("AlpineLib.Server")]
+        [InlineData("AlpineLib.Procedural")]
         public void SharedAssemblyReferencesNoEngineAssemblies(string assemblyName) {
             var assembly = Assembly.Load(assemblyName);
 

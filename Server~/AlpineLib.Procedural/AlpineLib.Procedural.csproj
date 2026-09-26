@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Compiles alpinelib/Procedural/ as a standalone .NET assembly, mirroring the Unity
+    FluxInteractive.AlpineLib.Procedural assembly definition (same sources, no dependencies).
+  -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>9</LangVersion>
+    <AssemblyName>AlpineLib.Procedural</AssemblyName>
+    <RootNamespace>AlpineLib.Procedural</RootNamespace>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <NoWarn>$(NoWarn);1701;1702;1705;1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="$(AlpineLibRoot)/Procedural/**/*.cs" LinkBase="Procedural" />
+  </ItemGroup>
+
+</Project>

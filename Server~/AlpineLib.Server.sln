@@ -11,6 +11,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AlpineLib.Server", "AlpineL
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AlpineLib.Server.Tests", "AlpineLib.Server.Tests\AlpineLib.Server.Tests.csproj", "{D97B6D0C-19DB-4FBD-B7F2-5E0B65B7EF84}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AlpineLib.Procedural", "AlpineLib.Procedural\AlpineLib.Procedural.csproj", "{8E46ADB7-8763-4D0A-BC2B-5DDFE96AA153}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -33,6 +35,10 @@ Global
 		{D97B6D0C-19DB-4FBD-B7F2-5E0B65B7EF84}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{D97B6D0C-19DB-4FBD-B7F2-5E0B65B7EF84}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{D97B6D0C-19DB-4FBD-B7F2-5E0B65B7EF84}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8E46ADB7-8763-4D0A-BC2B-5DDFE96AA153}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8E46ADB7-8763-4D0A-BC2B-5DDFE96AA153}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8E46ADB7-8763-4D0A-BC2B-5DDFE96AA153}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8E46ADB7-8763-4D0A-BC2B-5DDFE96AA153}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

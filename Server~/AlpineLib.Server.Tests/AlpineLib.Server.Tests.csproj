@@ -21,6 +21,7 @@
     <ProjectReference Include="../AlpineLib.Netcode/AlpineLib.Netcode.csproj" />
     <ProjectReference Include="../AlpineLib.Chat/AlpineLib.Chat.csproj" />
     <ProjectReference Include="../AlpineLib.Server/AlpineLib.Server.csproj" />
+    <ProjectReference Include="../AlpineLib.Procedural/AlpineLib.Procedural.csproj" />
   </ItemGroup>
 
 </Project>
