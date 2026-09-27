@@ -120,11 +120,15 @@ namespace AlpineLib.Server.Sessions {
             // Last, and with everything above already readable: a module is handed the entry it belongs to
             // so it can reach the world and the slots it is about to simulate over.
             _module = BuildModule(moduleFactory);
+            ApplyModulePlacement(moduleFactory);
             AttachModule();
         }
 
         /// <summary>The session this entry is built around.</summary>
         public SessionHost Host => _host;
+
+        /// <summary>The opaque params blob the session's creator sent, never null; empty when none.</summary>
+        public byte[] CreateParams => _host.CreateParams;
 
         /// <summary>The authoritative world of this session, and of no other.</summary>
         public ServerReplication Replication => _replication;
@@ -250,6 +254,31 @@ namespace AlpineLib.Server.Sessions {
         }
 
         /// <summary>
+        /// Lets the game replace the configured placement once its module exists, unwinding the entry the
+        /// same way a refused <c>Create</c> does.
+        /// </summary>
+        private void ApplyModulePlacement(ISessionModuleFactory moduleFactory) {
+            if (moduleFactory == null) {
+                return;
+            }
+
+            try {
+                ISpawnPlacement placement = moduleFactory.CreatePlacement(this, _module);
+
+                if (placement != null) {
+                    _spawner.UsePlacement(placement);
+                }
+            }
+            catch (Exception) {
+                _disposed = true;
+                UnhookHostEvents();
+                DisposeFaultedModule();
+                DisposeOwnedParts();
+                throw;
+            }
+        }
+
+        /// <summary>
         /// Closes this session because the game's own code threw out of one of its callbacks.
         /// </summary>
         /// <remarks>
@@ -301,7 +330,7 @@ namespace AlpineLib.Server.Sessions {
         /// </remarks>
         private void DisposeFaultedModule() {
             try {
-                _module.Dispose();
+                _module?.Dispose();
             }
             catch (Exception error) {
                 _logger.LogError(error, "The game's module for session {SessionId} threw while being disposed "

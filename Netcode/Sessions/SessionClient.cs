@@ -51,6 +51,7 @@ namespace AlpineLib.Netcode.Sessions {
         private ClientSessionState _state = ClientSessionState.Offline;
         private SessionConfigData _serverConfig;
         private MatchContextData _currentMatch;
+        private byte[] _sessionParams = Array.Empty<byte>();
         private SessionPhase _phase = SessionPhase.Lobby;
         private string _sessionId = string.Empty;
         private string _joinCode = string.Empty;
@@ -139,6 +140,9 @@ namespace AlpineLib.Netcode.Sessions {
         /// <summary>The phase the session was last reported to be in.</summary>
         public SessionPhase Phase => _phase;
 
+        /// <summary>The params blob the session was created with, as the server echoed it; empty until joined.</summary>
+        public byte[] SessionParams => _sessionParams;
+
         /// <summary>The match being loaded or played, or null in lobby.</summary>
         public MatchContextData CurrentMatch => _currentMatch;
 
@@ -179,10 +183,27 @@ namespace AlpineLib.Netcode.Sessions {
 
         /// <inheritdoc cref="CreateSessionAsync(string)" />
         public Task<SessionJoinResult> CreateSessionAsync(string profileId, CancellationToken cancellationToken) {
+            return CreateSessionAsync(profileId, null, cancellationToken);
+        }
+
+        /// <summary>
+        /// Asks for a new session carrying the game's params blob, which every joiner is handed back.
+        /// </summary>
+        public Task<SessionJoinResult> CreateSessionAsync(string profileId, byte[] sessionParams) {
+            return CreateSessionAsync(profileId, sessionParams, CancellationToken.None);
+        }
+
+        /// <inheritdoc cref="CreateSessionAsync(string, byte[])" />
+        public Task<SessionJoinResult> CreateSessionAsync(string profileId, byte[] sessionParams, CancellationToken cancellationToken) {
+            if (!SessionParamsCodec.IsWithinCap(sessionParams)) {
+                throw new ArgumentException("Session params exceed " + SessionParamsCodec.MaxLength.ToString() + " bytes.",
+                    nameof(sessionParams));
+            }
+
             RequireAuthenticated();
             BeginAttach(cancellationToken);
 
-            CreateSessionRequest request = new CreateSessionRequest(profileId ?? string.Empty);
+            CreateSessionRequest request = new CreateSessionRequest(profileId ?? string.Empty, sessionParams);
             _client.Send(SessionMessageIds.CreateSessionRequest, in request, DeliveryClass.ReliableOrdered);
             return _attachCompletion.Task;
         }
@@ -369,6 +390,7 @@ namespace AlpineLib.Netcode.Sessions {
 
         private void HandleJoinAccepted(in JoinAccepted message, PeerHandle sender) {
             _serverConfig = message.Config;
+            _sessionParams = message.SessionParams ?? Array.Empty<byte>();
             ApplyLobbySnapshot(message.Lobby);
             _phase = message.Phase;
             _currentMatch = message.MatchContext;
@@ -563,6 +585,7 @@ namespace AlpineLib.Netcode.Sessions {
         private void ResetSessionState() {
             _members.Clear();
             _serverConfig = null;
+            _sessionParams = Array.Empty<byte>();
             _currentMatch = null;
             _phase = SessionPhase.Lobby;
             _sessionId = string.Empty;

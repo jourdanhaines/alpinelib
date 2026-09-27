@@ -29,7 +29,7 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
         private readonly ushort _prefabId;
         private readonly Func<SessionMember, ushort> _prefabOf;
         private readonly AuthorityMode _authority;
-        private readonly ISpawnPlacement _placement;
+        private ISpawnPlacement _placement;
         private readonly Dictionary<PlayerId, uint> _pawnByPlayer = new Dictionary<PlayerId, uint>();
 
         private bool _isDisposed;
@@ -93,6 +93,36 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
         /// </summary>
         public int CoercedCarrierFrames { get; private set; }
 
+        /// <summary>Where the next arrival or respawn is placed.</summary>
+        public ISpawnPlacement Placement => _placement;
+
+        /// <summary>
+        /// Swaps the placement for every later arrival and respawn. Pawns already standing stay put.
+        /// </summary>
+        public void UsePlacement(ISpawnPlacement placement) {
+            _placement = placement ?? throw new ArgumentNullException(nameof(placement));
+        }
+
+        /// <summary>
+        /// Gives a connected member a fresh body where the placement says, exactly as a rejoin would:
+        /// the old pawn is despawned and a new one spawned with <c>isRejoin</c> true.
+        /// </summary>
+        /// <returns>False when the player is not a connected member or the spawner is disposed.</returns>
+        public bool Respawn(PlayerId player) {
+            if (_isDisposed) {
+                return false;
+            }
+
+            SessionMember member = _host.FindMember(player);
+
+            if (member == null || !member.IsConnected) {
+                return false;
+            }
+
+            SpawnPawnFor(member, true);
+            return true;
+        }
+
         /// <summary>The pawn a player currently has, if they have one.</summary>
         public bool TryGetPawn(PlayerId player, out uint entityId) {
             return _pawnByPlayer.TryGetValue(player, out entityId);
@@ -135,10 +165,17 @@ namespace AlpineLib.Netcode.Sessions.Spawning {
                 return;
             }
 
-            // Only reached when the player already has a pawn, which needs a second join for somebody who
-            // never left — the session denies that before it gets here — so the despawn's own event cannot
-            // dispose us mid-flight in practice, and the flag is not re-checked until after the spawn.
+            SpawnPawnFor(member, isRejoin);
+        }
+
+        /// <summary>Replaces whatever body the member has with a fresh one where the placement says.</summary>
+        private void SpawnPawnFor(SessionMember member, bool isRejoin) {
+            // A despawn handler is free to dispose us; spawning into a discarded world would be wasted.
             DespawnPawnFor(member.PlayerId);
+
+            if (_isDisposed) {
+                return;
+            }
 
             PawnState spawnState = ResolveSpawnState(member, isRejoin);
             NetEntity pawn = _replication.SpawnEntity(_prefabOf(member), member.PeerId, _authority, in spawnState);

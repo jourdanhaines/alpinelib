@@ -1,3 +1,4 @@
+using System;
 using AlpineLib.Netcode.Protocol;
 
 namespace AlpineLib.Netcode.Sessions.Messages {
@@ -14,6 +15,7 @@ namespace AlpineLib.Netcode.Sessions.Messages {
     public struct JoinAccepted : INetMessage {
         private const byte RejoinFlag = 1 << 0;
         private const byte MatchContextFlag = 1 << 1;
+        private const byte SessionParamsFlag = 1 << 2;
 
         /// <summary>The rule set this session runs by.</summary>
         public SessionConfigData Config { get; set; }
@@ -30,6 +32,9 @@ namespace AlpineLib.Netcode.Sessions.Messages {
         /// <summary>The match to load, or null when the client is landing in the lobby.</summary>
         public MatchContextData MatchContext { get; set; }
 
+        /// <summary>The params blob the session was created with, so a joiner learns the host's choices.</summary>
+        public byte[] SessionParams { get; set; }
+
         /// <inheritdoc />
         public void Serialize(ref NetWriter writer) {
             (Config ?? new SessionConfigData()).Serialize(ref writer);
@@ -37,11 +42,13 @@ namespace AlpineLib.Netcode.Sessions.Messages {
             writer.WriteByte(PackFlags());
             writer.WriteByte((byte)Phase);
 
-            if (MatchContext == null) {
+            MatchContext?.Serialize(ref writer);
+
+            if (!HasSessionParams()) {
                 return;
             }
 
-            MatchContext.Serialize(ref writer);
+            SessionParamsCodec.Write(ref writer, SessionParams, nameof(JoinAccepted));
         }
 
         /// <inheritdoc />
@@ -56,13 +63,24 @@ namespace AlpineLib.Netcode.Sessions.Messages {
             IsRejoin = (flags & RejoinFlag) != 0;
             Phase = (SessionPhase)reader.ReadByte();
 
+            MatchContext = ReadMatchContext(ref reader, flags);
+            SessionParams = (flags & SessionParamsFlag) == 0
+                ? Array.Empty<byte>()
+                : SessionParamsCodec.Read(ref reader, nameof(JoinAccepted));
+        }
+
+        private static MatchContextData ReadMatchContext(ref NetReader reader, byte flags) {
             if ((flags & MatchContextFlag) == 0) {
-                MatchContext = null;
-                return;
+                return null;
             }
 
-            MatchContext = new MatchContextData();
-            MatchContext.Deserialize(ref reader);
+            MatchContextData matchContext = new MatchContextData();
+            matchContext.Deserialize(ref reader);
+            return matchContext;
+        }
+
+        private bool HasSessionParams() {
+            return SessionParams != null && SessionParams.Length > 0;
         }
 
         private byte PackFlags() {
@@ -74,6 +92,10 @@ namespace AlpineLib.Netcode.Sessions.Messages {
 
             if (MatchContext != null) {
                 flags |= MatchContextFlag;
+            }
+
+            if (HasSessionParams()) {
+                flags |= SessionParamsFlag;
             }
 
             return flags;

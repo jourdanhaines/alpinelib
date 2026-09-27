@@ -10,6 +10,7 @@ using AlpineLib.Netcode.Protocol;
 using AlpineLib.Netcode.Replication;
 using AlpineLib.Netcode.Sessions;
 using AlpineLib.Netcode.Sessions.Claims;
+using AlpineLib.Netcode.Sessions.Messages;
 using AlpineLib.Netcode.Sessions.Spawning;
 using AlpineLib.Netcode.Transport;
 using AlpineLib.Networking;
@@ -151,6 +152,18 @@ namespace AlpineLib.Sessions {
         /// <summary>Connects to the configured server and asks it for a session of our own.</summary>
         Task<SessionJoinResult> HostSessionAsync();
 
+        /// <summary>
+        /// Hosts a session carrying the game's params blob (at most
+        /// <see cref="SessionParamsCodec.MaxLength"/> bytes), which every joiner is handed back.
+        /// </summary>
+        Task<SessionJoinResult> HostSessionAsync(byte[] sessionParams);
+
+        /// <summary>
+        /// The params blob of the session this client is in, as the server echoed it on join; empty
+        /// when offline or when the host sent none.
+        /// </summary>
+        byte[] CurrentSessionParams { get; }
+
         /// <summary>Connects to the configured server and attaches to the session behind a join code.</summary>
         Task<SessionJoinResult> JoinSessionAsync(string joinCode);
 
@@ -229,6 +242,9 @@ namespace AlpineLib.Sessions {
 
         /// <inheritdoc />
         public SessionPhase Phase => _sessionClient?.Phase ?? SessionPhase.Lobby;
+
+        /// <inheritdoc />
+        public byte[] CurrentSessionParams => _sessionClient?.SessionParams ?? Array.Empty<byte>();
 
         /// <inheritdoc />
         public string CurrentJoinCode => _sessionClient?.JoinCode ?? string.Empty;
@@ -510,7 +526,16 @@ namespace AlpineLib.Sessions {
         }
 
         /// <inheritdoc />
-        public async Task<SessionJoinResult> HostSessionAsync() {
+        public Task<SessionJoinResult> HostSessionAsync() {
+            return HostSessionAsync(null);
+        }
+
+        /// <inheritdoc />
+        public async Task<SessionJoinResult> HostSessionAsync(byte[] sessionParams) {
+            if (!SessionParamsCodec.IsWithinCap(sessionParams)) {
+                throw new ArgumentException("Session params exceed " + SessionParamsCodec.MaxLength + " bytes.", nameof(sessionParams));
+            }
+
             if (!IsConfigured()) return DeniedLocally(SessionEndReason.HostClosed, SessionDenial.NoSessionConfig, "No session config.");
 
             _hostEndpoint = NetEndpoint.None;
@@ -529,7 +554,7 @@ namespace AlpineLib.Sessions {
             // it back on the way out would hand the menu an address for a session that no longer exists.
             _hostEndpoint = endpoint;
 
-            SessionJoinResult createResult = await _sessionClient.CreateSessionAsync(ResolveProfileId());
+            SessionJoinResult createResult = await _sessionClient.CreateSessionAsync(ResolveProfileId(), sessionParams);
 
             if (!createResult.IsSuccess) {
                 _hostEndpoint = NetEndpoint.None;

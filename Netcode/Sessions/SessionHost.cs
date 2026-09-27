@@ -45,6 +45,7 @@ namespace AlpineLib.Netcode.Sessions {
         private readonly SessionProfileData _profile;
         private readonly LobbyConfigData _lobby;
         private readonly NetServer _server;
+        private readonly byte[] _createParams;
 
         private readonly List<SessionMember> _members = new List<SessionMember>();
         private readonly List<PeerHandle> _connectedPeers = new List<PeerHandle>();
@@ -66,7 +67,19 @@ namespace AlpineLib.Netcode.Sessions {
         private bool _isOpen;
         private bool _isClosed;
 
-        public SessionHost(string sessionId, string joinCode, SessionConfigData config, NetServer server) {
+        public SessionHost(string sessionId, string joinCode, SessionConfigData config, NetServer server)
+            : this(sessionId, joinCode, config, server, null) {
+        }
+
+        /// <summary>A session carrying the params blob its creator sent, echoed to every joiner.</summary>
+        /// <exception cref="ArgumentException">The blob is over <see cref="SessionParamsCodec.MaxLength"/>.</exception>
+        public SessionHost(string sessionId, string joinCode, SessionConfigData config, NetServer server, byte[] createParams) {
+            if (!SessionParamsCodec.IsWithinCap(createParams)) {
+                throw new ArgumentException("Session params exceed " + SessionParamsCodec.MaxLength.ToString() + " bytes.",
+                    nameof(createParams));
+            }
+
+            _createParams = SessionParamsCodec.Copy(createParams);
             _sessionId = sessionId ?? string.Empty;
             _joinCode = joinCode ?? string.Empty;
             _config = config ?? throw new ArgumentNullException(nameof(config));
@@ -113,6 +126,12 @@ namespace AlpineLib.Netcode.Sessions {
 
         /// <summary>Where the session sits in its lifecycle.</summary>
         public SessionPhase Phase => _phase;
+
+        /// <summary>
+        /// The opaque params blob the creator sent, never null. Shared, not copied: callers must not write
+        /// into it.
+        /// </summary>
+        public byte[] CreateParams => _createParams;
 
         /// <summary>
         /// The roster, in join order, including members currently disconnected but still holding a
@@ -469,7 +488,8 @@ namespace AlpineLib.Netcode.Sessions {
                 Lobby = BuildLobbySnapshot(),
                 IsRejoin = isRejoin,
                 Phase = _phase,
-                MatchContext = ResolveJoinMatchContext()
+                MatchContext = ResolveJoinMatchContext(),
+                SessionParams = _createParams
             };
 
             _server.Send(peer, SessionMessageIds.JoinAccepted, in accepted, DeliveryClass.ReliableOrdered);

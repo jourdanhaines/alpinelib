@@ -153,6 +153,14 @@ namespace AlpineLib.Sessions {
 
         /// <inheritdoc />
         public void HandleCreateSession(PeerHandle peer, PlayerIdentity identity, string profileId) {
+            HandleCreateSession(peer, identity, profileId, null);
+        }
+
+        /// <summary>
+        /// Creates the one listen session carrying the creator's params blob, or attaches to it when it
+        /// already exists (the blob of the first create stands).
+        /// </summary>
+        public void HandleCreateSession(PeerHandle peer, PlayerIdentity identity, string profileId, byte[] createParams) {
             if (_isClosed) return;
 
             if (_host != null && _host.HasPeer(peer)) {
@@ -162,7 +170,7 @@ namespace AlpineLib.Sessions {
             }
 
             if (_host == null) {
-                OpenSession();
+                OpenSession(createParams);
             }
 
             _server.Send(peer, SessionMessageIds.SessionCreated,
@@ -238,10 +246,10 @@ namespace AlpineLib.Sessions {
         /// thing that brings a listen host's session into being, and it must be idempotent against a
         /// second request arriving before the first has attached.
         /// </summary>
-        private void OpenSession() {
+        private void OpenSession(byte[] createParams) {
             string joinCode = _joinCodeGenerator.Generate();
 
-            _host = new SessionHost(LocalSessionId, joinCode, _config, _server);
+            _host = new SessionHost(LocalSessionId, joinCode, _config, _server, createParams);
             _host.Open();
 
             _replication = new ServerReplication(
@@ -307,7 +315,7 @@ namespace AlpineLib.Sessions {
         private void HandleCreateSessionRequest(in CreateSessionRequest message, PeerHandle sender) {
             if (!_authDesk.TryGetIdentity(sender, out PlayerIdentity identity)) return;
 
-            HandleCreateSession(sender, identity, message.ProfileId);
+            HandleCreateSession(sender, identity, message.ProfileId, message.Params);
         }
 
         private void HandleJoinSessionRequest(in JoinSessionRequest message, PeerHandle sender) {

@@ -130,6 +130,14 @@ namespace AlpineLib.Server.Sessions {
 
         /// <inheritdoc />
         public void HandleCreateSession(PeerHandle peer, PlayerIdentity identity, string profileId) {
+            HandleCreateSession(peer, identity, profileId, null);
+        }
+
+        /// <summary>
+        /// Stands up a new session carrying the creator's params blob and attaches the peer as its owner.
+        /// </summary>
+        /// <param name="createParams">Opaque game params, echoed to every joiner; null means none.</param>
+        public void HandleCreateSession(PeerHandle peer, PlayerIdentity identity, string profileId, byte[] createParams) {
             if (_entryByPeerId.ContainsKey(peer.Id)) {
                 Deny(peer, SessionEndReason.AlreadyInSession);
                 return;
@@ -142,7 +150,14 @@ namespace AlpineLib.Server.Sessions {
                 return;
             }
 
-            SessionEntry entry = OpenSession(profileId);
+            if (!SessionParamsCodec.IsWithinCap(createParams)) {
+                _logger.LogWarning("Refused a session for {DisplayName}: {Length} bytes of session params exceed the cap.",
+                    identity.DisplayName, createParams.Length);
+                Deny(peer, SessionEndReason.ServerFault);
+                return;
+            }
+
+            SessionEntry entry = OpenSession(profileId, createParams);
 
             if (entry == null) {
                 // A fault inside the game's own factory is nothing a client can act on, and it is not a
@@ -316,12 +331,12 @@ namespace AlpineLib.Server.Sessions {
         }
 
         /// <summary>Stands a session up, or returns null when the game refused to build its half of it.</summary>
-        private SessionEntry OpenSession(string profileId) {
+        private SessionEntry OpenSession(string profileId, byte[] createParams) {
             string joinCode = _joinCodes.Generate(IsJoinCodeTaken);
             string sessionId = "session-" + _nextSessionNumber.ToString();
             _nextSessionNumber++;
 
-            SessionHost host = new SessionHost(sessionId, joinCode, _config.Session, _server);
+            SessionHost host = new SessionHost(sessionId, joinCode, _config.Session, _server, createParams);
             host.Open();
 
             SessionEntry entry = BuildEntry(host, sessionId);
@@ -493,7 +508,7 @@ namespace AlpineLib.Server.Sessions {
                 return;
             }
 
-            HandleCreateSession(sender, identity, message.ProfileId);
+            HandleCreateSession(sender, identity, message.ProfileId, message.Params);
         }
 
         private void ReceiveJoinSessionRequest(in JoinSessionRequest message, PeerHandle sender) {

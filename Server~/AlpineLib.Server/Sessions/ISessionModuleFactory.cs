@@ -2,6 +2,7 @@ using System;
 using AlpineLib.Netcode.Protocol;
 using AlpineLib.Netcode.Sessions;
 using AlpineLib.Netcode.Sessions.Claims;
+using AlpineLib.Netcode.Sessions.Spawning;
 using AlpineLib.Netcode.Transport;
 
 namespace AlpineLib.Server.Sessions {
@@ -75,5 +76,18 @@ namespace AlpineLib.Server.Sessions {
         /// alone; one with several maps the member's choice to that model's pawn prefab here.
         /// </remarks>
         ushort ResolvePawnPrefab(SessionMember member, ushort defaultPrefabId) => defaultPrefabId;
+
+        /// <summary>
+        /// Where this session's arrivals and respawns are placed, or null to keep the placement the
+        /// server config describes.
+        /// </summary>
+        /// <remarks>
+        /// Asked once, right after <see cref="Create"/> and before <see cref="ISessionModule.Attached"/>,
+        /// so a placement can read the module (a train to seat players on, a generated world) and
+        /// <see cref="SessionEntry.CreateParams"/>; the module is null when <see cref="Create"/> returned
+        /// none. A throw here refuses the session as a throw from
+        /// <see cref="Create"/> does.
+        /// </remarks>
+        ISpawnPlacement CreatePlacement(SessionEntry entry, ISessionModule module) => null;
     }
 }

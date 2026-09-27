@@ -20,8 +20,10 @@ namespace AlpineLib.Netcode.Protocol {
         /// version-4 client's update reads as a corrupt pose against a version-5 server.
         /// 6 — <c>PawnState</c> gained a look pitch byte after the carrier id, lengthening every message
         /// that nests one.
+        /// 7 — <c>CreateSessionRequest</c> gained a params blob after the profile id, and
+        /// <c>JoinAccepted</c> may carry it back behind a new flag bit.
         /// </remarks>
-        public const ushort Version = 6;
+        public const ushort Version = 7;
 
         private const uint Fnv1aOffsetBasis = 2166136261u;
         private const uint Fnv1aPrime = 16777619u;
