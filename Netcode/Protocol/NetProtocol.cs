@@ -22,8 +22,10 @@ namespace AlpineLib.Netcode.Protocol {
         /// that nests one.
         /// 7 — <c>CreateSessionRequest</c> gained a params blob after the profile id, and
         /// <c>JoinAccepted</c> may carry it back behind a new flag bit.
+        /// 8 — floating origin: <c>OriginShift</c> (id 88), and an origin epoch on snapshots, keyframes,
+        /// spawns, corrections and owner updates.
         /// </remarks>
-        public const ushort Version = 7;
+        public const ushort Version = 8;
 
         private const uint Fnv1aOffsetBasis = 2166136261u;
         private const uint Fnv1aPrime = 16777619u;

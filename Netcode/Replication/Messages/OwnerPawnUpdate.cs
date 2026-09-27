@@ -35,6 +35,7 @@ namespace AlpineLib.Netcode.Replication.Messages {
             ClientTick = clientTick;
             Flags = flags;
             State = state;
+            OriginEpoch = 0;
         }
 
         /// <summary>The pawn being reported. The server checks the sender actually owns it.</summary>
@@ -59,12 +60,16 @@ namespace AlpineLib.Netcode.Replication.Messages {
         /// <summary>The state the owner claims.</summary>
         public PawnState State { get; set; }
 
+        /// <summary>Origin epoch the claimed state is written in; ignored for a carrier-relative state.</summary>
+        public ushort OriginEpoch { get; set; }
+
         /// <inheritdoc />
         public void Serialize(ref NetWriter writer) {
             writer.WriteUInt(EntityId);
             writer.WriteUInt(ClientTick);
             writer.WriteByte(Flags);
             writer.WriteMessage(State);
+            writer.WriteUShort(OriginEpoch);
         }
 
         /// <inheritdoc />
@@ -73,6 +78,7 @@ namespace AlpineLib.Netcode.Replication.Messages {
             ClientTick = reader.ReadUInt();
             Flags = reader.ReadByte();
             State = reader.ReadMessage<PawnState>();
+            OriginEpoch = reader.ReadUShort();
         }
     }
 }

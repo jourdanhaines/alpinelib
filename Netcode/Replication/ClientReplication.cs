@@ -4,6 +4,7 @@ using System.Numerics;
 using AlpineLib.Netcode.Collision;
 using AlpineLib.Netcode.Protocol;
 using AlpineLib.Netcode.Replication.Messages;
+using AlpineLib.Netcode.Replication.Origin;
 using AlpineLib.Netcode.Transport;
 
 namespace AlpineLib.Netcode.Replication {
@@ -79,6 +80,7 @@ namespace AlpineLib.Netcode.Replication {
         private readonly Dictionary<int, Vector3> moverRenderOffsetsByIndex = new Dictionary<int, Vector3>();
 
         private readonly InterpolationTimeline timeline;
+        private readonly OriginHistory origin = new OriginHistory();
 
         private CollisionWorld collisionWorld;
         private uint nextEventSequence = 1u;
@@ -105,6 +107,7 @@ namespace AlpineLib.Netcode.Replication {
             client.Router.Register<SnapshotKeyframe>(ReplicationMessageIds.SnapshotKeyframe, HandleSnapshotKeyframe);
             client.Router.Register<EntityEvent>(ReplicationMessageIds.EntityEvent, HandleEntityEvent);
             client.Router.Register<AuthorityCorrection>(ReplicationMessageIds.AuthorityCorrection, HandleAuthorityCorrection);
+            client.Router.Register<OriginShift>(ReplicationMessageIds.OriginShift, HandleOriginShift);
         }
 
         /// <summary>An entity appeared, from a spawn or from a keyframe describing one not seen before.</summary>
@@ -121,6 +124,14 @@ namespace AlpineLib.Netcode.Replication {
         /// and the state now in force, so a controller can decide between snapping and smoothing.
         /// </summary>
         public event Action<NetEntity, PawnState> OnAuthorityCorrected;
+
+        /// <summary>
+        /// The session origin moved: previous origin, new origin, and what was added to every world-frame
+        /// position. Raised after entity states, interpolation and prediction buffers were shifted, so a
+        /// listener moving scene roots, cameras or its own caches sees replication already in the new frame.
+        /// The collision world is not translated here; its owner does that from this event.
+        /// </summary>
+        public event Action<SessionOrigin, SessionOrigin, Vector3> OnOriginShifted;
 
         /// <summary>
         /// This client's peer id, as the session handshake reported it. Ownership is decided against it,
@@ -161,6 +172,15 @@ namespace AlpineLib.Netcode.Replication {
 
         /// <summary>Corrections that matched prediction and were acknowledged without a rewind. Diagnostic.</summary>
         public int CorrectionsSkipped { get; private set; }
+
+        /// <summary>The floating origin world-frame states are written in now.</summary>
+        public SessionOrigin Origin => origin.Current;
+
+        /// <summary>
+        /// World-frame states received in an epoch this client could not translate: dropped when the
+        /// message was unreliable, applied untranslated when it was a spawn or keyframe.
+        /// </summary>
+        public int OriginEpochMismatches { get; private set; }
 
         /// <summary>The adaptive render-delay controller for this connection.</summary>
         public InterpolationTimeline Timeline => timeline;
@@ -330,7 +350,9 @@ namespace AlpineLib.Netcode.Replication {
             entity.ApplyState(state, client.Clock.EstimatedServerTick);
 
             byte flags = isResync ? OwnerPawnUpdate.ResyncFlag : (byte)0;
-            var message = new OwnerPawnUpdate(entityId, client.Clock.EstimatedServerTick, flags, in state);
+            var message = new OwnerPawnUpdate(entityId, client.Clock.EstimatedServerTick, flags, in state) {
+                OriginEpoch = origin.Current.Epoch
+            };
             client.Send(ReplicationMessageIds.OwnerPawnUpdate, in message, DeliveryClass.UnreliableSequenced);
         }
 
@@ -513,6 +535,7 @@ namespace AlpineLib.Netcode.Replication {
             client.Router.Unregister(ReplicationMessageIds.SnapshotKeyframe);
             client.Router.Unregister(ReplicationMessageIds.EntityEvent);
             client.Router.Unregister(ReplicationMessageIds.AuthorityCorrection);
+            client.Router.Unregister(ReplicationMessageIds.OriginShift);
         }
 
         private void HandleSpawnEntity(in SpawnEntity message, PeerHandle sender) {
@@ -523,8 +546,61 @@ namespace AlpineLib.Netcode.Replication {
                 message.Authority,
                 message.Kind,
                 message.AuxId,
-                message.State,
+                BringReliableToCurrent(message.OriginEpoch, message.State),
                 0u);
+        }
+
+        /// <summary>
+        /// Adopts a newer origin and moves everything held in the old one by the delta. A newcomer's first
+        /// announcement may skip epochs; the cells on the wire still give the exact delta.
+        /// </summary>
+        private void HandleOriginShift(in OriginShift message, PeerHandle sender) {
+            SessionOrigin next = message.Origin;
+            SessionOrigin previous = origin.Current;
+
+            if (origin.HasShifted && !SessionOrigin.IsEpochAfter(next.Epoch, previous.Epoch)) {
+                return;
+            }
+
+            Vector3 delta = origin.Advance(in next);
+            ShiftHeldStates(delta);
+            OnOriginShifted?.Invoke(previous, next, delta);
+        }
+
+        private void ShiftHeldStates(Vector3 delta) {
+            for (int entityIndex = 0; entityIndex < entities.Count; entityIndex++) {
+                entities[entityIndex].ApplyOriginShift(delta);
+            }
+
+            foreach (StateInterpolator interpolator in interpolators.Values) {
+                interpolator.TranslateWorldFrame(delta);
+            }
+
+            foreach (PredictionBuffer buffer in predictionBuffers.Values) {
+                buffer.TranslateWorldFrame(delta);
+            }
+
+            var settledIds = new List<uint>(settledByEntity.Keys);
+
+            for (int idIndex = 0; idIndex < settledIds.Count; idIndex++) {
+                uint entityId = settledIds[idIndex];
+                SettledPrediction settled = settledByEntity[entityId];
+                settledByEntity[entityId] = new SettledPrediction(settled.Sequence, settled.State.WithOriginShift(delta));
+            }
+        }
+
+        /// <summary>
+        /// A reliable spawn or keyframe state in the current origin. Ordering on the reliable channel
+        /// means a mismatch should not happen; if it does, the state is kept untranslated and counted
+        /// rather than losing the entity.
+        /// </summary>
+        private PawnState BringReliableToCurrent(ushort epoch, in PawnState state) {
+            if (origin.TryBringToCurrent(epoch, in state, out PawnState current)) {
+                return current;
+            }
+
+            OriginEpochMismatches++;
+            return state;
         }
 
         private void HandleDespawnEntity(in DespawnEntity message, PeerHandle sender) {
@@ -550,11 +626,16 @@ namespace AlpineLib.Netcode.Replication {
             // render delay for the next several snapshots over an event that had nothing to do with the
             // network. OnSnapshotArrived only ever differences consecutive values, so any monotonic
             // local clock satisfies it.
+            if (!origin.TryResolveDelta(message.OriginEpoch, out Vector3 delta)) {
+                OriginEpochMismatches++;
+                return;
+            }
+
             timeline.OnSnapshotArrived(monotonicLocalSeconds);
 
             for (int recordIndex = 0; recordIndex < message.Records.Count; recordIndex++) {
                 EntitySnapshotRecord record = message.Records[recordIndex];
-                ApplyReceivedState(record.EntityId, record.State, message.ServerTick);
+                ApplyReceivedState(record.EntityId, record.State.WithOriginShift(delta), message.ServerTick);
             }
         }
 
@@ -572,7 +653,7 @@ namespace AlpineLib.Netcode.Replication {
                     record.Authority,
                     record.Kind,
                     record.AuxId,
-                    record.State,
+                    BringReliableToCurrent(message.OriginEpoch, record.State),
                     message.ServerTick);
             }
         }
@@ -606,6 +687,17 @@ namespace AlpineLib.Netcode.Replication {
                 return;
             }
 
+            if (!origin.TryBringToCurrent(message.OriginEpoch, message.State, out PawnState currentState)) {
+                OriginEpochMismatches++;
+                return;
+            }
+
+            AuthorityCorrection current = message;
+            current.State = currentState;
+            ApplyCorrection(entity, in current);
+        }
+
+        private void ApplyCorrection(NetEntity entity, in AuthorityCorrection message) {
             if (TryAcknowledgeCleanCorrection(entity, in message)) {
                 CorrectionsSkipped++;
                 AdoptPredictionBaseTick(entity, message.ServerTick);

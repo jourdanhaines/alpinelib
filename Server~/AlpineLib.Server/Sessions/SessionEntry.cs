@@ -428,7 +428,7 @@ namespace AlpineLib.Server.Sessions {
                 return;
             }
 
-            _replication.UseWorld(CollisionWorld.Flat(0f));
+            _replication.UseWorld(CollisionWorld.Flat(0f), true);
             _logger.LogWarning("No collision geometry was exported for scene '{SceneName}'; session {SessionId} falls back to flat ground at y = 0.",
                 requested, _host.SessionId);
         }

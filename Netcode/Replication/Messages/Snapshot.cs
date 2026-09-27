@@ -26,10 +26,14 @@ namespace AlpineLib.Netcode.Replication.Messages {
         public Snapshot(uint serverTick, List<EntitySnapshotRecord> records) {
             ServerTick = serverTick;
             Records = records;
+            OriginEpoch = 0;
         }
 
         /// <summary>The authoritative tick these states are from.</summary>
         public uint ServerTick { get; set; }
+
+        /// <summary>Origin epoch every world-frame position in this message is written in.</summary>
+        public ushort OriginEpoch { get; set; }
 
         /// <summary>The entities that changed. Null is written as an empty snapshot.</summary>
         public List<EntitySnapshotRecord> Records { get; set; }
@@ -37,6 +41,7 @@ namespace AlpineLib.Netcode.Replication.Messages {
         /// <inheritdoc />
         public void Serialize(ref NetWriter writer) {
             writer.WriteUInt(ServerTick);
+            writer.WriteUShort(OriginEpoch);
 
             int recordCount = Records == null ? 0 : Records.Count;
             writer.WriteUShort((ushort)recordCount);
@@ -49,6 +54,7 @@ namespace AlpineLib.Netcode.Replication.Messages {
         /// <inheritdoc />
         public void Deserialize(ref NetReader reader) {
             ServerTick = reader.ReadUInt();
+            OriginEpoch = reader.ReadUShort();
 
             int recordCount = reader.ReadUShort();
 

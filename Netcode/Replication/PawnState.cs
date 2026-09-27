@@ -175,6 +175,20 @@ namespace AlpineLib.Netcode.Replication {
         }
 
         /// <summary>
+        /// This state after a floating-origin rebase: a world-frame position moves by
+        /// <paramref name="delta"/>, a carrier-relative one is measured from its carrier and stays put.
+        /// </summary>
+        public PawnState WithOriginShift(Vector3 delta) {
+            if (IsCarrierRelative) {
+                return this;
+            }
+
+            PawnState shifted = this;
+            shifted.Position = new Vector3(Position.X + delta.X, Position.Y + delta.Y, Position.Z + delta.Z);
+            return shifted;
+        }
+
+        /// <summary>
         /// The state as it would come back off the wire: yaw, velocity and look pitch pushed through
         /// their quantizers, position untouched. Prediction compares against this so wire rounding alone never
         /// looks like a divergence.

@@ -85,7 +85,7 @@ namespace AlpineLib.Server.Tests {
 
         [Fact]
         public void TheProtocolVersionMovedForTheNewFields() {
-            Assert.Equal(7, NetProtocol.Version);
+            Assert.True(NetProtocol.Version >= 7);
         }
 
         private static byte[] BuildParams(int length) {

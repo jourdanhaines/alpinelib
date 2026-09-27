@@ -194,6 +194,25 @@ namespace AlpineLib.Netcode.Replication {
             return true;
         }
 
+        /// <summary>
+        /// Moves every buffered world-frame sample, and the last output that recovery blends from, for a
+        /// floating-origin rebase. Carrier-relative samples stay put, so sampling across the shift is as
+        /// continuous as sampling without one.
+        /// </summary>
+        public void TranslateWorldFrame(Vector3 delta) {
+            for (int offset = 0; offset < count; offset++) {
+                int index = IndexOf(offset);
+                TimedSample sample = samples[index];
+                samples[index] = new TimedSample(sample.Tick, sample.Seconds, sample.State.WithOriginShift(delta));
+            }
+
+            if (hasOutputCarrier && lastOutputCarrierId != PawnState.WorldCarrierId) {
+                return;
+            }
+
+            LastOutputPosition += delta;
+        }
+
         /// <summary>Forgets all history. Used on despawn, on rejoin and after an authority snap.</summary>
         public void Clear() {
             head = 0;

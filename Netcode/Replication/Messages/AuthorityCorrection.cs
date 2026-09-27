@@ -31,6 +31,7 @@ namespace AlpineLib.Netcode.Replication.Messages {
             ServerTick = serverTick;
             AcknowledgedInputSequence = acknowledgedInputSequence;
             State = state;
+            OriginEpoch = 0;
         }
 
         /// <summary>The pawn being corrected.</summary>
@@ -45,12 +46,16 @@ namespace AlpineLib.Netcode.Replication.Messages {
         /// <summary>The authoritative state at that point.</summary>
         public PawnState State { get; set; }
 
+        /// <summary>Origin epoch every world-frame position in this message is written in.</summary>
+        public ushort OriginEpoch { get; set; }
+
         /// <inheritdoc />
         public void Serialize(ref NetWriter writer) {
             writer.WriteUInt(EntityId);
             writer.WriteUInt(ServerTick);
             writer.WriteUInt(AcknowledgedInputSequence);
             writer.WriteMessage(State);
+            writer.WriteUShort(OriginEpoch);
         }
 
         /// <inheritdoc />
@@ -59,6 +64,7 @@ namespace AlpineLib.Netcode.Replication.Messages {
             ServerTick = reader.ReadUInt();
             AcknowledgedInputSequence = reader.ReadUInt();
             State = reader.ReadMessage<PawnState>();
+            OriginEpoch = reader.ReadUShort();
         }
     }
 }

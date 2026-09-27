@@ -122,6 +122,11 @@ namespace AlpineLib.Netcode.Protocol {
             return BitConverter.Int32BitsToSingle(ReadInt());
         }
 
+        /// <summary>IEEE-754 double, read back from its raw bits.</summary>
+        public double ReadDouble() {
+            return BitConverter.Int64BitsToDouble(ReadLong());
+        }
+
         /// <summary>
         /// Decodes an LEB128-style var-uint. Five payload bytes is the maximum a 32-bit value can occupy,
         /// so a sixth continuation byte means the stream is corrupt and is rejected rather than wrapped.

@@ -39,5 +39,11 @@ namespace AlpineLib.Netcode.Replication.Messages {
 
         /// <summary>Server to owner: the authoritative state, stamped with the input it accounts for.</summary>
         public const ushort AuthorityCorrection = 135;
+
+        /// <summary>
+        /// Server to client: the session's floating origin moved. ReliableOrdered. Lives in the
+        /// replication tail because the replication band proper is full.
+        /// </summary>
+        public const ushort OriginShift = 88;
     }
 }

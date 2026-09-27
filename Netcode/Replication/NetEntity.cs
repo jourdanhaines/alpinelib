@@ -174,6 +174,15 @@ namespace AlpineLib.Netcode.Replication {
         }
 
         /// <summary>
+        /// Moves a world-frame state for a floating-origin rebase without stamping it dirty: the pose did
+        /// not change, only the frame it is written in, and a fresh stamp would shrink the interval the
+        /// owner's next update is measured over.
+        /// </summary>
+        public void ApplyOriginShift(System.Numerics.Vector3 delta) {
+            state = state.WithOriginShift(delta);
+        }
+
+        /// <summary>
         /// Writes a new state, stamping the tick only when the state actually moved.
         /// </summary>
         /// <remarks>

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using AlpineLib.Netcode.Collision;
 using AlpineLib.Netcode.Protocol;
 using AlpineLib.Netcode.Replication.Messages;
+using AlpineLib.Netcode.Replication.Origin;
 using AlpineLib.Netcode.Transport;
 
 namespace AlpineLib.Netcode.Replication {
@@ -94,8 +95,11 @@ namespace AlpineLib.Netcode.Replication {
         private readonly List<EntitySnapshotRecord> snapshotRecords = new List<EntitySnapshotRecord>();
         private readonly List<EntityKeyframeRecord> keyframeRecords = new List<EntityKeyframeRecord>();
         private readonly List<uint> despawnScratch = new List<uint>();
+        private readonly OriginHistory origin = new OriginHistory();
+        private readonly HashSet<int> originAnnouncedPeerIds = new HashSet<int>();
 
         private CollisionWorld world;
+        private bool ownsWorld;
         private double snapshotAccumulatorSeconds;
         private double keyframeAccumulatorSeconds;
         private uint currentTick;
@@ -109,14 +113,28 @@ namespace AlpineLib.Netcode.Replication {
         /// geometry for its scene falls back to.
         /// </summary>
         public ServerReplication(NetServer server, Func<IReadOnlyList<PeerHandle>> peerSource, MovementValidator validator)
-            : this(server, peerSource, validator, CollisionWorld.Flat()) { }
+            : this(server, peerSource, validator, CollisionWorld.Flat(), true) { }
 
         /// <summary>Creates a replication world simulating against a scene's exported collision geometry.</summary>
         public ServerReplication(
             NetServer server,
             Func<IReadOnlyList<PeerHandle>> peerSource,
             MovementValidator validator,
-            CollisionWorld world) {
+            CollisionWorld world)
+            : this(server, peerSource, validator, world, false) { }
+
+        /// <summary>Creates a replication world, saying whether the collision world is this session's alone.</summary>
+        /// <param name="ownsWorld">
+        /// True when nothing else simulates against <paramref name="world"/>, which lets
+        /// <see cref="ApplyOriginShift"/> translate it; see <see cref="OwnsWorld"/>.
+        /// </param>
+        public ServerReplication(
+            NetServer server,
+            Func<IReadOnlyList<PeerHandle>> peerSource,
+            MovementValidator validator,
+            CollisionWorld world,
+            bool ownsWorld) {
+            this.ownsWorld = ownsWorld;
             this.server = server ?? throw new ArgumentNullException(nameof(server));
             this.peerSource = peerSource ?? throw new ArgumentNullException(nameof(peerSource));
             this.validator = validator ?? throw new ArgumentNullException(nameof(validator));
@@ -135,6 +153,24 @@ namespace AlpineLib.Netcode.Replication {
         /// so a host can surface it, log it or act on repeats.
         /// </summary>
         public event Action<NetEntity, MovementVerdict> OnMovementViolation;
+
+        /// <summary>
+        /// The session origin moved: previous origin, new origin, and what was added to every world-frame
+        /// position. Raised after entities and the owned world were shifted and the shift broadcast.
+        /// </summary>
+        public event Action<SessionOrigin, SessionOrigin, System.Numerics.Vector3> OnOriginShifted;
+
+        /// <summary>The floating origin world-frame states are written in now.</summary>
+        public SessionOrigin Origin => origin.Current;
+
+        /// <summary>
+        /// True when <see cref="World"/> belongs to this session alone. A world loaded once and shared by
+        /// every session on the process must never be translated for one session's rebase.
+        /// </summary>
+        public bool OwnsWorld => ownsWorld;
+
+        /// <summary>Owner updates refused for being stamped with an origin epoch older than the previous one.</summary>
+        public int StaleOriginUpdatesRejected { get; private set; }
 
         /// <summary>The live entity set.</summary>
         public ServerEntityRegistry Entities => registry;
@@ -223,8 +259,12 @@ namespace AlpineLib.Netcode.Replication {
                 entity.Authority,
                 entity.Kind,
                 entity.AuxId,
-                in initialState);
-            server.SendToMany(Peers,ReplicationMessageIds.SpawnEntity, in message, DeliveryClass.ReliableOrdered);
+                in initialState) {
+                OriginEpoch = origin.Current.Epoch
+            };
+            IReadOnlyList<PeerHandle> peers = Peers;
+            AnnounceOrigin(peers, false);
+            server.SendToMany(peers, ReplicationMessageIds.SpawnEntity, in message, DeliveryClass.ReliableOrdered);
 
             OnEntitySpawned?.Invoke(entity);
             return entity;
@@ -262,13 +302,130 @@ namespace AlpineLib.Netcode.Replication {
         /// </para>
         /// </remarks>
         public void UseWorld(CollisionWorld nextWorld) {
+            UseWorld(nextWorld, false);
+        }
+
+        /// <summary>
+        /// Points this session at a different collision world, saying whether it is this session's alone;
+        /// see <see cref="OwnsWorld"/>. Otherwise identical to <see cref="UseWorld(CollisionWorld)"/>.
+        /// </summary>
+        public void UseWorld(CollisionWorld nextWorld, bool ownsNextWorld) {
             if (nextWorld == null) {
                 throw new ArgumentNullException(nameof(nextWorld));
             }
 
             DespawnMovers();
             world = nextWorld;
+            ownsWorld = ownsNextWorld;
             SpawnMovers();
+        }
+
+        /// <summary>
+        /// Rebases the session onto <paramref name="next"/>: every world-frame entity state and the owned
+        /// collision world move by the origin delta, carrier-relative states stay put, and every member is
+        /// told reliably before anything stamped with the new epoch reaches it.
+        /// </summary>
+        /// <remarks>
+        /// States are shifted without a dirty stamp, so the validator measures an owner's next update over
+        /// the same interval it would have without the rebase — the shift itself is never a move. Updates
+        /// still in flight in the previous epoch are translated on arrival by
+        /// <see cref="HandleOwnerPawnUpdate"/>.
+        /// </remarks>
+        /// <exception cref="ArgumentException"><paramref name="next"/> is not the epoch after the current one.</exception>
+        /// <exception cref="InvalidOperationException">The collision world is shared scene geometry.</exception>
+        public void ApplyOriginShift(SessionOrigin next) {
+            SessionOrigin previous = origin.Current;
+            GuardOriginShift(in previous, in next);
+
+            System.Numerics.Vector3 delta = origin.Advance(in next);
+            ShiftEntities(delta);
+
+            if (ownsWorld) {
+                world.TranslateAll(delta);
+            }
+
+            AnnounceOrigin(Peers, true);
+            OnOriginShifted?.Invoke(previous, next, delta);
+        }
+
+        /// <summary>
+        /// Asks <paramref name="authority"/> whether <paramref name="anchorPosition"/> has drifted far enough
+        /// and rebases if so — the call a session module makes once per tick with its anchor.
+        /// </summary>
+        /// <returns>True when a rebase happened.</returns>
+        public bool TryRebase(OriginAuthority authority, System.Numerics.Vector3 anchorPosition) {
+            if (authority == null) {
+                throw new ArgumentNullException(nameof(authority));
+            }
+
+            if (!authority.TryPlan(origin.Current, anchorPosition, out SessionOrigin next)) {
+                return false;
+            }
+
+            ApplyOriginShift(next);
+            return true;
+        }
+
+        private void GuardOriginShift(in SessionOrigin previous, in SessionOrigin next) {
+            if (next.Epoch != unchecked((ushort)(previous.Epoch + 1))) {
+                throw new ArgumentException(
+                    "An origin shift must name the epoch after " + previous.Epoch.ToString() + ".", nameof(next));
+            }
+
+            if (!(next.CellSize > 0.0)) {
+                throw new ArgumentException("An origin shift needs a positive cell size.", nameof(next));
+            }
+
+            if (previous.CellSize > 0.0 && previous.CellSize != next.CellSize) {
+                throw new ArgumentException("Cell size cannot change between origin epochs.", nameof(next));
+            }
+
+            if (ownsWorld || (world.IsFallback && world.Movers.Count == 0)) {
+                return;
+            }
+
+            throw new InvalidOperationException(
+                "This session simulates against shared scene geometry; give it a private world with UseWorld(world, true) before rebasing.");
+        }
+
+        private void ShiftEntities(System.Numerics.Vector3 delta) {
+            IReadOnlyList<NetEntity> entities = registry.Entities;
+
+            for (int entityIndex = 0; entityIndex < entities.Count; entityIndex++) {
+                entities[entityIndex].ApplyOriginShift(delta);
+            }
+        }
+
+        /// <summary>
+        /// Sends the current origin to each listed peer that has not been told it yet, or to all of them
+        /// when <paramref name="force"/> is set. Nothing is sent while the session has never rebased: every
+        /// client starts at the initial origin already.
+        /// </summary>
+        private void AnnounceOrigin(IReadOnlyList<PeerHandle> peers, bool force) {
+            if (!origin.HasShifted) {
+                return;
+            }
+
+            var message = new OriginShift(origin.Current);
+
+            for (int peerIndex = 0; peerIndex < peers.Count; peerIndex++) {
+                PeerHandle peer = peers[peerIndex];
+
+                if (!peer.IsValid || (!originAnnouncedPeerIds.Add(peer.Id) && !force)) {
+                    continue;
+                }
+
+                server.Send(peer, ReplicationMessageIds.OriginShift, in message, DeliveryClass.ReliableOrdered);
+            }
+        }
+
+        private void AnnounceOriginTo(PeerHandle peer) {
+            if (!origin.HasShifted || !peer.IsValid || !originAnnouncedPeerIds.Add(peer.Id)) {
+                return;
+            }
+
+            var message = new OriginShift(origin.Current);
+            server.Send(peer, ReplicationMessageIds.OriginShift, in message, DeliveryClass.ReliableOrdered);
         }
 
         /// <summary>
@@ -398,6 +555,7 @@ namespace AlpineLib.Netcode.Replication {
 
         /// <summary>A peer left. Its pawns stay until the session decides their fate, so this only drops input.</summary>
         public void OnPeerLeft(PeerHandle peer) {
+            originAnnouncedPeerIds.Remove(peer.Id);
             IReadOnlyList<NetEntity> entities = registry.Entities;
 
             for (int entityIndex = 0; entityIndex < entities.Count; entityIndex++) {
@@ -461,8 +619,10 @@ namespace AlpineLib.Netcode.Replication {
             lastSnapshotTick = tick;
 
             if (snapshotRecords.Count > 0) {
-                var message = new Snapshot(tick, snapshotRecords);
-                server.SendToMany(Peers,ReplicationMessageIds.Snapshot, in message, DeliveryClass.UnreliableSequenced);
+                var message = new Snapshot(tick, snapshotRecords) { OriginEpoch = origin.Current.Epoch };
+                IReadOnlyList<PeerHandle> peers = Peers;
+                AnnounceOrigin(peers, false);
+                server.SendToMany(peers, ReplicationMessageIds.Snapshot, in message, DeliveryClass.UnreliableSequenced);
             }
 
             SendOwnerCorrections(tick);
@@ -472,8 +632,10 @@ namespace AlpineLib.Netcode.Replication {
         public void BuildAndBroadcastKeyframe(uint tick) {
             BuildKeyframeRecords();
 
-            var message = new SnapshotKeyframe(tick, keyframeRecords);
-            server.SendToMany(Peers,ReplicationMessageIds.SnapshotKeyframe, in message, DeliveryClass.ReliableOrdered);
+            var message = new SnapshotKeyframe(tick, keyframeRecords) { OriginEpoch = origin.Current.Epoch };
+            IReadOnlyList<PeerHandle> peers = Peers;
+            AnnounceOrigin(peers, false);
+            server.SendToMany(peers, ReplicationMessageIds.SnapshotKeyframe, in message, DeliveryClass.ReliableOrdered);
         }
 
         /// <summary>Sends every entity in full to one peer — the join, rejoin and desync-repair path.</summary>
@@ -484,7 +646,8 @@ namespace AlpineLib.Netcode.Replication {
 
             BuildKeyframeRecords();
 
-            var message = new SnapshotKeyframe(currentTick, keyframeRecords);
+            var message = new SnapshotKeyframe(currentTick, keyframeRecords) { OriginEpoch = origin.Current.Epoch };
+            AnnounceOriginTo(peer);
             server.Send(peer, ReplicationMessageIds.SnapshotKeyframe, in message, DeliveryClass.ReliableOrdered);
         }
 
@@ -543,12 +706,30 @@ namespace AlpineLib.Netcode.Replication {
         /// The resync flag is consulted only once the measurement has refused the claim, so an owner
         /// repeating the flag against packet loss pays nothing for the repeats that were never needed;
         /// see <see cref="TryAcceptResync"/>.
+        ///
+        /// A world-frame claim stamped with the previous origin epoch was sent before the owner heard of
+        /// the rebase and is translated before judgement, so a rebase never reads as a teleport. One from
+        /// any other epoch is refused unjudged and answered with the held state.
         /// </remarks>
         public void HandleOwnerPawnUpdate(in OwnerPawnUpdate message, PeerHandle sender) {
             if (!TryResolveOwnedEntity(message.EntityId, sender, AuthorityMode.OwnerClient, out NetEntity entity)) {
                 return;
             }
 
+            if (!origin.TryBringToCurrent(message.OriginEpoch, message.State, out PawnState claimed)) {
+                StaleOriginUpdatesRejected++;
+                SendCorrection(entity, sender);
+                return;
+            }
+
+            OwnerPawnUpdate current = message;
+            current.State = claimed;
+            current.OriginEpoch = origin.Current.Epoch;
+            JudgeOwnerPawnUpdate(entity, in current, sender);
+        }
+
+        /// <summary>Judges an owner update already brought into the current origin.</summary>
+        private void JudgeOwnerPawnUpdate(NetEntity entity, in OwnerPawnUpdate message, PeerHandle sender) {
             PawnState previous = entity.State;
             float deltaSeconds = MeasuredIntervalSince(entity.LastDirtyTick);
             bool carrierChangeAllowed = IsCarrierChangeAllowed(entity, message.State.CarrierId);
@@ -905,7 +1086,10 @@ namespace AlpineLib.Netcode.Replication {
                 return;
             }
 
-            var message = new AuthorityCorrection(entity.Id, currentTick, entity.LastAcknowledgedInputSequence, entity.State);
+            var message = new AuthorityCorrection(entity.Id, currentTick, entity.LastAcknowledgedInputSequence, entity.State) {
+                OriginEpoch = origin.Current.Epoch
+            };
+            AnnounceOriginTo(owner);
             server.Send(owner, ReplicationMessageIds.AuthorityCorrection, in message, DeliveryClass.UnreliableSequenced);
         }
 

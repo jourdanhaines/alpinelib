@@ -49,7 +49,13 @@ namespace AlpineLib.Server.Tests {
 
         /// <summary>Dials a client, waits for the link, and puts it on the session roster.</summary>
         public CarrierReplicationLoopbackClient ConnectClient() {
+            return ConnectClientObserved(null);
+        }
+
+        /// <summary>Connects a client after letting the caller subscribe to it, so nothing it receives is missed.</summary>
+        public CarrierReplicationLoopbackClient ConnectClientObserved(Action<CarrierReplicationLoopbackClient> observe) {
             var client = new CarrierReplicationLoopbackClient(_network.CreateClientTransport(), BuildConfig());
+            observe?.Invoke(client);
             _clients.Add(client);
             client.Connect();
             WaitForConnection(client);

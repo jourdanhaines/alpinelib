@@ -139,6 +139,18 @@ namespace AlpineLib.Netcode.Replication {
             DropThrough(sequence);
         }
 
+        /// <summary>
+        /// Moves every recorded world-frame prediction for a floating-origin rebase, so a later
+        /// acknowledgement compares like with like.
+        /// </summary>
+        public void TranslateWorldFrame(System.Numerics.Vector3 delta) {
+            for (int offset = 0; offset < count; offset++) {
+                int index = IndexOf(offset);
+                PendingStep step = steps[index];
+                steps[index] = new PendingStep(step.Input, step.State.WithOriginShift(delta));
+            }
+        }
+
         /// <summary>Forgets everything pending. Used on respawn, on rejoin and on authority changes.</summary>
         public void Clear() {
             head = 0;

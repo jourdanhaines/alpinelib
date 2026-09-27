@@ -133,6 +133,11 @@ namespace AlpineLib.Netcode.Protocol {
             WriteInt(BitConverter.SingleToInt32Bits(value));
         }
 
+        /// <summary>IEEE-754 double, written as its raw bits.</summary>
+        public void WriteDouble(double value) {
+            WriteLong(BitConverter.DoubleToInt64Bits(value));
+        }
+
         /// <summary>
         /// LEB128-style variable length unsigned integer: 7 payload bits per byte, high bit = continue.
         /// Small ids, counts and lengths — the overwhelming majority of what this protocol writes — cost

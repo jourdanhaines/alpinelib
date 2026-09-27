@@ -68,7 +68,7 @@ namespace AlpineLib.Server.Tests {
         public void TheGapsBetweenLibraryBandsAreFreeToo() {
             Assert.False(MessageIdBudget.IsReservedByLibrary(3));
             Assert.False(MessageIdBudget.IsReservedByLibrary(63));
-            Assert.False(MessageIdBudget.IsReservedByLibrary(88));
+            Assert.False(MessageIdBudget.IsReservedByLibrary(96));
             Assert.False(MessageIdBudget.IsReservedByLibrary(119));
         }
 

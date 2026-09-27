@@ -36,6 +36,7 @@ namespace AlpineLib.Netcode.Replication.Messages {
             Kind = kind;
             AuxId = auxId;
             State = state;
+            OriginEpoch = 0;
         }
 
         /// <summary>Server-assigned identity for the new entity.</summary>
@@ -59,6 +60,9 @@ namespace AlpineLib.Netcode.Replication.Messages {
         /// <summary>Where it starts.</summary>
         public PawnState State { get; set; }
 
+        /// <summary>Origin epoch every world-frame position in this message is written in.</summary>
+        public ushort OriginEpoch { get; set; }
+
         /// <inheritdoc />
         public void Serialize(ref NetWriter writer) {
             writer.WriteUInt(EntityId);
@@ -68,6 +72,7 @@ namespace AlpineLib.Netcode.Replication.Messages {
             writer.WriteByte((byte)Kind);
             writer.WriteUShort(AuxId);
             writer.WriteMessage(State);
+            writer.WriteUShort(OriginEpoch);
         }
 
         /// <inheritdoc />
@@ -79,6 +84,7 @@ namespace AlpineLib.Netcode.Replication.Messages {
             Kind = (EntityKind)reader.ReadByte();
             AuxId = reader.ReadUShort();
             State = reader.ReadMessage<PawnState>();
+            OriginEpoch = reader.ReadUShort();
         }
     }
 }

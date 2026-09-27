@@ -43,6 +43,12 @@ namespace AlpineLib.Netcode.Protocol {
         /// <summary>Last id of the claim band.</summary>
         public const ushort ClaimBandEnd = 87;
 
+        /// <summary>First id of the replication tail: replication messages past the full band proper.</summary>
+        public const ushort ReplicationTailBandStart = 88;
+
+        /// <summary>Last id of the replication tail.</summary>
+        public const ushort ReplicationTailBandEnd = 95;
+
         /// <summary>
         /// First id of the session tail, which carries ownership transfer and the ids held back for
         /// listen-host process migration.
@@ -75,6 +81,7 @@ namespace AlpineLib.Netcode.Protocol {
             return IsInRange(id, CoreBandStart, CoreBandEnd)
                 || IsInRange(id, SessionBandStart, SessionBandEnd)
                 || IsInRange(id, ClaimBandStart, ClaimBandEnd)
+                || IsInRange(id, ReplicationTailBandStart, ReplicationTailBandEnd)
                 || IsInRange(id, SessionTailBandStart, SessionTailBandEnd)
                 || IsInRange(id, ReplicationBandStart, ReplicationBandEnd)
                 || id == ChatEnvelopeId;
@@ -82,7 +89,7 @@ namespace AlpineLib.Netcode.Protocol {
 
         /// <summary>
         /// True for the band a game should author its own message ids in. Ids outside it may still be
-        /// unreserved — 3-63, 88-119 and everything past 192 are free too — but they sit between library
+        /// unreserved — 3-63, 96-119 and everything past 192 are free too — but they sit between library
         /// bands that may grow, so a game that stays here never has to renumber.
         /// </summary>
         /// <remarks>
