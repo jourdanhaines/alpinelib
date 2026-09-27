@@ -255,12 +255,12 @@ namespace AlpineLib.Editor {
 
             if (failures.Count == 0) {
                 Debug.Log($"{logPrefix}: all assets valid.");
-                if (Application.isBatchMode) EditorApplication.Exit(0);
+                SmokeGate.Exit(0);
                 return;
             }
 
             Debug.LogError($"{logPrefix}: {failures.Count} validation failure(s).");
-            if (Application.isBatchMode) EditorApplication.Exit(1);
+            SmokeGate.Exit(1);
         }
     }
 }
