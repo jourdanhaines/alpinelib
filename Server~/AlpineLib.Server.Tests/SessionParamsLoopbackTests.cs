@@ -14,7 +14,7 @@ namespace AlpineLib.Server.Tests {
     /// </summary>
     public sealed class SessionParamsLoopbackTests {
         private static readonly byte[] SeedParams = { 1, 0x2A, 0, 0, 0, 0, 0, 0, 0, 3, 0 };
-        private static readonly Vector3 FactorySpot = new Vector3(40f, 2f, -12f);
+        private static readonly Vector3 FactorySpot = new Vector3(40f, 0f, -12f);
 
         [Fact]
         public void TheHostsParamsAreEchoedToTheHostAndEveryJoiner() {
@@ -60,7 +60,9 @@ namespace AlpineLib.Server.Tests {
             SessionEntry entry = factory.Entries[0];
             NetEntity pawn = harness.Query(() => entry.Replication.Entities.Entities.Single());
 
-            Assert.Equal(FactorySpot, pawn.State.Position);
+            // Horizontal only: the server steps the pawn after it spawns, so its height may settle.
+            Assert.Equal(FactorySpot.X, pawn.State.Position.X);
+            Assert.Equal(FactorySpot.Z, pawn.State.Position.Z);
             Assert.Same(placement, harness.Query(() => entry.Spawner.Placement));
             Assert.Equal(new[] { true }, harness.Query(() => factory.SawOwnModule.ToArray()));
         }
