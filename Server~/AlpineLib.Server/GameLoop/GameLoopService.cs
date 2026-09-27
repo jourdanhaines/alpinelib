@@ -75,6 +75,8 @@ namespace AlpineLib.Server.GameLoop {
 
         private Thread _loopThread;
         private int _readyPort = -1;
+        private int _exitCode = ServerExitCodes.Clean;
+        private Exception _fault;
 
         /// <param name="transport">
         /// The socket under <paramref name="server"/>. Held only to read the port it actually bound,
@@ -114,6 +116,15 @@ namespace AlpineLib.Server.GameLoop {
         /// </summary>
         public int ReadyPort => Volatile.Read(ref _readyPort);
 
+        /// <summary>
+        /// The process exit code this loop's ending calls for: <see cref="ServerExitCodes.Clean"/> unless
+        /// the socket could not bind or the loop faulted.
+        /// </summary>
+        public int ExitCode => Volatile.Read(ref _exitCode);
+
+        /// <summary>The fault that stopped the loop, or null when it stopped cleanly.</summary>
+        public Exception Fault => Volatile.Read(ref _fault);
+
         /// <summary>The idle window this loop stops itself on. Disabled when the option is zero.</summary>
         public IdleShutdownTimer IdleTimer => _idleTimer;
 
@@ -133,7 +144,8 @@ namespace AlpineLib.Server.GameLoop {
 
         private void RunLoop(CancellationToken stoppingToken) {
             try {
-                StartServer();
+                if (!TryStartServer()) return;
+
                 StepUntilCancelled(stoppingToken);
             }
             catch (Exception error) {
@@ -142,12 +154,37 @@ namespace AlpineLib.Server.GameLoop {
                 // through one would be handing every session a world nobody can trust. Stop, and let the
                 // orchestrator bring up a process that has not been in that state.
                 _logger.LogCritical(error, "The game loop stopped on an unhandled fault.");
+                RecordFault(error, ServerExitCodes.LoopFault);
                 _lifetime?.StopApplication();
             }
             finally {
                 ShutDown();
                 _loopExited.TrySetResult(true);
             }
+        }
+
+        /// <summary>Binds the socket; false (fault recorded, host asked to stop) when it cannot.</summary>
+        /// <remarks>
+        /// A taken port gets its own exit code so a launcher can decide between another port and giving
+        /// up, rather than reading a clean exit that never announced readiness.
+        /// </remarks>
+        private bool TryStartServer() {
+            try {
+                StartServer();
+                return true;
+            }
+            catch (TransportBindException error) {
+                _logger.LogCritical("{Message} Another process holds it; stopping.", error.Message);
+                RecordFault(error, ServerExitCodes.PortInUse);
+                _lifetime?.StopApplication();
+                return false;
+            }
+        }
+
+        private void RecordFault(Exception error, int exitCode) {
+            if (Interlocked.CompareExchange(ref _fault, error, null) != null) return;
+
+            Volatile.Write(ref _exitCode, exitCode);
         }
 
         private void StartServer() {

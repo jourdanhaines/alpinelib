@@ -5,6 +5,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using AlpineLib.Netcode.Sessions;
 using AlpineLib.Netcode.Transport;
 using UnityEngine;
 #if UNITY_EDITOR
@@ -90,9 +91,11 @@ namespace AlpineLib.Sessions {
         /// <remarks>
         /// A server that dies before reporting readiness is retried once on an ephemeral port, because
         /// by far the likeliest cause is the preferred port already being held — by a second editor, by
-        /// a server this process failed to reap, or by a socket still in <c>TIME_WAIT</c>. A server that
-        /// simply never answers is a different failure and is not retried: it is killed and the last of
-        /// its output travels out in the exception, which is the only place anyone will look.
+        /// a server this process failed to reap, or by a socket still in <c>TIME_WAIT</c>. A config with
+        /// <see cref="LocalServerConfig.retryOnEphemeralPort"/> off fails instead. A server that simply
+        /// never answers is a different failure and is not retried: it is killed and the last of its
+        /// output travels out in the exception, which is the only place anyone will look. Every failure
+        /// is a <see cref="LocalServerStartException"/> naming its <see cref="LocalServerStartFailure"/>.
         /// </remarks>
         public async Task<NetEndpoint> StartAsync(CancellationToken cancellationToken) {
             if (_isDisposed) throw new ObjectDisposedException(nameof(LocalServerLauncher));
@@ -107,21 +110,21 @@ namespace AlpineLib.Sessions {
 
             int preferredPort = _config.ClampedPreferredPort();
             LocalServerAttempt attempt = await RunAttemptAsync(executablePath, preferredPort, cancellationToken);
-            int port = ReportedPort(attempt);
+            int port = ReportedPort(attempt, preferredPort);
 
-            if (port == LocalServerAttempt.NoPort && attempt.ExitCode != 0) {
+            if (port == LocalServerAttempt.NoPort && ShouldRetryOnEphemeralPort(attempt)) {
                 Debug.LogWarning($"LocalServerLauncher::StartAsync->The local server {DescribeExit(attempt.ExitCode)} before it was ready on port {preferredPort}; retrying on an ephemeral port.");
                 StopAttempt(attempt);
                 attempt = await RunAttemptAsync(executablePath, EphemeralPort, cancellationToken);
-                port = ReportedPort(attempt);
+                port = ReportedPort(attempt, preferredPort);
             }
 
             if (port == LocalServerAttempt.NoPort) {
-                throw FailAndReap(attempt, DescribeExit(attempt.ExitCode) + " before reporting readiness");
+                throw FailAndReap(attempt, ClassifyExit(attempt), preferredPort, DescribeExit(attempt.ExitCode) + " before reporting readiness");
             }
 
             if (!TryAdoptEndpoint(attempt, port, out NetEndpoint endpoint)) {
-                throw FailAndReap(attempt, "was replaced by a newer launch before it was ready");
+                throw FailAndReap(attempt, LocalServerStartFailure.Cancelled, preferredPort, "was replaced by a newer launch before it was ready");
             }
 
             return endpoint;
@@ -170,6 +173,20 @@ namespace AlpineLib.Sessions {
         /// </remarks>
         public void Detach() {
             TakeAttempt()?.Detach();
+        }
+
+        /// <summary>
+        /// True when a server that exited before readiness should get one more go on an ephemeral port:
+        /// the config allows it and the exit was a failure (a taken port, or any non-zero code).
+        /// </summary>
+        private bool ShouldRetryOnEphemeralPort(LocalServerAttempt attempt) {
+            if (!_config.retryOnEphemeralPort) return false;
+
+            return attempt.ExitCode != ServerExitCodes.Clean || ClassifyExit(attempt) == LocalServerStartFailure.PortInUse;
+        }
+
+        private static LocalServerStartFailure ClassifyExit(LocalServerAttempt attempt) {
+            return LocalServerExitClassifier.Classify(attempt.ExitCode, attempt.RecentOutput());
         }
 
         /// <summary>Hands the live attempt over to one ending, leaving the launcher with nothing.</summary>
@@ -254,15 +271,15 @@ namespace AlpineLib.Sessions {
             StopAttempt(attempt);
             cancellationToken.ThrowIfCancellationRequested();
 
-            throw new InvalidOperationException(DescribeFailure(attempt,
+            throw new LocalServerStartException(LocalServerStartFailure.Timeout, port, DescribeFailure(attempt,
                 $"did not report readiness within {DescribeReadyTimeout()} s"));
         }
 
         /// <summary>Reads a settled attempt's port, turning a stop mid-wait into a launcher failure.</summary>
-        private int ReportedPort(LocalServerAttempt attempt) {
+        private int ReportedPort(LocalServerAttempt attempt, int preferredPort) {
             if (!attempt.ReadyPort.IsCanceled) return attempt.ReadyPort.Result;
 
-            throw new InvalidOperationException(
+            throw new LocalServerStartException(LocalServerStartFailure.Cancelled, preferredPort,
                 DescribeFailure(attempt, "was stopped before it reported readiness"));
         }
 
@@ -326,8 +343,8 @@ namespace AlpineLib.Sessions {
         /// forked a helper and then exited leaves that helper holding the port, and nothing else reaps
         /// an attempt that failed on its own terms rather than on a timeout.
         /// </remarks>
-        private InvalidOperationException FailAndReap(LocalServerAttempt attempt, string what) {
-            var failure = new InvalidOperationException(DescribeFailure(attempt, what));
+        private LocalServerStartException FailAndReap(LocalServerAttempt attempt, LocalServerStartFailure reason, int port, string what) {
+            var failure = new LocalServerStartException(reason, port, DescribeFailure(attempt, what));
 
             StopAttempt(attempt);
 
@@ -377,7 +394,7 @@ namespace AlpineLib.Sessions {
 
             if (File.Exists(executablePath)) return executablePath;
 
-            throw new InvalidOperationException(
+            throw new LocalServerStartException(LocalServerStartFailure.Missing, _config.ClampedPreferredPort(),
                 $"LocalServerLauncher::RequireExecutablePath->No server executable at '{executablePath}'; publish the dedicated server before hosting one locally.");
         }
 

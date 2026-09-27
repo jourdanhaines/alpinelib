@@ -411,6 +411,8 @@ namespace AlpineLib.Sessions {
         private CancellationTokenSource _hostStartSource;
         private NetEndpoint _hostEndpoint;
         private string _hostEndpointFailure = string.Empty;
+        private LocalServerStartFailure _hostStartFailure;
+        private int _hostStartPort;
         private string _currentSceneName = string.Empty;
         private SessionEndReason _pendingTearDownReason;
         private bool _isTearDownPending;
@@ -553,7 +555,8 @@ namespace AlpineLib.Sessions {
             NetEndpoint endpoint = await ResolveHostEndpointAsync();
 
             if (!endpoint.IsValid) {
-                return DeniedLocally(SessionEndReason.TransportLost, ResolveHostFailureDenial(), ResolveHostFailureMessage());
+                return SessionJoinResult.Denied(
+                    SessionEndReason.TransportLost, ResolveHostFailureDenial(), ResolveHostFailureMessage(), _hostStartFailure, _hostStartPort);
             }
 
             SessionJoinResult connectResult = await ConnectAsync(endpoint);
@@ -735,6 +738,8 @@ namespace AlpineLib.Sessions {
         /// </remarks>
         private async Task<NetEndpoint> ResolveHostEndpointAsync() {
             _hostEndpointFailure = string.Empty;
+            _hostStartFailure = LocalServerStartFailure.None;
+            _hostStartPort = localServer != null ? localServer.ClampedPreferredPort() : 0;
 
             if (hostingMode == SessionHostingMode.ListenHost) return StartListenHost();
             if (hostingMode == SessionHostingMode.LocalServerProcess) return await StartLocalServerAsync();
@@ -767,14 +772,35 @@ namespace AlpineLib.Sessions {
                 return await _localServer.StartAsync(RenewHostStartToken());
             } catch (OperationCanceledException) {
                 _hostEndpointFailure = "Hosting was cancelled.";
+                _hostStartFailure = LocalServerStartFailure.Cancelled;
+                return NetEndpoint.None;
+            } catch (LocalServerStartException exception) {
+                _hostStartFailure = exception.Failure;
+                _hostStartPort = exception.Port;
+                _hostEndpointFailure = LocalServerExitClassifier.Describe(exception.Failure, exception.Port);
+                LogLocalServerFailure(exception);
                 return NetEndpoint.None;
             } catch (Exception exception) {
                 _hostEndpointFailure = "The local server did not start.";
+                _hostStartFailure = LocalServerStartFailure.Crashed;
                 Debug.LogError($"SessionService::StartLocalServerAsync->{exception.Message}");
                 return NetEndpoint.None;
             } finally {
                 _isLocalServerStarting = false;
             }
+        }
+
+        /// <remarks>
+        /// A taken port is an expected outcome when the launcher is told not to move ports (two copies
+        /// on one machine), so it is a warning; every other failure is an error.
+        /// </remarks>
+        private static void LogLocalServerFailure(LocalServerStartException exception) {
+            if (exception.Failure == LocalServerStartFailure.PortInUse) {
+                Debug.LogWarning($"SessionService::StartLocalServerAsync->{exception.Message}");
+                return;
+            }
+
+            Debug.LogError($"SessionService::StartLocalServerAsync->{exception.Message}");
         }
 
         /// <summary>Makes sure the launcher about to be used is the one built for the current config.</summary>

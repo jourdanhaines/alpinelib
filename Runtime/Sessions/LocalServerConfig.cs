@@ -69,8 +69,10 @@ namespace AlpineLib.Sessions {
         // Not a Range: a 0..65535 slider is unusable for picking a port. The upper end is clamped in
         // code instead.
         [Min(MinimumPort)]
-        [Tooltip("Port the server is asked to bind. Taken ports fall back to an ephemeral one automatically. 0 asks for any free port.")]
+        [Tooltip("Port the server is asked to bind. 0 asks for any free port.")]
         public int preferredPort = 9050;
+        [Tooltip("When the preferred port is taken, retry once on an ephemeral port. Off reports the taken port as a host failure instead.")]
+        public bool retryOnEphemeralPort = true;
         [Min(MinimumReadyTimeoutSeconds)]
         [Tooltip("How long to wait for the server's readiness line before giving up and killing it.")]
         public float readyTimeoutSeconds = 15f;

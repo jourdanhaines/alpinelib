@@ -17,6 +17,8 @@ namespace AlpineLib.Netcode.Sessions {
         private readonly string _joinCode;
         private readonly SessionPhase _phase;
         private readonly bool _isRejoin;
+        private readonly LocalServerStartFailure _hostStartFailure;
+        private readonly int _hostStartPort;
 
         private SessionJoinResult(
             bool isSuccess,
@@ -26,7 +28,9 @@ namespace AlpineLib.Netcode.Sessions {
             string sessionId,
             string joinCode,
             SessionPhase phase,
-            bool isRejoin) {
+            bool isRejoin,
+            LocalServerStartFailure hostStartFailure,
+            int hostStartPort) {
             _isSuccess = isSuccess;
             _reason = reason;
             _denial = denial;
@@ -35,6 +39,8 @@ namespace AlpineLib.Netcode.Sessions {
             _joinCode = joinCode;
             _phase = phase;
             _isRejoin = isRejoin;
+            _hostStartFailure = hostStartFailure;
+            _hostStartPort = hostStartPort;
         }
 
         /// <summary>True when the request did what it was asked to.</summary>
@@ -69,14 +75,22 @@ namespace AlpineLib.Netcode.Sessions {
         /// <summary>True when the server matched this player to a reservation left by an earlier drop.</summary>
         public bool IsRejoin => _isRejoin;
 
+        /// <summary>
+        /// Why the server this build launches beside itself did not come up, when that is what refused.
+        /// </summary>
+        public LocalServerStartFailure HostStartFailure => _hostStartFailure;
+
+        /// <summary>The port the local server was asked to bind, when <see cref="HostStartFailure"/> is set.</summary>
+        public int HostStartPort => _hostStartPort;
+
         /// <summary>Connected and authenticated, but attached to no session yet.</summary>
         public static SessionJoinResult Connected() {
-            return new SessionJoinResult(true, SessionEndReason.HostClosed, SessionDenial.ServerRefused, string.Empty, string.Empty, string.Empty, SessionPhase.Lobby, false);
+            return new SessionJoinResult(true, SessionEndReason.HostClosed, SessionDenial.ServerRefused, string.Empty, string.Empty, string.Empty, SessionPhase.Lobby, false, LocalServerStartFailure.None, 0);
         }
 
         /// <summary>Attached to a session, whether freshly or by reclaiming a reservation.</summary>
         public static SessionJoinResult Joined(string sessionId, string joinCode, SessionPhase phase, bool isRejoin) {
-            return new SessionJoinResult(true, SessionEndReason.HostClosed, SessionDenial.ServerRefused, string.Empty, sessionId, joinCode, phase, isRejoin);
+            return new SessionJoinResult(true, SessionEndReason.HostClosed, SessionDenial.ServerRefused, string.Empty, sessionId, joinCode, phase, isRejoin, LocalServerStartFailure.None, 0);
         }
 
         /// <summary>The server said no, and the message is the server's own.</summary>
@@ -92,7 +106,13 @@ namespace AlpineLib.Netcode.Sessions {
         /// <paramref name="denial"/> is that the caller no longer has to read it to know what happened.
         /// </remarks>
         public static SessionJoinResult Denied(SessionEndReason reason, SessionDenial denial, string message) {
-            return new SessionJoinResult(false, reason, denial, message, string.Empty, string.Empty, SessionPhase.Lobby, false);
+            return Denied(reason, denial, message, LocalServerStartFailure.None, 0);
+        }
+
+        /// <summary>A local refusal that also names why the local server did not start, and on which port.</summary>
+        public static SessionJoinResult Denied(
+            SessionEndReason reason, SessionDenial denial, string message, LocalServerStartFailure hostStartFailure, int hostStartPort) {
+            return new SessionJoinResult(false, reason, denial, message, string.Empty, string.Empty, SessionPhase.Lobby, false, hostStartFailure, hostStartPort);
         }
     }
 }

@@ -44,16 +44,41 @@ namespace AlpineLib.Server.Hosting {
         public const string GeometryLogCategory = "AlpineLib.Server.Geometry";
 
         /// <summary>Builds the host and runs it until it is stopped or the idle window runs out.</summary>
+        /// <returns>The process exit code, see <see cref="ServerExitCodes"/>.</returns>
         /// <exception cref="ArgumentException">The command line carries something unrecognised.</exception>
         /// <exception cref="InvalidOperationException">The exported configuration is missing or malformed.</exception>
-        public static Task RunAsync(string[] args, Action<ServerHostBuilder> configure) {
+        public static Task<int> RunAsync(string[] args, Action<ServerHostBuilder> configure) {
             return RunAsync(args, configure, CancellationToken.None);
         }
 
         /// <summary>Builds the host and runs it, stopping early when the token is cancelled.</summary>
-        public static async Task RunAsync(string[] args, Action<ServerHostBuilder> configure, CancellationToken cancellationToken) {
+        public static async Task<int> RunAsync(string[] args, Action<ServerHostBuilder> configure, CancellationToken cancellationToken) {
             using IHost host = Build(args, configure);
+            return await RunToExitCodeAsync(host, cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Runs an already built host to its end and returns the exit code its ending calls for, so a
+        /// game's <c>Main</c> can hand a taken port or a loop fault back to whoever launched it.
+        /// </summary>
+        /// <remarks>The loop is found before the run: running disposes the host's services.</remarks>
+        public static async Task<int> RunToExitCodeAsync(IHost host, CancellationToken cancellationToken) {
+            if (host == null) throw new ArgumentNullException(nameof(host));
+
+            GameLoopService loop = FindLoop(host);
             await host.RunAsync(cancellationToken).ConfigureAwait(false);
+            return loop?.ExitCode ?? ServerExitCodes.Clean;
+        }
+
+        /// <summary>The game loop a built host runs, or null when it has none.</summary>
+        public static GameLoopService FindLoop(IHost host) {
+            if (host == null) throw new ArgumentNullException(nameof(host));
+
+            foreach (IHostedService service in host.Services.GetServices<IHostedService>()) {
+                if (service is GameLoopService loop) return loop;
+            }
+
+            return null;
         }
 
         /// <summary>

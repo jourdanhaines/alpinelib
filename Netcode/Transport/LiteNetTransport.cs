@@ -112,7 +112,7 @@ namespace AlpineLib.Netcode.Transport {
             }
 
             isServer = false;
-            throw new InvalidOperationException($"Could not bind UDP port {port}.");
+            throw new TransportBindException(port);
         }
 
         /// <inheritdoc />
