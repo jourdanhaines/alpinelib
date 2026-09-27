@@ -1,4 +1,5 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using UnityEngine;
 
 namespace AlpineLib.Sessions {
@@ -30,6 +31,18 @@ namespace AlpineLib.Sessions {
         public const string WindowsExecutableExtension = ".exe";
 
         /// <summary>
+        /// Placeholder in <see cref="LocalServerConfig.editorServerDirectory"/> replaced with the editor
+        /// host's runtime identifier.
+        /// </summary>
+        /// <remarks>
+        /// The editor can only launch a server built for the machine it runs on, and one project is
+        /// opened on several. A literal identifier in a shared asset is right on one of them and a
+        /// binary the others cannot execute; the token lets every host publish into, and launch from,
+        /// its own folder.
+        /// </remarks>
+        public const string HostRuntimeIdentifierToken = "{rid}";
+
+        /// <summary>
         /// Levels between a macOS player's data path and the folder the <c>.app</c> bundle sits in.
         /// </summary>
         /// <remarks>
@@ -47,7 +60,7 @@ namespace AlpineLib.Sessions {
             if (config == null) return string.Empty;
 
             if (Application.isEditor) {
-                return ResolveFromDataPath(1, config.editorServerDirectory);
+                return ResolveFromDataPath(1, ExpandHostRuntimeIdentifier(config.editorServerDirectory));
             }
 
             int depth = Application.platform == RuntimePlatform.OSXPlayer ? MacBundleDepth : 1;
@@ -79,6 +92,48 @@ namespace AlpineLib.Sessions {
             if (!IsWindows()) return config.executableName;
 
             return config.executableName + WindowsExecutableExtension;
+        }
+
+        /// <summary>
+        /// The .NET runtime identifier of the machine this process runs on, e.g. <c>osx-arm64</c>, or
+        /// null when the operating system or architecture is not one a server is published for.
+        /// </summary>
+        public static string ResolveHostRuntimeIdentifier() {
+            string operatingSystem = ResolveHostOperatingSystem();
+            string architecture = ResolveHostArchitecture();
+
+            if (operatingSystem == null || architecture == null) return null;
+
+            return operatingSystem + "-" + architecture;
+        }
+
+        /// <summary>
+        /// Replaces <see cref="HostRuntimeIdentifierToken"/> with the host's runtime identifier. A path
+        /// without the token, or a host with no identifier, is returned unchanged.
+        /// </summary>
+        public static string ExpandHostRuntimeIdentifier(string path) {
+            if (string.IsNullOrEmpty(path) || !path.Contains(HostRuntimeIdentifierToken)) return path;
+
+            string runtimeIdentifier = ResolveHostRuntimeIdentifier();
+            if (runtimeIdentifier == null) return path;
+
+            return path.Replace(HostRuntimeIdentifierToken, runtimeIdentifier);
+        }
+
+        private static string ResolveHostOperatingSystem() {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX)) return "osx";
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux)) return "linux";
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return "win";
+
+            return null;
+        }
+
+        private static string ResolveHostArchitecture() {
+            switch (RuntimeInformation.OSArchitecture) {
+                case Architecture.X64: return "x64";
+                case Architecture.Arm64: return "arm64";
+                default: return null;
+            }
         }
 
         /// <summary>Walks <paramref name="levels"/> up from the data path and appends a relative folder.</summary>

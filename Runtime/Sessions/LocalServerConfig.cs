@@ -60,8 +60,8 @@ namespace AlpineLib.Sessions {
         // process is killed, so a wrapper's child would outlive the game and keep holding the port.
         [Tooltip("File name of the published server, without an extension. '.exe' is appended on Windows.")]
         public string executableName = "Game.Server";
-        [Tooltip("Project-relative directory the editor launches the server from, usually a publish output.")]
-        public string editorServerDirectory = "Build/Server/linux-x64";
+        [Tooltip("Project-relative directory the editor launches the server from, usually a publish output. '{rid}' is replaced with the editor host's runtime identifier, e.g. osx-arm64.")]
+        public string editorServerDirectory = "Build/Server/" + LocalServerPaths.HostRuntimeIdentifierToken;
         [Tooltip("Folder name the build step copies the server into, beside the player executable.")]
         public string bundledServerFolderName = "Server";
 

@@ -121,7 +121,8 @@ shared assembly is the only guarantee both ends step the same arithmetic.
 4. **Publishing** is a self-contained single file into `Build/Server/<rid>` with `config/` beside it.
    `ServerBundleConfig` names that root and one runtime identifier per platform, and
    `ServerBundleBuildStep` copies the matching folder into a player build so a hosting player has a
-   server to start; in the editor `LocalServerConfig.editorServerDirectory` points at the same place.
+   server to start; in the editor `LocalServerConfig.editorServerDirectory` points at the same place,
+   with `{rid}` expanded to the editor host's runtime identifier (e.g. `osx-arm64`).
 
 ### The session, end to end
 
