@@ -1,4 +1,5 @@
 using System;
+using AlpineLib.Origin;
 using UnityEngine;
 
 namespace AlpineLib.Cameras {
@@ -24,7 +25,7 @@ namespace AlpineLib.Cameras {
     /// gone before the camera travels inside it, not after.
     /// </remarks>
     [DefaultExecutionOrder(200)]
-    public class CameraPerspectiveController : MonoBehaviour {
+    public class CameraPerspectiveController : MonoBehaviour, IOriginShiftListener {
         [Header("Rigs")]
         [SerializeField] private FirstPersonCameraRig firstPersonRig;
         [SerializeField] private ThirdPersonCameraRig thirdPersonRig;
@@ -78,6 +79,16 @@ namespace AlpineLib.Cameras {
 
         private void Awake() {
             Perspective = startingPerspective;
+            OriginShiftRegistry.RegisterListener(this);
+        }
+
+        private void OnDestroy() {
+            OriginShiftRegistry.UnregisterListener(this);
+        }
+
+        /// <summary>A floating-origin rebase moves a perspective blend's start with the world.</summary>
+        void IOriginShiftListener.OnOriginShifted(Vector3 delta) {
+            if (_isBlending) _blendStartPosition += delta;
         }
 
         /// <remarks>

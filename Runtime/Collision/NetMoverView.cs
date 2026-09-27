@@ -445,19 +445,24 @@ namespace AlpineLib.Collision {
         /// </summary>
         private Numerics.Vector3 EvaluateAt(double tickTime) {
             uint lowTick = ToWholeTick(tickTime);
-            Numerics.Vector3 low = definition.Path.EvaluatePosition(lowTick, tickIntervalSeconds);
+            Numerics.Vector3 low = definition.Path.EvaluatePosition(lowTick, tickIntervalSeconds) + ResolveMoverOffset();
             float fraction = (float)(tickTime - lowTick);
 
             if (fraction <= 0f || lowTick == uint.MaxValue) {
                 return low;
             }
 
-            Numerics.Vector3 high = definition.Path.EvaluatePosition(lowTick + 1u, tickIntervalSeconds);
+            Numerics.Vector3 high = definition.Path.EvaluatePosition(lowTick + 1u, tickIntervalSeconds) + ResolveMoverOffset();
 
             return new Numerics.Vector3(
                 low.X + (high.X - low.X) * fraction,
                 low.Y + (high.Y - low.Y) * fraction,
                 low.Z + (high.Z - low.Z) * fraction);
+        }
+
+        /// <summary>Where floating-origin rebases have moved every path in the resolved world.</summary>
+        private Numerics.Vector3 ResolveMoverOffset() {
+            return resolvedWorld != null ? resolvedWorld.MoverOffset : Numerics.Vector3.Zero;
         }
 
         /// <summary>Floors a fractional tick into the whole tick the simulation would speak in.</summary>

@@ -1,6 +1,7 @@
 using System;
 using AlpineLib.Actors.Locomotion;
 using AlpineLib.Cameras;
+using AlpineLib.Origin;
 using AlpineLib.Stats;
 using UnityEngine;
 
@@ -43,7 +44,7 @@ namespace AlpineLib.Actors {
     [RequireComponent(typeof(Rigidbody))]
     [RequireComponent(typeof(StatSheet))]
     [DefaultExecutionOrder(ActorExecutionOrder.Motor)]
-    public class Actor : MonoBehaviour, IActor, IMortal, ICameraTarget {
+    public class Actor : MonoBehaviour, IActor, IMortal, ICameraTarget, IOriginShiftListener {
         /// <inheritdoc />
         public event Action OnDeath;
 
@@ -249,6 +250,7 @@ namespace AlpineLib.Actors {
             _current = MotorState.AtWorld(transform.position, transform.eulerAngles.y);
             _previous = _current;
             _previousRenderPosition = transform.position;
+            OriginShiftRegistry.RegisterListener(this);
 
             Animator = GetComponentInChildren<Animator>();
             if (Animator == null) return;
@@ -261,6 +263,24 @@ namespace AlpineLib.Actors {
             if (useRootMotion && Animator.gameObject != gameObject && Animator.GetComponent<RootMotionForwarder>() == null) {
                 Animator.gameObject.AddComponent<RootMotionForwarder>();
             }
+        }
+
+        /// <remarks>Overrides must call <c>base.OnDestroy()</c> or a destroyed actor stays registered for rebases.</remarks>
+        protected virtual void OnDestroy() {
+            OriginShiftRegistry.UnregisterListener(this);
+        }
+
+        /// <summary>
+        /// A floating-origin rebase: world-frame motor states, the carrier and render velocity baselines
+        /// move by the delta so nothing reads the shift as motion. Carrier-local state rides its carrier.
+        /// </summary>
+        void IOriginShiftListener.OnOriginShifted(Vector3 delta) {
+            if (_current.CarrierRoot == null) _current.LocalPosition += delta;
+            if (_previous.CarrierRoot == null) _previous.LocalPosition += delta;
+            if (_hasCarrierPrevious) _carrierPreviousPosition += delta;
+
+            _previousRenderPosition += delta;
+            if (_current.CarrierRoot == null) WriteRenderPose(_accumulator / StepInterval());
         }
 
         /// <summary>

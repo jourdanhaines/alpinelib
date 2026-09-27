@@ -6,6 +6,7 @@ using AlpineLib.DI;
 using AlpineLib.Netcode;
 using AlpineLib.Netcode.Protocol;
 using AlpineLib.Netcode.Replication;
+using AlpineLib.Origin;
 using AlpineLib.Sessions;
 using UnityEngine;
 using Numerics = System.Numerics;
@@ -47,7 +48,7 @@ namespace AlpineLib.Networking {
     /// </remarks>
     [DefaultExecutionOrder(NetExecutionOrder.PawnDrivers)]
     [RequireComponent(typeof(NetEntityView))]
-    public class NetActorSync : MonoBehaviour {
+    public class NetActorSync : MonoBehaviour, IOriginShiftListener {
         [Header("Prediction")]
         [Tooltip("Write the predicted position back onto the actor. Off leaves the actor's own movement in charge and only corrections are applied.")]
         [SerializeField] private bool applyPredictedPosition = true;
@@ -258,6 +259,7 @@ namespace AlpineLib.Networking {
             _actor = GetComponent<Actor>();
             _locomotion = GetComponent<LocomotionSystem>();
             _crouch = GetComponent<CrouchSystem>();
+            OriginShiftRegistry.RegisterListener(this);
         }
 
         /// <remarks>
@@ -273,7 +275,18 @@ namespace AlpineLib.Networking {
         }
 
         private void OnDestroy() {
+            OriginShiftRegistry.UnregisterListener(this);
             UnbindReplication();
+        }
+
+        /// <summary>
+        /// A floating-origin rebase: the cached prediction (held in world space) and a world-frame spawn
+        /// state still waiting for placement move with the world; the actor shifts itself.
+        /// </summary>
+        void IOriginShiftListener.OnOriginShifted(Vector3 delta) {
+            Numerics.Vector3 shift = delta.ToNumerics();
+            if (_hasPredictedState) _predictedState = _predictedState.WithOriginShift(shift);
+            if (_hasSpawnState) _spawnState = _spawnState.WithOriginShift(shift);
         }
 
         /// <remarks>

@@ -1,3 +1,4 @@
+using AlpineLib.Origin;
 using UnityEngine;
 
 namespace AlpineLib.Cameras {
@@ -14,7 +15,7 @@ namespace AlpineLib.Cameras {
     /// <see cref="PlanarRight"/> are yaw-only, so movement stays camera-relative without ever tilting
     /// into or out of the ground.
     /// </remarks>
-    public class ThirdPersonCameraRig : MonoBehaviour, ICameraRig {
+    public class ThirdPersonCameraRig : MonoBehaviour, ICameraRig, IOriginShiftListener {
         [Header("Target")]
         [Tooltip("Child transform the camera lives on. Falls back to the first child, then to a created anchor.")]
         [SerializeField] private Transform cameraAnchor;
@@ -94,6 +95,20 @@ namespace AlpineLib.Cameras {
             Vector3 startingAngles = transform.rotation.eulerAngles;
             _yaw = startingAngles.y;
             _pitch = Mathf.Clamp(Mathf.DeltaAngle(0f, startingAngles.x), pitchMin, pitchMax);
+            OriginShiftRegistry.RegisterListener(this);
+        }
+
+        private void OnDestroy() {
+            OriginShiftRegistry.UnregisterListener(this);
+        }
+
+        /// <summary>
+        /// A floating-origin rebase: the damped pivot moves with the world so the follow lag is kept rather
+        /// than swept across the shift. Assumes the rig is not parented under a shifted root.
+        /// </summary>
+        void IOriginShiftListener.OnOriginShifted(Vector3 delta) {
+            transform.position += delta;
+            PositionCamera();
         }
 
         /// <summary>

@@ -1,4 +1,5 @@
 using AlpineLib.Netcode.Replication;
+using AlpineLib.Origin;
 using UnityEngine;
 
 namespace AlpineLib.Networking {
@@ -50,7 +51,7 @@ namespace AlpineLib.Networking {
     /// </para>
     /// </remarks>
     [DefaultExecutionOrder(NetExecutionOrder.Carriers)]
-    public class NetCarrier : MonoBehaviour {
+    public class NetCarrier : MonoBehaviour, IOriginShiftListener {
         /// <summary>
         /// How far each axis of the lossy scale may sit from one and still count as unit scale. Wide
         /// enough to absorb the float error of a deep transform hierarchy, narrow enough that an authored
@@ -124,6 +125,22 @@ namespace AlpineLib.Networking {
             if (!isActiveAndEnabled) return;
 
             Register();
+        }
+
+        private void Awake() {
+            OriginShiftRegistry.RegisterListener(this);
+        }
+
+        private void OnDestroy() {
+            OriginShiftRegistry.UnregisterListener(this);
+        }
+
+        /// <summary>
+        /// A floating-origin rebase moved this carrier's transform with the world; the velocity baseline
+        /// moves too so the rebase never reads as speed.
+        /// </summary>
+        void IOriginShiftListener.OnOriginShifted(Vector3 delta) {
+            if (_hasPreviousPosition) _previousPosition += delta;
         }
 
         private void OnEnable() {

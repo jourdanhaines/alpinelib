@@ -145,6 +145,7 @@ namespace AlpineLib.Server.Tests {
             Assert.True(world.TryGetSupport(-128f, 0f, 10f, -10f, 1u, out SupportHit scene));
             Assert.Equal(0f, scene.Height);
             Assert.Equal(new Vector3(moverBefore.X - 128f, moverBefore.Y, moverBefore.Z), world.EvaluateMoverPosition(0, 15u));
+            Assert.Equal(new Vector3(-128f, 0f, 0f), world.MoverOffset);
         }
 
         [Fact]

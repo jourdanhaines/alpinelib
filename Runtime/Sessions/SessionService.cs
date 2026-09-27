@@ -64,6 +64,12 @@ namespace AlpineLib.Sessions {
         /// <summary>The replicated client world, or null outside a session.</summary>
         ClientReplication Replication { get; }
 
+        /// <summary>
+        /// True when the replication's collision world belongs to this client alone, so a floating-origin
+        /// rebase may translate it; false for a world shared with a listen server or a geometry cache.
+        /// </summary>
+        bool OwnsCollisionWorld { get; }
+
         /// <summary>The session's claim slots as this client sees them, or null outside a session.</summary>
         ClientClaims Claims { get; }
 
@@ -269,6 +275,10 @@ namespace AlpineLib.Sessions {
 
         /// <inheritdoc />
         public ClientReplication Replication => _replication;
+
+        /// <inheritdoc />
+        /// <remarks>Only the flat fallback is built fresh per session; registry worlds are cached and reused.</remarks>
+        public bool OwnsCollisionWorld => _collisionWorld != null && _collisionWorld.IsFallback && _frontDesk == null;
 
         /// <inheritdoc />
         public ClientClaims Claims => _claims;

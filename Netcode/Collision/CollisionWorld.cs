@@ -135,6 +135,9 @@ namespace AlpineLib.Netcode.Collision {
             }
         }
 
+        /// <summary>What <see cref="TranslateAll"/> has added to every mover path so far.</summary>
+        public Vector3 MoverOffset => moverOffset;
+
         /// <summary>How many static groups the world holds, the scene's own included while present.</summary>
         public int GroupCount => groups.Count;
 
