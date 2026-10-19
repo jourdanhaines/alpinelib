@@ -55,6 +55,7 @@ namespace AlpineLib.UI {
         private MaterialPropertyBlock _propertyBlock;
         private bool _isConfigured;
         private bool _isMisconfigured;
+        private bool _hasWarnedMissingEmission;
 
         /// <summary>The render texture the canvas draws into; null until <c>Awake</c> or when misconfigured.</summary>
         public RenderTexture Texture => _texture;
@@ -87,6 +88,7 @@ namespace AlpineLib.UI {
             if (_boundRenderer != null && _boundRenderer != target) Unbind();
 
             AdoptBackgroundFrom(target);
+            WarnIfEmissionPropertyMissing(target);
 
             _propertyBlock ??= new MaterialPropertyBlock();
             target.GetPropertyBlock(_propertyBlock, materialIndex);
@@ -212,6 +214,19 @@ namespace AlpineLib.UI {
             if (material == null || !material.HasProperty(texturePropertyName)) return;
 
             background.texture = material.GetTexture(texturePropertyName);
+        }
+
+        /// <summary>Warns once when the emission slot is set but the bound material lacks it; binding still proceeds.</summary>
+        private void WarnIfEmissionPropertyMissing(Renderer target) {
+            if (_hasWarnedMissingEmission || string.IsNullOrEmpty(emissionPropertyName)) return;
+
+            Material[] materials = target.sharedMaterials;
+            Material material = materialIndex >= 0 && materialIndex < materials.Length ? materials[materialIndex] : null;
+            if (material != null && material.HasProperty(emissionPropertyName)) return;
+
+            _hasWarnedMissingEmission = true;
+            string materialName = material != null ? material.name : "<none>";
+            Debug.LogWarning($"{nameof(RenderTextureUISurface)} on '{name}': material '{materialName}' on '{target.name}' has no '{emissionPropertyName}' property; the canvas will not drive its emission.", this);
         }
 
         private void OnDestroy() {
