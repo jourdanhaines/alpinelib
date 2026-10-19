@@ -3,7 +3,8 @@
   "references": [
     "FluxInteractive.AlpineLib",
     "FluxInteractive.AlpineLib.Netcode",
-    "FluxInteractive.AlpineLib.Appearance"
+    "FluxInteractive.AlpineLib.Appearance",
+    "UnityEngine.UI"
   ],
   "includePlatforms": [
     "Editor"
