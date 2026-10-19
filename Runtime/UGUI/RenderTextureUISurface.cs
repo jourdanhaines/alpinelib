@@ -5,7 +5,8 @@ using UnityEngine.UI;
 namespace AlpineLib.UI {
     /// <summary>
     /// Renders a uGUI canvas into a render texture and shows that texture on a world mesh, so a menu can
-    /// be drawn onto a held prop rather than over the screen.
+    /// be drawn onto a held prop rather than over the screen. Optionally also binds it into a second
+    /// texture slot (typically the emission map) so the material's emission tracks the live canvas.
     /// </summary>
     /// <remarks>
     /// The canvas camera must be a sibling of the canvas, never its ancestor or descendant: a
@@ -34,6 +35,9 @@ namespace AlpineLib.UI {
         [Tooltip("Material texture property the render texture replaces on the bound renderer.")]
         [SerializeField] private string texturePropertyName = "_BaseMap";
 
+        [Tooltip("Optional second texture property that also shows the canvas, e.g. an emission map so the surface stays legible in the dark. Empty = off.")]
+        [SerializeField] private string emissionPropertyName = "";
+
         [Tooltip("Material slot on the bound renderer that shows the canvas.")]
         [SerializeField] private int materialIndex;
 
@@ -58,6 +62,9 @@ namespace AlpineLib.UI {
         public Canvas Canvas => canvas;
 
         public Camera CanvasCamera => canvasCamera;
+
+        /// <summary>The second material texture property the canvas is bound into; empty when unused.</summary>
+        public string EmissionPropertyName => emissionPropertyName;
 
         /// <summary>True while the canvas is enabled and asked to render (see <see cref="SetRendering"/>).</summary>
         public bool IsRendering { get; private set; }
@@ -84,6 +91,7 @@ namespace AlpineLib.UI {
             _propertyBlock ??= new MaterialPropertyBlock();
             target.GetPropertyBlock(_propertyBlock, materialIndex);
             _propertyBlock.SetTexture(texturePropertyName, _texture);
+            if (!string.IsNullOrEmpty(emissionPropertyName)) _propertyBlock.SetTexture(emissionPropertyName, _texture);
             target.SetPropertyBlock(_propertyBlock, materialIndex);
             _boundRenderer = target;
         }
