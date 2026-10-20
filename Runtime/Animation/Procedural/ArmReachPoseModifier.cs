@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using AlpineLib.Actors;
 using AlpineLib.Cameras;
 using UnityEngine;
@@ -15,7 +16,9 @@ namespace AlpineLib.Animation.Procedural {
     /// gave the arms is replaced, not added to. Both hands share one shift along the view, so the
     /// spacing between them never changes:
     /// <list type="bullet">
-    /// <item>with a <c>followStartPitch</c> the hands hold their animated place in the actor's frame
+    /// <item>with a <c>followStartPitch</c> the animated arms are taken as authored for the look at that
+    /// pitch: the look's chest lean there (its share on the arms' ancestors) carries them first; the hands
+    /// then hold that place in the actor's frame
     /// until the look passes it, then turn by the look beyond it about the eye at the start pitch,
     /// carried to the eye at the look, so a prop held on that line of sight stays on the view axis;</item>
     /// <item>the elbow swivels, over the first <c>swivelBlendPitch</c> degrees followed, from the
@@ -125,6 +128,9 @@ namespace AlpineLib.Animation.Procedural {
         private Vector3 _pivotEye;
         private Vector3 _chestFront;
         private Quaternion _turn = Quaternion.identity;
+        private Quaternion _lean = Quaternion.identity;
+        private readonly List<LookPoseJoint> _jointScratch = new List<LookPoseJoint>();
+        private readonly LookPoseJoint[][] _armJoints = new LookPoseJoint[ArmCount][];
         private Vector3 _view = Vector3.forward;
         private float _clearancePush;
         private float _appliedPitch;
@@ -161,6 +167,8 @@ namespace AlpineLib.Animation.Procedural {
             BindArm(bones, 0, HumanBodyBones.LeftShoulder, HumanBodyBones.LeftUpperArm, HumanBodyBones.LeftLowerArm, HumanBodyBones.LeftHand);
             BindArm(bones, 1, HumanBodyBones.RightShoulder, HumanBodyBones.RightUpperArm, HumanBodyBones.RightLowerArm, HumanBodyBones.RightHand);
 
+            _armJoints[0] = null;
+            _armJoints[1] = null;
             _chestBone = bones.Find(HumanBodyBones.UpperChest);
             if (_chestBone == null) _chestBone = bones.Find(HumanBodyBones.Chest);
             _captured = false;
@@ -192,6 +200,7 @@ namespace AlpineLib.Animation.Procedural {
             _restingEye = RestingEye();
             _pivotEye = EyeAt(followStartPitch);
             _chestFront = ChestFront();
+            LeanCapturedArms();
             ReadBlendSources();
             ReadArmPivots();
 
@@ -280,6 +289,46 @@ namespace AlpineLib.Animation.Procedural {
         private bool IsReachableAt(float pitch) => TrySolveShift(pitch, out _);
 
         /// <summary>
+        /// Carries each captured arm the way the look's chest lean at the follow start would (a rigid turn
+        /// about the chain's pivots): the clip is authored for that lean, which this layer otherwise replaces.
+        /// </summary>
+        private void LeanCapturedArms() {
+            _lean = Quaternion.identity;
+            if (followStartPitch <= 0f || look == null) return;
+
+            for (int arm = 0; arm < ArmCount; arm++) {
+                if (IsMapped(arm)) LeanCapturedArm(arm);
+            }
+        }
+
+        private void LeanCapturedArm(int arm) {
+            LookPoseJoint[] joints = ArmJoints(arm);
+            if (joints.Length == 0) return;
+
+            float lookWeight = look.Weight;
+            _lean = Quaternion.AngleAxis(followStartPitch * look.AncestorShare(_upperArms[arm], true) * lookWeight, Vector3.right);
+            Vector3 hand = _handStart[arm];
+            Vector3 shift = hand + LookPoseSolver.ResolveTipOffset(joints, hand, followStartPitch, lookWeight) - _lean * hand;
+            _upperStart[arm] = _lean * _upperStart[arm] + shift;
+            _elbowStart[arm] = _lean * _elbowStart[arm] + shift;
+            _handStart[arm] = _lean * hand + shift;
+            _upperRotationStart[arm] = _lean * _upperRotationStart[arm];
+            _lowerRotationStart[arm] = _lean * _lowerRotationStart[arm];
+            _handRotationStart[arm] = _lean * _handRotationStart[arm];
+            _bendStart[arm] = _lean * _bendStart[arm];
+        }
+
+        /// <summary>The look's joints carrying an arm, found once the look is bound.</summary>
+        private LookPoseJoint[] ArmJoints(int arm) {
+            if (_armJoints[arm] != null && _armJoints[arm].Length > 0) return _armJoints[arm];
+
+            _jointScratch.Clear();
+            look.GetAncestorJoints(_upperArms[arm], _jointScratch);
+            _armJoints[arm] = _jointScratch.ToArray();
+            return _armJoints[arm];
+        }
+
+        /// <summary>
         /// The pitch the hands turn by: the look past the follow start (never negative, so looking up
         /// from it leaves them be), or with no follow start the look itself within both limits.
         /// </summary>
@@ -301,7 +350,7 @@ namespace AlpineLib.Animation.Procedural {
             _view = Quaternion.AngleAxis(lookPitch, Vector3.right) * Vector3.forward;
             Vector3 eye = EyeAt(lookPitch);
             Vector3 centre = LayOutTargets(eye);
-            Vector3 bottom = centre + _turn * (carriedCentreOffset + new Vector3(0f, -carriedExtentDown, 0f));
+            Vector3 bottom = centre + _turn * (_lean * (carriedCentreOffset + new Vector3(0f, -carriedExtentDown, 0f)));
 
             float clearanceFloor = ArmReachSolver.ClearanceShift(_chestFront, bottom, Vector3.forward, bodyClearance, lookPitch);
             _clearancePush = Mathf.Max(0f, clearanceFloor);
