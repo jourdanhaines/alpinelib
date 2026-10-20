@@ -15,7 +15,8 @@ namespace AlpineLib.Animation.Procedural {
     /// gave the arms is replaced, not added to. Both hands share one shift along the view, so the
     /// spacing between them never changes:
     /// <list type="bullet">
-    /// <item>looking down, the pair pushes out just enough that its bottom clears the chest-front point;</item>
+    /// <item>looking down, the pair pushes out just enough that the carried prop's bottom (its centre's
+    /// offset from the hands turned with them, less <c>carriedExtentDown</c>) clears the chest-front point;</item>
     /// <item>out of reach, the clavicles shrug a little, then the pair pulls in toward
     /// <c>minDistance</c>, then the hands stop following and lag behind the look.</item>
     /// </list>
@@ -44,7 +45,10 @@ namespace AlpineLib.Animation.Procedural {
         [Tooltip("Camera target height the eye rests at; above zero, the eye drops with the target's height (crouching).")]
         [SerializeField] private float standingHeight;
 
-        [Tooltip("How far the carried prop reaches below the hands' centre, in metres.")]
+        [Tooltip("Carried prop's centre relative to the hands' centre (hand bones), in the actor's frame at level look, in metres.")]
+        [SerializeField] private Vector3 carriedCentreOffset;
+
+        [Tooltip("How far the carried prop reaches below its centre, in metres.")]
         [SerializeField] private float carriedExtentDown = 0.133f;
 
         [Tooltip("Gap kept between the carried prop's bottom and the chest-front point, in metres.")]
@@ -266,7 +270,7 @@ namespace AlpineLib.Animation.Procedural {
             _view = _turn * Vector3.forward;
             Vector3 eye = EyeAt(pitch);
             Vector3 centre = LayOutTargets(eye);
-            Vector3 bottom = centre + _turn * new Vector3(0f, -carriedExtentDown, 0f);
+            Vector3 bottom = centre + _turn * (carriedCentreOffset + new Vector3(0f, -carriedExtentDown, 0f));
 
             float clearanceFloor = ArmReachSolver.ClearanceShift(_chestFront, bottom, Vector3.forward, bodyClearance, pitch);
             _clearancePush = Mathf.Max(0f, clearanceFloor);
@@ -390,9 +394,12 @@ namespace AlpineLib.Animation.Procedural {
             }
         }
 
-        /// <summary>Resting eye, lowered with a crouching camera target when a standing height is set.</summary>
+        /// <summary>
+        /// Resting eye, lowered with a crouching camera target when a standing height is set; a target
+        /// reporting no height (its capsule not yet found) leaves the eye standing.
+        /// </summary>
         private Vector3 RestingEye() {
-            if (_cameraTarget == null || standingHeight <= 0f) return eyeLocal;
+            if (_cameraTarget == null || standingHeight <= 0f || _cameraTarget.Height <= 0f) return eyeLocal;
 
             Vector3 eye = eyeLocal;
             eye.y = Mathf.Max(eyeLocal.y + _cameraTarget.Height - standingHeight, 0f);
