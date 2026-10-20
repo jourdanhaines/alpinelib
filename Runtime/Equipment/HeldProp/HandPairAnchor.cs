@@ -11,6 +11,8 @@ namespace AlpineLib.Equipment {
     /// directions that, in the hold pose, point where the prop's +Z should (away from the holder). Left
     /// at zero, the facing falls back to this component's forward, which keeps the prop upright but
     /// does not tilt it with the arms; <see cref="CalibrateFacing"/> measures the vectors from a pose.
+    /// <see cref="SetFacingOverride"/> replaces the palms with a facing the caller tracks, for hands whose
+    /// palms do not face the way the prop does.
     ///
     /// Prop grip points are in the prop root's local, unscaled units (measure them with any slide
     /// snapped open); the root's world scale is applied when posing. Resolved after the pose layers,
@@ -55,6 +57,8 @@ namespace AlpineLib.Equipment {
         private Quaternion _smoothedLocal = Quaternion.identity;
         private Quaternion _frameStartLocal = Quaternion.identity;
         private int _smoothedFrame = int.MinValue;
+        private Vector3 _facingOverride;
+        private bool _hasFacingOverride;
 
         /// <inheritdoc />
         public bool IsContinuous => true;
@@ -102,6 +106,21 @@ namespace AlpineLib.Equipment {
             leftPalm = _leftHand.InverseTransformDirection(worldFacing.normalized);
             rightPalm = _rightHand.InverseTransformDirection(worldFacing.normalized);
             return true;
+        }
+
+        /// <summary>
+        /// Takes the prop's +Z (away from the holder) from <paramref name="worldFacing"/> instead of the palm
+        /// vectors until <see cref="ClearFacingOverride"/>, e.g. a facing track authored with the hands'
+        /// animation. Position and the across axis still come from the hands.
+        /// </summary>
+        public void SetFacingOverride(Vector3 worldFacing) {
+            _facingOverride = worldFacing;
+            _hasFacingOverride = worldFacing.sqrMagnitude >= MinimumLengthSquared && IsFinite(worldFacing);
+        }
+
+        /// <summary>Returns the facing to the palm vectors.</summary>
+        public void ClearFacingOverride() {
+            _hasFacingOverride = false;
         }
 
         /// <summary>Drops the smoothed rotation, so the next resolve snaps to the hands.</summary>
@@ -152,6 +171,7 @@ namespace AlpineLib.Equipment {
         }
 
         private Vector3 ResolveFacing() {
+            if (_hasFacingOverride) return _facingOverride;
             if (leftPalm == Vector3.zero && rightPalm == Vector3.zero) return transform.forward;
 
             Vector3 facing = _leftHand.TransformDirection(leftPalm) + _rightHand.TransformDirection(rightPalm);

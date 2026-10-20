@@ -19,7 +19,8 @@ namespace AlpineLib.Animation.Procedural {
     /// correctness. The table is built on the first apply, after every layer has bound, and rebuilt
     /// when the look's weight or enabled state changes; call <see cref="Rebuild"/> after editing fields.
     /// The effective weight is <see cref="PoseModifier.Weight"/> times the optional follow layer's
-    /// weight, so the arms follow only while a hold animation is blended in.
+    /// weight, so the arms follow only while a hold animation is blended in. Up and down have their own
+    /// follow limits, since past a point the carried prop would pass through the head or the chest.
     /// </remarks>
     [RequireComponent(typeof(Actor))]
     public class ArmPitchPoseModifier : PoseModifier {
@@ -40,9 +41,13 @@ namespace AlpineLib.Animation.Procedural {
         [Tooltip("Degrees the carried point is held off the view axis; negative holds it below.")]
         [SerializeField] private float viewOffsetDegrees = -5f;
 
-        [Tooltip("Largest look pitch, either way, the arms follow.")]
+        [Tooltip("Largest upward look pitch the arms follow; beyond it they hold still and the carried point leaves the view.")]
         [Range(0f, 85f)]
-        [SerializeField] private float maxFollowPitch = 85f;
+        [SerializeField] private float maxFollowPitchUp = 35f;
+
+        [Tooltip("Largest downward look pitch the arms follow; beyond it they hold still and the carried point leaves the view.")]
+        [Range(0f, 85f)]
+        [SerializeField] private float maxFollowPitchDown = 55f;
 
         private readonly float[] _table = new float[ArmPitchSolver.TableLength];
         private readonly List<LookPoseJoint> _torsoJoints = new List<LookPoseJoint>();
@@ -53,8 +58,47 @@ namespace AlpineLib.Animation.Procedural {
         private Vector3 _restingShoulder;
         private bool _tableBuilt;
         private float _builtLookWeight;
+        private float _appliedSwing;
 
         public ArmPitchPoseModifier() : base(DefaultOrder) {
+        }
+
+        /// <summary>Largest look pitch, either way, the arms follow; setting it sets both limits.</summary>
+        public float MaxFollowPitch {
+            get => Mathf.Max(maxFollowPitchUp, maxFollowPitchDown);
+            set {
+                maxFollowPitchUp = Mathf.Clamp(value, 0f, 85f);
+                maxFollowPitchDown = maxFollowPitchUp;
+            }
+        }
+
+        public float MaxFollowPitchUp {
+            get => maxFollowPitchUp;
+            set => maxFollowPitchUp = Mathf.Clamp(value, 0f, 85f);
+        }
+
+        public float MaxFollowPitchDown {
+            get => maxFollowPitchDown;
+            set => maxFollowPitchDown = Mathf.Clamp(value, 0f, 85f);
+        }
+
+        /// <summary>Weighted swing in degrees (positive down, about the actor's right) this layer applied last apply.</summary>
+        public float AppliedSwing => _appliedSwing;
+
+        /// <summary>
+        /// Degrees the arms' carried frame is turned about the actor's right this frame: the torso bend the
+        /// look gives the arms plus <see cref="AppliedSwing"/>. Turn something authored in the resting pose
+        /// by this to follow the arms, e.g. the facing of a prop they hold.
+        /// </summary>
+        public float CarriedPitch {
+            get {
+                if (_actor == null) return _appliedSwing;
+
+                float pitch = _actor.LookPitch;
+                Transform arm = _leftUpperArm != null ? _leftUpperArm : _rightUpperArm;
+                float share = look != null && arm != null ? look.AncestorShare(arm, pitch >= 0f) : 0f;
+                return pitch * share * EffectiveLookWeight() + _appliedSwing;
+            }
         }
 
         /// <summary>Effective weight this frame: the layer's own weight times the follow layer's.</summary>
@@ -74,6 +118,7 @@ namespace AlpineLib.Animation.Procedural {
 
         /// <inheritdoc />
         public override void Apply(PoseBones bones, float deltaTime) {
+            _appliedSwing = 0f;
             if (_leftUpperArm == null && _rightUpperArm == null) return;
 
             float weight = EffectiveWeight;
@@ -81,8 +126,9 @@ namespace AlpineLib.Animation.Procedural {
 
             if (!_tableBuilt || EffectiveLookWeight() != _builtLookWeight) Rebuild();
 
-            float pitch = Mathf.Clamp(_actor.LookPitch, -maxFollowPitch, maxFollowPitch);
+            float pitch = Mathf.Clamp(_actor.LookPitch, -maxFollowPitchUp, maxFollowPitchDown);
             float swing = ArmPitchSolver.Sample(_table, pitch) * weight;
+            _appliedSwing = swing;
             Vector3 pitchAxis = _actorRoot.right;
             bones.RotateWorld(_leftUpperArm, pitchAxis, swing);
             bones.RotateWorld(_rightUpperArm, pitchAxis, swing);
