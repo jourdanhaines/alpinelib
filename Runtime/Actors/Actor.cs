@@ -54,6 +54,12 @@ namespace AlpineLib.Actors {
         /// </summary>
         public event Action<Transform, Transform> OnCarrierChanged;
 
+        /// <summary>
+        /// Raised when <see cref="HoldingProp"/> changes, with the new value and whether it was adopted
+        /// rather than played (a late join or a snap), in which case listeners jump to the end pose.
+        /// </summary>
+        public event Action<bool, bool> OnHoldingPropChanged;
+
         /// <inheritdoc />
         public bool IsAlive { get; private set; } = true;
 
@@ -128,6 +134,12 @@ namespace AlpineLib.Actors {
         /// body pose and the replicated state both read it back.
         /// </remarks>
         public float LookPitch { get; private set; }
+
+        /// <summary>
+        /// Whether the actor is holding a prop up; one place local and replicated pawns both read, so
+        /// the held pose runs one code path whoever the brain is.
+        /// </summary>
+        public bool HoldingProp { get; private set; }
 
         public float CapsuleHeight => _capsule != null ? _capsule.height : 0f;
         public float CapsuleRadius => _capsule != null ? _capsule.radius : 0f;
@@ -551,6 +563,18 @@ namespace AlpineLib.Actors {
         /// </summary>
         public void SetLookPitch(float pitchDegrees) {
             LookPitch = Mathf.Clamp(pitchDegrees, -MaxLookPitch, MaxLookPitch);
+        }
+
+        /// <summary>
+        /// Declares whether the actor is holding a prop; read back through <see cref="HoldingProp"/>.
+        /// Pass <paramref name="instant"/> when the state is adopted (a late join, a snap) so listeners
+        /// snap to the end pose instead of animating into it. Does nothing when unchanged.
+        /// </summary>
+        public void SetHoldingProp(bool holding, bool instant = false) {
+            if (HoldingProp == holding) return;
+
+            HoldingProp = holding;
+            OnHoldingPropChanged?.Invoke(holding, instant);
         }
 
         /// <summary>

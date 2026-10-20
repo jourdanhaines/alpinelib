@@ -174,7 +174,8 @@ namespace AlpineLib.Netcode.Replication {
             bool isGrounded = ResolveGrounding(ref position, ref velocity, startedGrounded, profile, world, simTick);
 
             float yawDegrees = ResolveYaw(moveDirection, state.YawDegrees);
-            byte flags = PawnState.PackFlags(input.Gait, input.Crouch, isGrounded);
+            // Presentation bits are not the motor's to decide; carry them like the look pitch.
+            byte flags = (byte)(PawnState.PackFlags(input.Gait, input.Crouch, isGrounded) | (state.Flags & PawnState.HoldingPropBit));
 
             return new PawnState(position, yawDegrees, velocity, flags, PawnState.WorldCarrierId, state.LookPitchDegrees);
         }

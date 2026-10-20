@@ -796,6 +796,7 @@ namespace AlpineLib.Networking {
             bool isGrounded = _actor != null && _actor.IsGrounded;
             bool isCrouching = _crouch != null && _crouch.IsCrouching;
             byte flags = PawnState.PackFlags(ResolveGait(), isCrouching, isGrounded);
+            if (_actor != null && _actor.HoldingProp) flags |= PawnState.HoldingPropBit;
             Vector3 position = _actor != null ? _actor.SimulatedWorldPosition : transform.position;
 
             state = new PawnState(

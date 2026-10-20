@@ -16,8 +16,10 @@ namespace AlpineLib.Netcode.Replication {
     /// </para>
     /// <para>
     /// <b>Flags layout</b> (a wire contract, never repack): bits 0-2 hold a <see cref="WireLocomotion"/>
-    /// gait, bit 3 is crouching, bit 4 is grounded. Bits 5-7 are reserved and must stay zero so a future
-    /// reader can tell "old sender" from "garbage".
+    /// gait, bit 3 is crouching, bit 4 is grounded, bit 5 is holding a prop. Bit 5 is presentation only —
+    /// nothing the simulation or the validator reads — and rides the judged state, so a rejected update
+    /// delays it by one send but never reverts what observers already saw. Bits 6-7 are reserved and
+    /// must stay zero so a future reader can tell "old sender" from "garbage".
     /// </para>
     /// <para>
     /// Position travels as full floats because it is what everything else is measured against; yaw,
@@ -51,6 +53,9 @@ namespace AlpineLib.Netcode.Replication {
 
         /// <summary>Bit 4: the pawn is standing on ground.</summary>
         public const byte GroundedBit = 0b0001_0000;
+
+        /// <summary>Bit 5: the pawn is holding a prop. Presentation only; see the layout note on the type.</summary>
+        public const byte HoldingPropBit = 0b0010_0000;
 
         /// <summary>The carrier id meaning "these numbers are world space".</summary>
         public const ushort WorldCarrierId = 0;
@@ -109,6 +114,9 @@ namespace AlpineLib.Netcode.Replication {
         /// <summary>True when bit 4 is set.</summary>
         public bool IsGrounded => (Flags & GroundedBit) != 0;
 
+        /// <summary>True when bit 5 is set.</summary>
+        public bool HoldingProp => (Flags & HoldingPropBit) != 0;
+
         /// <summary>Horizontal-only velocity, which is what the validator and the motor reason about.</summary>
         public Vector3 HorizontalVelocity => new Vector3(Velocity.X, 0f, Velocity.Z);
 
@@ -156,10 +164,17 @@ namespace AlpineLib.Netcode.Replication {
             return flags;
         }
 
-        /// <summary>Returns the same state with a rebuilt flags byte.</summary>
+        /// <summary>Returns the same state with rebuilt locomotion bits; presentation bits are kept.</summary>
         public PawnState WithFlags(WireLocomotion locomotion, bool isCrouching, bool isGrounded) {
             PawnState reflagged = this;
-            reflagged.Flags = PackFlags(locomotion, isCrouching, isGrounded);
+            reflagged.Flags = (byte)(PackFlags(locomotion, isCrouching, isGrounded) | (Flags & HoldingPropBit));
+            return reflagged;
+        }
+
+        /// <summary>Returns the same state with bit 5 set or cleared.</summary>
+        public PawnState WithHoldingProp(bool holding) {
+            PawnState reflagged = this;
+            reflagged.Flags = holding ? (byte)(Flags | HoldingPropBit) : (byte)(Flags & ~HoldingPropBit);
             return reflagged;
         }
 

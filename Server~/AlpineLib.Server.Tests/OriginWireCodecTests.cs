@@ -73,7 +73,7 @@ namespace AlpineLib.Server.Tests {
 
         [Fact]
         public void TheProtocolVersionMovedForTheOriginEpoch() {
-            Assert.Equal(8, NetProtocol.Version);
+            Assert.True(NetProtocol.Version >= 8);
         }
 
         private static TMessage RoundTrip<TMessage>(TMessage message) where TMessage : INetMessage, new() {

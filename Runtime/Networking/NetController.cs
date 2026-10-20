@@ -119,6 +119,7 @@ namespace AlpineLib.Networking {
         private INetworkService _networkService;
         private float _heldSinceTime;
         private bool _isHeld;
+        private bool _hasDriven;
         private readonly HashSet<ushort> _warnedCarrierIds = new HashSet<ushort>();
 
         /// <inheritdoc />
@@ -135,6 +136,7 @@ namespace AlpineLib.Networking {
             _character = character;
             _character.Possess(this);
             _isHeld = false;
+            _hasDriven = false;
             IsCarrierUnresolved = false;
 
             _view = character.GetComponent<NetEntityView>();
@@ -184,6 +186,7 @@ namespace AlpineLib.Networking {
             }
 
             _character.PlaceAt(world.Position.ToUnity(), world.YawDegrees, ResolveCarrierRoot(state.CarrierId));
+            _character.SetHoldingProp(world.HoldingProp, instant: true);
         }
 
         private static Transform ResolveCarrierRoot(ushort carrierId) {
@@ -326,6 +329,9 @@ namespace AlpineLib.Networking {
             _character.PlaceAt(state.Position.ToUnity(), carrierRoot);
             _character.SetExternalGrounded(state.IsGrounded);
             _character.SetLookPitch(state.LookPitchDegrees);
+            // The first driven sample is adopted, not played: a late joiner sees the held pose already up.
+            _character.SetHoldingProp(state.HoldingProp, instant: !_hasDriven);
+            _hasDriven = true;
 
             AnimateFromState(in state);
             ApplyFacing(state.YawDegrees);
