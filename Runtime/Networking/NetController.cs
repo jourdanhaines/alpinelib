@@ -187,6 +187,7 @@ namespace AlpineLib.Networking {
 
             _character.PlaceAt(world.Position.ToUnity(), world.YawDegrees, ResolveCarrierRoot(state.CarrierId));
             _character.SetHoldingProp(world.HoldingProp, instant: true);
+            _hasDriven = true;
         }
 
         private static Transform ResolveCarrierRoot(ushort carrierId) {

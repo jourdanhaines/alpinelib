@@ -656,8 +656,8 @@ namespace AlpineLib.Networking {
         /// <remarks>
         /// <para>
         /// <b>The jump is never gated on the report.</b> What <see cref="TryCapture"/> withholds is
-        /// this pawn's <em>position</em>, not the things that happen to it: the impulse is local, the
-        /// player pressed the button, and swallowing it would freeze the one input that ends the
+        /// this pawn's <em>sample</em> (pose, flags, look pitch), not the things that happen to it: the
+        /// impulse is local, the player pressed the button, and swallowing it would freeze the one input that ends the
         /// withhold — breaking ground contact is what makes a game let go of a carrier it cannot name.
         /// The impulse and its announcement go together or not at all, or the latch is left set to fire a
         /// stale jump minutes later.
@@ -788,7 +788,8 @@ namespace AlpineLib.Networking {
         /// leaves two lies to choose between: deck-local metres under a label nobody could invert, or world
         /// coordinates sliding past at the deck's speed while the pawn's own gait says it is walking. The
         /// second is what the server sees as a movement violation every single tick, so neither is sent.
-        /// What is withheld is the position and nothing else; see <see cref="SendOwnerSample"/>.
+        /// What is withheld is the whole sample — pose, flags (the held-prop bit included) and look
+        /// pitch — but never the jump; see <see cref="SendOwnerSample"/>.
         /// </para>
         /// </remarks>
         /// <returns>False when nothing truthful can be said about this pawn's position this tick.</returns>

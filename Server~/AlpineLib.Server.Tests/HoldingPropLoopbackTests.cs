@@ -52,6 +52,36 @@ namespace AlpineLib.Server.Tests {
             Assert.True(sampled.HoldingProp);
         }
 
+        [Fact]
+        public void SustainedRejectionStillPropagatesTheBit() {
+            using var world = new CarrierReplicationLoopbackWorld();
+            CarrierReplicationLoopbackClient owner = world.ConnectClient();
+            CarrierReplicationLoopbackClient observer = world.ConnectClient();
+            world.Pump(4);
+
+            NetEntity pawn = SpawnOwned(world, owner);
+            world.Pump(8);
+            PawnState spawned = pawn.State;
+            uint dirtyBefore = pawn.LastDirtyTick;
+
+            for (int attempt = 0; attempt < 3; attempt++) {
+                PawnState teleport = Standing(true);
+                teleport.Position += new Vector3(0f, 0f, 400f + attempt * 50f);
+                owner.Replication.SubmitOwnerPawnState(pawn.Id, in teleport);
+                world.Pump(4);
+            }
+
+            world.Pump(12);
+
+            Assert.True(world.Replication.Entities.TryGet(pawn.Id, out NetEntity authoritative));
+            Assert.Equal(spawned.Position, authoritative.State.Position);
+            Assert.True(authoritative.State.HoldingProp);
+            Assert.True(authoritative.IsDirtySince(dirtyBefore), "The adopted bit never marked the entity for re-broadcast.");
+            Assert.NotEmpty(owner.Corrections);
+            Assert.True(observer.Replication.SampleRemote(pawn.Id, out PawnState sampled), "The observer never sampled the pawn.");
+            Assert.True(sampled.HoldingProp);
+        }
+
         private static NetEntity SpawnOwned(CarrierReplicationLoopbackWorld world, CarrierReplicationLoopbackClient owner) {
             return world.Replication.SpawnEntity(
                 CarrierReplicationLoopbackWorld.PawnPrefab,

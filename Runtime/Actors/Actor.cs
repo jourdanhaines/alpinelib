@@ -790,6 +790,7 @@ namespace AlpineLib.Actors {
             if (!IsAlive) return;
 
             IsAlive = false;
+            SetHoldingProp(false, instant: true);
             foreach (Collider collider in GetComponentsInChildren<Collider>()) {
                 collider.enabled = false;
             }

@@ -24,8 +24,8 @@ namespace AlpineLib.Netcode.Protocol {
         /// <c>JoinAccepted</c> may carry it back behind a new flag bit.
         /// 8 — floating origin: <c>OriginShift</c> (id 88), and an origin epoch on snapshots, keyframes,
         /// spawns, corrections and owner updates.
-        /// 9 — <c>PawnState.Flags</c> bit 5 is HoldingProp; layout unchanged but a v8 peer treats the bit
-        /// as reserved.
+        /// 9 — <c>PawnState.Flags</c> bit 5 is HoldingProp; the connect key changes, so v8 and v9 peers
+        /// cannot connect at all; wire layout unchanged.
         /// </remarks>
         public const ushort Version = 9;
 

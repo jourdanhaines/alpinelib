@@ -746,7 +746,7 @@ namespace AlpineLib.Netcode.Replication {
                 return;
             }
 
-            entity.ApplyState(verdict.ResolvedState, currentTick);
+            entity.ApplyState(ResolveKeptState(in verdict, in previous, in message), currentTick);
             entity.LastAcknowledgedInputSequence = message.ClientTick;
             UpdateCarriedMomentum(entity, in previous);
 
@@ -756,6 +756,16 @@ namespace AlpineLib.Netcode.Replication {
 
             OnMovementViolation?.Invoke(entity, verdict);
             SendCorrection(entity, sender);
+        }
+
+        /// <summary>
+        /// The state to hold after judgement. A rejection keeps the previous pose but still adopts the
+        /// claim's presentation bit, so sustained rejection never freezes a held prop for observers.
+        /// </summary>
+        private static PawnState ResolveKeptState(in MovementVerdict verdict, in PawnState previous, in OwnerPawnUpdate message) {
+            if (verdict.Kind != MovementVerdictKind.Rejected) return verdict.ResolvedState;
+
+            return previous.WithHoldingProp(message.State.HoldingProp);
         }
 
         /// <summary>

@@ -17,9 +17,12 @@ namespace AlpineLib.Netcode.Replication {
     /// <para>
     /// <b>Flags layout</b> (a wire contract, never repack): bits 0-2 hold a <see cref="WireLocomotion"/>
     /// gait, bit 3 is crouching, bit 4 is grounded, bit 5 is holding a prop. Bit 5 is presentation only —
-    /// nothing the simulation or the validator reads — and rides the judged state, so a rejected update
-    /// delays it by one send but never reverts what observers already saw. Bits 6-7 are reserved and
-    /// must stay zero so a future reader can tell "old sender" from "garbage".
+    /// nothing the simulation or the validator reads. It replicates under owner-client authority only
+    /// (a server-authority <see cref="PawnInput"/> has no field for it, so the motor merely carries it).
+    /// A rejected owner update still adopts it onto the kept pose; an update refused unjudged for a stale
+    /// origin epoch drops it until the next send, and an owner sample withheld for an unusable carrier
+    /// withholds it too. Bits 6-7 are reserved and must stay zero so a future reader can tell
+    /// "old sender" from "garbage".
     /// </para>
     /// <para>
     /// Position travels as full floats because it is what everything else is measured against; yaw,
