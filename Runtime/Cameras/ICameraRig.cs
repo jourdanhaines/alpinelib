@@ -67,6 +67,9 @@ namespace AlpineLib.Cameras {
         /// </summary>
         float PitchNudgeApplied { get; }
 
+        /// <summary>Drops whatever is left of a running pitch nudge; what already turned stays.</summary>
+        void CancelPitchNudge();
+
         /// <summary>
         /// Queues a look delta in degrees — X yaws, positive Y looks up. Deltas accumulate across the
         /// frame and are consumed once in <c>LateUpdate</c>.

@@ -46,6 +46,11 @@ namespace AlpineLib.Animation.Procedural {
         /// <summary>The held bones, in apply order.</summary>
         public IReadOnlyList<BonePose> Poses => poses;
 
+        /// <summary>Re-aims held bone <paramref name="index"/> (in <see cref="Poses"/> order) at a new local rotation, e.g. a pose keyed by a prop's state each frame.</summary>
+        public void SetLocalRotation(int index, Quaternion localRotation) {
+            poses[index].localRotation = localRotation;
+        }
+
         /// <summary>Replaces the held bones; list parents before children.</summary>
         public void SetPoses(IReadOnlyList<BonePose> bonePoses) {
             poses = new BonePose[bonePoses.Count];

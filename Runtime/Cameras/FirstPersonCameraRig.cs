@@ -80,6 +80,11 @@ namespace AlpineLib.Cameras {
         public float PitchNudgeApplied => _nudgeApplied;
 
         /// <inheritdoc />
+        public void CancelPitchNudge() {
+            _nudge.Cancel();
+        }
+
+        /// <inheritdoc />
         public float NudgePitch(float degrees, float seconds) {
             _nudge.Begin(degrees, seconds);
             _nudgeApplied = 0f;
