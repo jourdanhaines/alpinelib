@@ -13,7 +13,10 @@ namespace AlpineLib.Equipment {
         /// <summary>True when the pose follows something moving and must be re-resolved every frame.</summary>
         bool IsContinuous { get; }
 
-        /// <summary>World pose for the prop's root; false when the anchor cannot resolve one this frame.</summary>
-        bool TryResolvePose(out Pose pose);
+        /// <summary>
+        /// World pose for <paramref name="prop"/>'s root; false when the anchor cannot resolve one this
+        /// frame. The prop is passed so prop-local offsets can be scaled by its world scale.
+        /// </summary>
+        bool TryResolvePose(Transform prop, out Pose pose);
     }
 }

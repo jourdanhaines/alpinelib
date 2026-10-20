@@ -10,7 +10,12 @@ namespace AlpineLib.Animation {
     /// truth, so a procedural layer can scale itself by the same number the animator sees. Safe with no
     /// animator, an uninitialised one, or a layer index the controller does not have: the weight still
     /// eases, it simply reaches nothing.
+    ///
+    /// Runs at order 295, after owners that set <see cref="Target"/> from <c>Update</c> at 290 or
+    /// earlier, so a target set this frame starts easing this frame. Disabling the component drops the
+    /// layer to zero, so a disabled blend never leaves the layer stuck on.
     /// </remarks>
+    [DefaultExecutionOrder(295)]
     public class AnimatorLayerBlend : MonoBehaviour {
         [Tooltip("Animator driven; found in children when left empty.")]
         [SerializeField] private Animator animator;
@@ -36,12 +41,18 @@ namespace AlpineLib.Animation {
         /// <summary>Current eased weight, the one written to the animator.</summary>
         public float Weight => _weight;
 
+        /// <summary>Animator layer whose weight this blend drives.</summary>
         public int LayerIndex => layerIndex;
 
         /// <summary>Jumps target and weight to <paramref name="weight"/> this frame, without easing.</summary>
         public void Snap(float weight) {
             _target = Mathf.Clamp01(weight);
             _weight = _target;
+            WriteWeight();
+        }
+
+        private void OnDisable() {
+            _weight = 0f;
             WriteWeight();
         }
 

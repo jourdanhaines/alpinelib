@@ -152,7 +152,13 @@ namespace AlpineLib.UI {
         /// A prop posed in <c>LateUpdate</c> (hand-held, following bones) has moved since physics last
         /// read transforms, and the event system raycasts in the next <c>Update</c>, before any fixed
         /// step syncs it; without this the ray would hit where the prop was a frame ago. At most once
-        /// per frame, and only when the collider actually moved.
+        /// per frame, and only when the collider moved in world space.
+        ///
+        /// Cost: <see cref="Physics.SyncTransforms"/> pushes every dirty transform in the scene to
+        /// PhysX, not just this collider; cheap when something else already syncs once a frame, and
+        /// it runs only while a source is set and the pointer is being raycast. The check is the world
+        /// pose, not the pose relative to the pointer camera: a carrier moving camera and prop together
+        /// still leaves PhysX holding the old world pose.
         /// </summary>
         private void SyncMovedCollider() {
             int frame = Time.frameCount;

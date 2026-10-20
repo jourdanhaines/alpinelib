@@ -26,7 +26,7 @@ namespace AlpineLib.UI {
     /// Hand mode (<see cref="PresentHeld"/>) instead poses the prop every frame from an
     /// <see cref="IHeldPropAnchor"/> with the slide snapped open; the surface renders from the first
     /// frame but takes pointer input only after <see cref="SetPointerEnabled"/>, so a raise animation
-    /// can finish first. <see cref="Conceal"/> hides a hand-held prop at once.
+    /// can finish first. <see cref="Conceal"/> (not <see cref="Dismiss"/>) hides a hand-held prop at once.
     /// </remarks>
     [DefaultExecutionOrder(300)]
     public class HeldSurfacePresenter : HeldPropPresenter {
@@ -66,15 +66,18 @@ namespace AlpineLib.UI {
             if (!EnsureInstance(holder)) return false;
             if (_slide == null) {
                 Debug.LogError($"{nameof(HeldSurfacePresenter)} on '{name}': held prefab '{HeldPrefab.name}' needs a SlideMotion to present in front of the eye.", this);
+                ReleaseInstance();
                 return false;
             }
 
+            // A prop coming from the hands slides up afresh rather than jumping from where it was held.
+            bool wasHandHeld = Anchor != null;
             ClearAnchor();
             ForceLayer(Instance);
             if (!_slide.IsInitialised) _slide.Initialise();
 
             // A prop already up or sliding away is re-posed and reversed from where it is, never popped closed.
-            bool alreadyShowing = hadInstance && Instance.gameObject.activeSelf;
+            bool alreadyShowing = hadInstance && Instance.gameObject.activeSelf && !wasHandHeld;
             PoseInFrontOf(eye);
             _pendingEye = eye;
             Instance.gameObject.SetActive(true);
@@ -121,7 +124,10 @@ namespace AlpineLib.UI {
             raycaster.SetSource(_pointerEye, _collider);
         }
 
-        /// <summary>Slides the prop away and stops pointer routing; <paramref name="instant"/> hides it this frame.</summary>
+        /// <summary>
+        /// Slides the prop away and stops pointer routing; <paramref name="instant"/> hides it this frame.
+        /// Camera mode only: a hand-held prop is put away with <see cref="Conceal"/>.
+        /// </summary>
         public void Dismiss(bool instant) {
             IsPresented = false;
             ClearAnchor();

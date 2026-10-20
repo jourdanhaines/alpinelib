@@ -38,11 +38,13 @@ namespace AlpineLib.Equipment {
         /// <summary>Anchor posing the prop, null when presented some other way or concealed.</summary>
         public IHeldPropAnchor Anchor => _anchor;
 
+        /// <summary>Prefab spawned under the holder; null when unassigned.</summary>
         protected GameObject HeldPrefab => heldPrefab;
 
         /// <summary>
-        /// Spawns the prop under <paramref name="holder"/> if needed, shows it and poses it from
-        /// <paramref name="anchor"/>; a continuous anchor keeps posing it every <c>LateUpdate</c>.
+        /// Spawns the prop under <paramref name="holder"/> if needed and poses it from
+        /// <paramref name="anchor"/>; a continuous anchor keeps posing it every <c>LateUpdate</c>. The
+        /// prop stays hidden until the anchor first resolves a pose, so it never shows at a stale one.
         /// </summary>
         public virtual bool Present(Transform holder, IHeldPropAnchor anchor) {
             if (heldPrefab == null || holder == null || anchor == null) {
@@ -54,8 +56,7 @@ namespace AlpineLib.Equipment {
 
             _anchor = anchor;
             _poseOnce = true;
-            _instance.gameObject.SetActive(true);
-            ApplyAnchorPose();
+            _instance.gameObject.SetActive(ApplyAnchorPose());
             IsPresented = true;
             return true;
         }
@@ -84,9 +85,10 @@ namespace AlpineLib.Equipment {
         protected virtual void LateUpdate() {
             if (!IsPresented || _anchor == null || _instance == null) return;
             if (!_anchor.IsContinuous && !_poseOnce) return;
+            if (!ApplyAnchorPose()) return;
 
             _poseOnce = false;
-            ApplyAnchorPose();
+            if (!_instance.gameObject.activeSelf) _instance.gameObject.SetActive(true);
         }
 
         protected void ClearAnchor() {
@@ -132,10 +134,11 @@ namespace AlpineLib.Equipment {
             }
         }
 
-        private void ApplyAnchorPose() {
-            if (!_anchor.TryResolvePose(out Pose pose)) return;
+        private bool ApplyAnchorPose() {
+            if (!_anchor.TryResolvePose(_instance, out Pose pose)) return false;
 
             _instance.SetPositionAndRotation(pose.position, pose.rotation);
+            return true;
         }
 
         private void WarnMissingLayerOnce() {

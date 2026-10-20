@@ -20,6 +20,8 @@ namespace AlpineLib.Animation.Procedural {
     /// It swings from a fixed height above the head joint rather than from wherever the rig rests its
     /// eye: a rig lowers its eye with a crouching capsule, and an eye below the neck would swing
     /// backwards.
+    ///
+    /// Stack order 0 by default; layers that build on the bent torso order after it.
     /// </remarks>
     [RequireComponent(typeof(Actor))]
     public class LookPoseModifier : PoseModifier, ICameraEyeModel {

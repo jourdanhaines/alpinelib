@@ -67,7 +67,12 @@ namespace AlpineLib.Cameras {
         public float Pitch => _pitch;
 
         /// <inheritdoc />
-        public float LookGain { get; set; } = 1f;
+        public float LookGain {
+            get => _lookGain;
+            set => _lookGain = Mathf.Max(value, 0f);
+        }
+
+        private float _lookGain = 1f;
 
         /// <summary>
         /// Where the camera is looking, flattened onto the ground plane and normalised. Use this to make

@@ -19,6 +19,14 @@ namespace AlpineLib.Animation.Procedural {
 
         public int Order => order;
 
+        protected PoseModifier() : this(0) {
+        }
+
+        /// <summary>Seeds the authored order for a new component; a serialized value still wins.</summary>
+        protected PoseModifier(int defaultOrder) {
+            order = defaultOrder;
+        }
+
         public float Weight {
             get => weight;
             set => weight = Mathf.Clamp01(value);

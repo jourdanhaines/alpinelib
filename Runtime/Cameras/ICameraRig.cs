@@ -47,8 +47,9 @@ namespace AlpineLib.Cameras {
         Transform CameraAnchor { get; }
 
         /// <summary>
-        /// Extra multiplier on queued look input, on top of the rig's sensitivity; 1 by default. Lowered
-        /// while the player steadies the view, e.g. reading a held prop.
+        /// Extra multiplier on queued look input, on top of the rig's sensitivity; 1 by default, never
+        /// negative. Lowered while the player steadies the view, e.g. reading a held prop; carried
+        /// across rigs on a perspective switch.
         /// </summary>
         float LookGain { get; set; }
 

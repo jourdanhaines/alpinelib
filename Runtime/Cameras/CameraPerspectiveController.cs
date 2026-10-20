@@ -161,6 +161,7 @@ namespace AlpineLib.Cameras {
             if (incomingRig == null) return;
 
             incomingRig.SetLookAngles(outgoingRig.Yaw, outgoingRig.Pitch);
+            incomingRig.LookGain = outgoingRig.LookGain;
         }
 
         private void LateUpdate() {

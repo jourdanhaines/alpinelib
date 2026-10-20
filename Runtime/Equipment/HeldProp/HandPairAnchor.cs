@@ -12,11 +12,13 @@ namespace AlpineLib.Equipment {
     /// at zero, the facing falls back to this component's forward, which keeps the prop upright but
     /// does not tilt it with the arms; <see cref="CalibrateFacing"/> measures the vectors from a pose.
     ///
-    /// Grip points are in metres for a prop root of unit world scale. Resolved after the pose layers,
+    /// Prop grip points are in the prop root's local, unscaled units (measure them with any slide
+    /// snapped open); the root's world scale is applied when posing. Resolved after the pose layers,
     /// so whatever bends the arms this frame carries the prop with it. Allocation free per frame.
     /// </remarks>
     public class HandPairAnchor : MonoBehaviour, IHeldPropAnchor {
         private const float MinimumLengthSquared = 1e-8f;
+        private const float AnimatorRetrySeconds = 1f;
 
         [Tooltip("Humanoid animator the hands are read from; found in children when left empty.")]
         [SerializeField] private Animator animator;
@@ -36,30 +38,42 @@ namespace AlpineLib.Equipment {
         [Tooltip("Right-hand-local direction the prop's +Z (away from the holder) follows. Zero on both hands uses this transform's forward.")]
         [SerializeField] private Vector3 rightPalm;
 
-        [Tooltip("Prop-local point the left hand grips.")]
+        [Tooltip("Point the left hand grips, in the prop root's local unscaled units.")]
         [SerializeField] private Vector3 propGripLeft = new Vector3(-0.2f, 0f, 0f);
 
-        [Tooltip("Prop-local point the right hand grips.")]
+        [Tooltip("Point the right hand grips, in the prop root's local unscaled units.")]
         [SerializeField] private Vector3 propGripRight = new Vector3(0.2f, 0f, 0f);
 
-        [Tooltip("Time constant in seconds smoothing the prop's rotation relative to this transform; 0 follows the hands exactly.")]
+        [Tooltip("Time constant in seconds smoothing the prop's rotation in this anchor's frame; 0 follows the hands exactly.")]
         [SerializeField] private float rotationSmoothing;
 
         private Transform _leftHand;
         private Transform _rightHand;
+        private float _nextAnimatorSearch = float.NegativeInfinity;
         private Quaternion _gripFrameInverse = Quaternion.identity;
         private bool _gripFrameDirty = true;
         private Quaternion _smoothedLocal = Quaternion.identity;
+        private Quaternion _frameStartLocal = Quaternion.identity;
         private int _smoothedFrame = int.MinValue;
 
         /// <inheritdoc />
         public bool IsContinuous => true;
 
+        /// <summary>The left hand bone, or null while no humanoid animator is available.</summary>
         public Transform LeftHand => ResolveHands() ? _leftHand : null;
 
+        /// <summary>The right hand bone, or null while no humanoid animator is available.</summary>
         public Transform RightHand => ResolveHands() ? _rightHand : null;
 
-        /// <summary>Sets the prop-local grip points, e.g. from sockets on a freshly spawned prop.</summary>
+        /// <summary>Points the anchor at <paramref name="target"/>'s hands, e.g. after the body is rebuilt.</summary>
+        public void SetAnimator(Animator target) {
+            animator = target;
+            _leftHand = null;
+            _rightHand = null;
+            _nextAnimatorSearch = float.NegativeInfinity;
+        }
+
+        /// <summary>Sets the prop-local grip points (root-local, unscaled), e.g. from sockets on a fresh prop.</summary>
         public void SetPropGrips(Vector3 left, Vector3 right) {
             propGripLeft = left;
             propGripRight = right;
@@ -96,7 +110,7 @@ namespace AlpineLib.Equipment {
         }
 
         /// <inheritdoc />
-        public bool TryResolvePose(out Pose pose) {
+        public bool TryResolvePose(Transform prop, out Pose pose) {
             pose = default;
             if (!ResolveHands()) return false;
 
@@ -105,17 +119,19 @@ namespace AlpineLib.Equipment {
             if (!TryBuildFrame(gripRight - gripLeft, ResolveFacing(), out Quaternion handFrame)) return false;
 
             Quaternion rotation = Smooth(handFrame * GripFrameInverse());
-            Vector3 propMidpoint = (propGripLeft + propGripRight) * 0.5f;
+            Vector3 propScale = prop != null ? prop.lossyScale : Vector3.one;
+            Vector3 propMidpoint = Vector3.Scale((propGripLeft + propGripRight) * 0.5f, propScale);
             pose = new Pose((gripLeft + gripRight) * 0.5f - rotation * propMidpoint, rotation);
             return true;
         }
 
         /// <summary>
         /// Rotation whose +X is <paramref name="across"/> and whose +Z is <paramref name="facing"/> with
-        /// its component along <paramref name="across"/> removed. False when either is degenerate.
+        /// its component along <paramref name="across"/> removed. False when either is degenerate or not finite.
         /// </summary>
         public static bool TryBuildFrame(Vector3 across, Vector3 facing, out Quaternion frame) {
             frame = Quaternion.identity;
+            if (!IsFinite(across) || !IsFinite(facing)) return false;
             if (across.sqrMagnitude < MinimumLengthSquared) return false;
 
             Vector3 right = across.normalized;
@@ -125,6 +141,10 @@ namespace AlpineLib.Equipment {
             forward.Normalize();
             frame = Quaternion.LookRotation(forward, Vector3.Cross(forward, right));
             return true;
+        }
+
+        private static bool IsFinite(Vector3 vector) {
+            return float.IsFinite(vector.x) && float.IsFinite(vector.y) && float.IsFinite(vector.z);
         }
 
         private void OnValidate() {
@@ -149,16 +169,22 @@ namespace AlpineLib.Equipment {
             return _gripFrameInverse;
         }
 
-        /// <summary>Exponential smoothing held in this transform's frame, so a turning carrier does not drag the prop.</summary>
+        /// <summary>
+        /// Exponential smoothing held in this anchor's frame, so a turning carrier does not drag the
+        /// prop. A second resolve in one frame re-smooths from the frame's starting value, so it sees
+        /// this frame's hands without advancing twice.
+        /// </summary>
         private Quaternion Smooth(Quaternion target) {
             if (rotationSmoothing <= 0f) return target;
 
             Quaternion local = Quaternion.Inverse(transform.rotation) * target;
             int frame = Time.frameCount;
             if (_smoothedFrame == int.MinValue || frame - _smoothedFrame > 1) {
+                _frameStartLocal = local;
                 _smoothedLocal = local;
-            } else if (frame != _smoothedFrame) {
-                _smoothedLocal = Quaternion.Slerp(_smoothedLocal, local, 1f - Mathf.Exp(-Time.deltaTime / rotationSmoothing));
+            } else {
+                if (frame != _smoothedFrame) _frameStartLocal = _smoothedLocal;
+                _smoothedLocal = Quaternion.Slerp(_frameStartLocal, local, 1f - Mathf.Exp(-Time.deltaTime / rotationSmoothing));
             }
 
             _smoothedFrame = frame;
@@ -167,13 +193,23 @@ namespace AlpineLib.Equipment {
 
         private bool ResolveHands() {
             if (_leftHand != null && _rightHand != null) return true;
-
-            if (animator == null) animator = GetComponentInChildren<Animator>();
-            if (animator == null || !animator.isInitialized || !animator.isHuman) return false;
+            if (!ResolveAnimator()) return false;
 
             _leftHand = animator.GetBoneTransform(leftHandBone);
             _rightHand = animator.GetBoneTransform(rightHandBone);
             return _leftHand != null && _rightHand != null;
+        }
+
+        /// <summary>Finds the animator in children, searching at most once a second while there is none.</summary>
+        private bool ResolveAnimator() {
+            if (animator == null) {
+                if (Time.unscaledTime < _nextAnimatorSearch) return false;
+
+                _nextAnimatorSearch = Time.unscaledTime + AnimatorRetrySeconds;
+                animator = GetComponentInChildren<Animator>();
+            }
+
+            return animator != null && animator.isInitialized && animator.isHuman;
         }
     }
 }

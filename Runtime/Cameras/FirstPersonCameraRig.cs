@@ -67,7 +67,12 @@ namespace AlpineLib.Cameras {
         public float Pitch => _pitch;
 
         /// <inheritdoc />
-        public float LookGain { get; set; } = 1f;
+        public float LookGain {
+            get => _lookGain;
+            set => _lookGain = Mathf.Max(value, 0f);
+        }
+
+        private float _lookGain = 1f;
 
         /// <inheritdoc />
         public Vector3 PlanarForward => Quaternion.Euler(0f, Yaw, 0f) * Vector3.forward;
