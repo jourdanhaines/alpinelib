@@ -2,21 +2,22 @@ using UnityEngine;
 
 namespace AlpineLib.Equipment {
     /// <summary>
-    /// Poses a held prop between two humanoid hand bones: the prop's grip points land on the hands'
-    /// grip points, its +X runs from the left grip to the right, and it faces the way the palms say.
+    /// Poses a held prop between two humanoid hand bones by matching grip frames: a pinch frame on each
+    /// hand (hand-bone local) meets a grip frame on the prop (prop-root local).
     /// </summary>
     /// <remarks>
     /// Frame convention (see <see cref="IHeldPropAnchor"/>): prop +X left grip → right grip, +Y up,
-    /// readable face toward −Z (the holder). The facing comes from the two palm vectors — hand-local
-    /// directions that, in the hold pose, point where the prop's +Z should (away from the holder). Left
-    /// at zero, the facing falls back to this component's forward, which keeps the prop upright but
-    /// does not tilt it with the arms; <see cref="CalibrateFacing"/> measures the vectors from a pose.
-    /// <see cref="SetFacingOverride"/> replaces the palms with a facing the caller tracks, for hands whose
-    /// palms do not face the way the prop does.
+    /// readable face toward −Z (the holder). The fit is hybrid: the across axis runs between the two
+    /// pinch points, so neither hand's rotation can swing the prop sideways out of the other, and the
+    /// facing is the halfway rotation the two pinches imply for the prop, with its across part removed.
+    /// The prop is then centred between the pinches, any spacing mismatch split evenly.
     ///
-    /// Prop grip points are in the prop root's local, unscaled units (measure them with any slide
-    /// snapped open); the root's world scale is applied when posing. Resolved after the pose layers,
-    /// so whatever bends the arms this frame carries the prop with it. Allocation free per frame.
+    /// Prop grip positions are in the prop root's local, unscaled units; the root's world scale is
+    /// applied when posing. Resolved after the pose layers, so whatever bends the arms this frame
+    /// carries the prop with it. Allocation free per frame.
+    ///
+    /// The older point-grip API (hand grip points plus palm vectors or a facing override) still works
+    /// and takes over while any of its inputs is set; it is obsolete.
     /// </remarks>
     public class HandPairAnchor : MonoBehaviour, IHeldPropAnchor {
         private const float MinimumLengthSquared = 1e-8f;
@@ -28,23 +29,29 @@ namespace AlpineLib.Equipment {
         [SerializeField] private HumanBodyBones leftHandBone = HumanBodyBones.LeftHand;
         [SerializeField] private HumanBodyBones rightHandBone = HumanBodyBones.RightHand;
 
-        [Tooltip("Grip point in the left hand bone's local space.")]
+        [Tooltip("Pinch frame in the left hand bone's local space.")]
+        [SerializeField] private Pose leftPinch = Pose.identity;
+
+        [Tooltip("Pinch frame in the right hand bone's local space.")]
+        [SerializeField] private Pose rightPinch = Pose.identity;
+
+        [Tooltip("Frame the left hand pinches, in the prop root's local space (unscaled position).")]
+        [SerializeField] private Pose propGripLeft = new Pose(new Vector3(-0.2f, 0f, 0f), Quaternion.identity);
+
+        [Tooltip("Frame the right hand pinches, in the prop root's local space (unscaled position).")]
+        [SerializeField] private Pose propGripRight = new Pose(new Vector3(0.2f, 0f, 0f), Quaternion.identity);
+
+        [Tooltip("Obsolete point grip in the left hand bone's local space; non-zero selects the legacy fit.")]
         [SerializeField] private Vector3 leftGrip;
 
-        [Tooltip("Grip point in the right hand bone's local space.")]
+        [Tooltip("Obsolete point grip in the right hand bone's local space; non-zero selects the legacy fit.")]
         [SerializeField] private Vector3 rightGrip;
 
-        [Tooltip("Left-hand-local direction the prop's +Z (away from the holder) follows. Zero on both hands uses this transform's forward.")]
+        [Tooltip("Obsolete left-hand-local direction the prop's +Z follows in the legacy fit.")]
         [SerializeField] private Vector3 leftPalm;
 
-        [Tooltip("Right-hand-local direction the prop's +Z (away from the holder) follows. Zero on both hands uses this transform's forward.")]
+        [Tooltip("Obsolete right-hand-local direction the prop's +Z follows in the legacy fit.")]
         [SerializeField] private Vector3 rightPalm;
-
-        [Tooltip("Point the left hand grips, in the prop root's local unscaled units.")]
-        [SerializeField] private Vector3 propGripLeft = new Vector3(-0.2f, 0f, 0f);
-
-        [Tooltip("Point the right hand grips, in the prop root's local unscaled units.")]
-        [SerializeField] private Vector3 propGripRight = new Vector3(0.2f, 0f, 0f);
 
         [Tooltip("Time constant in seconds smoothing the prop's rotation in this anchor's frame; 0 follows the hands exactly.")]
         [SerializeField] private float rotationSmoothing;
@@ -77,29 +84,44 @@ namespace AlpineLib.Equipment {
             _nextAnimatorSearch = float.NegativeInfinity;
         }
 
-        /// <summary>Sets the prop-local grip points (root-local, unscaled), e.g. from sockets on a fresh prop.</summary>
-        public void SetPropGrips(Vector3 left, Vector3 right) {
+        /// <summary>Sets the prop's grip frames (root-local, unscaled position), e.g. from a folding rig each frame.</summary>
+        public void SetPropGrips(Pose left, Pose right) {
             propGripLeft = left;
             propGripRight = right;
             _gripFrameDirty = true;
         }
 
-        /// <summary>Sets the hand-local grip points.</summary>
+        /// <summary>Sets the hand-local pinch frames.</summary>
+        public void SetHandPinches(Pose left, Pose right) {
+            leftPinch = left;
+            rightPinch = right;
+        }
+
+        /// <summary>Sets the prop-local grip points (root-local, unscaled) with no grip rotation.</summary>
+        [System.Obsolete("Point grips are replaced by grip frames: use SetPropGrips(Pose, Pose). Removed with the legacy fit.")]
+        public void SetPropGrips(Vector3 left, Vector3 right) {
+            SetPropGrips(new Pose(left, Quaternion.identity), new Pose(right, Quaternion.identity));
+        }
+
+        /// <summary>Sets the hand-local grip points; non-zero points select the legacy fit.</summary>
+        [System.Obsolete("Use SetHandPinches. Removed with the legacy fit.")]
         public void SetHandGrips(Vector3 left, Vector3 right) {
             leftGrip = left;
             rightGrip = right;
         }
 
-        /// <summary>Sets the hand-local palm vectors; see the remarks for what they mean.</summary>
+        /// <summary>Sets the hand-local palm vectors the legacy fit faces the prop by.</summary>
+        [System.Obsolete("Facing comes from the pinch frames. Removed with the legacy fit.")]
         public void SetPalms(Vector3 left, Vector3 right) {
             leftPalm = left;
             rightPalm = right;
         }
 
         /// <summary>
-        /// Measures both palm vectors from the current pose so the prop's +Z follows
+        /// Legacy fit: measures both palm vectors from the current pose so the prop's +Z follows
         /// <paramref name="worldFacing"/> in it. Call with the hold pose applied at level look.
         /// </summary>
+        [System.Obsolete("Facing comes from the pinch frames. Removed with the legacy fit.")]
         public bool CalibrateFacing(Vector3 worldFacing) {
             if (!ResolveHands() || worldFacing.sqrMagnitude < MinimumLengthSquared) return false;
 
@@ -109,16 +131,18 @@ namespace AlpineLib.Equipment {
         }
 
         /// <summary>
-        /// Takes the prop's +Z (away from the holder) from <paramref name="worldFacing"/> instead of the palm
+        /// Legacy fit: takes the prop's +Z (away from the holder) from <paramref name="worldFacing"/> instead of the palm
         /// vectors until <see cref="ClearFacingOverride"/>, e.g. a facing track authored with the hands'
         /// animation. Position and the across axis still come from the hands.
         /// </summary>
+        [System.Obsolete("Facing comes from the pinch frames. Removed with the legacy fit.")]
         public void SetFacingOverride(Vector3 worldFacing) {
             _facingOverride = worldFacing;
             _hasFacingOverride = worldFacing.sqrMagnitude >= MinimumLengthSquared && IsFinite(worldFacing);
         }
 
-        /// <summary>Returns the facing to the palm vectors.</summary>
+        /// <summary>Returns the legacy facing to the palm vectors.</summary>
+        [System.Obsolete("Facing comes from the pinch frames. Removed with the legacy fit.")]
         public void ClearFacingOverride() {
             _hasFacingOverride = false;
         }
@@ -133,15 +157,8 @@ namespace AlpineLib.Equipment {
             pose = default;
             if (!ResolveHands()) return false;
 
-            Vector3 gripLeft = _leftHand.TransformPoint(leftGrip);
-            Vector3 gripRight = _rightHand.TransformPoint(rightGrip);
-            if (!TryBuildFrame(gripRight - gripLeft, ResolveFacing(), out Quaternion handFrame)) return false;
-
-            Quaternion rotation = Smooth(handFrame * GripFrameInverse());
             Vector3 propScale = prop != null ? prop.lossyScale : Vector3.one;
-            Vector3 propMidpoint = Vector3.Scale((propGripLeft + propGripRight) * 0.5f, propScale);
-            pose = new Pose((gripLeft + gripRight) * 0.5f - rotation * propMidpoint, rotation);
-            return true;
+            return UsesLegacyFit() ? TryResolveLegacy(propScale, out pose) : TryResolveFrames(propScale, out pose);
         }
 
         /// <summary>
@@ -170,6 +187,55 @@ namespace AlpineLib.Equipment {
             _gripFrameDirty = true;
         }
 
+        /// <summary>
+        /// Grip-frame fit: across from the pinch points, facing from the halfway rotation the pinches
+        /// imply for the prop, centred between the pinches.
+        /// </summary>
+        private bool TryResolveFrames(Vector3 propScale, out Pose pose) {
+            pose = default;
+            Vector3 pinchLeft = _leftHand.TransformPoint(leftPinch.position);
+            Vector3 pinchRight = _rightHand.TransformPoint(rightPinch.position);
+            Quaternion impliedLeft = _leftHand.rotation * leftPinch.rotation * Quaternion.Inverse(propGripLeft.rotation);
+            Quaternion impliedRight = _rightHand.rotation * rightPinch.rotation * Quaternion.Inverse(propGripRight.rotation);
+            Vector3 facing = Quaternion.Slerp(impliedLeft, impliedRight, 0.5f) * Vector3.forward;
+            if (!TryBuildFrame(pinchRight - pinchLeft, facing, out Quaternion handFrame)) return false;
+
+            Vector3 gripLeft = Vector3.Scale(propGripLeft.position, propScale);
+            Vector3 gripRight = Vector3.Scale(propGripRight.position, propScale);
+            if (!TryBuildFrame(gripRight - gripLeft, PropFacing(gripRight - gripLeft), out Quaternion propFrame)) return false;
+
+            Quaternion rotation = Smooth(handFrame * Quaternion.Inverse(propFrame));
+            pose = new Pose((pinchLeft + pinchRight) * 0.5f - rotation * ((gripLeft + gripRight) * 0.5f), rotation);
+            return true;
+        }
+
+        /// <summary>The prop-local facing halfway between the grip frames, or +Z when that runs along the grips.</summary>
+        private Vector3 PropFacing(Vector3 across) {
+            Vector3 facing = Quaternion.Slerp(propGripLeft.rotation, propGripRight.rotation, 0.5f) * Vector3.forward;
+            Vector3 right = across.normalized;
+            Vector3 flattened = facing - right * Vector3.Dot(facing, right);
+            if (flattened.sqrMagnitude >= MinimumLengthSquared) return flattened;
+
+            return Mathf.Abs(right.z) > 0.99f ? Vector3.Cross(across, Vector3.up) : Vector3.forward;
+        }
+
+        /// <summary>The obsolete point-grip fit, used while any of its inputs is set.</summary>
+        private bool UsesLegacyFit() {
+            return _hasFacingOverride || leftGrip != Vector3.zero || rightGrip != Vector3.zero || leftPalm != Vector3.zero || rightPalm != Vector3.zero;
+        }
+
+        private bool TryResolveLegacy(Vector3 propScale, out Pose pose) {
+            pose = default;
+            Vector3 gripLeft = _leftHand.TransformPoint(leftGrip);
+            Vector3 gripRight = _rightHand.TransformPoint(rightGrip);
+            if (!TryBuildFrame(gripRight - gripLeft, ResolveFacing(), out Quaternion handFrame)) return false;
+
+            Quaternion rotation = Smooth(handFrame * GripFrameInverse());
+            Vector3 propMidpoint = Vector3.Scale((propGripLeft.position + propGripRight.position) * 0.5f, propScale);
+            pose = new Pose((gripLeft + gripRight) * 0.5f - rotation * propMidpoint, rotation);
+            return true;
+        }
+
         private Vector3 ResolveFacing() {
             if (_hasFacingOverride) return _facingOverride;
             if (leftPalm == Vector3.zero && rightPalm == Vector3.zero) return transform.forward;
@@ -183,7 +249,7 @@ namespace AlpineLib.Equipment {
             if (!_gripFrameDirty) return _gripFrameInverse;
 
             _gripFrameDirty = false;
-            Vector3 across = propGripRight - propGripLeft;
+            Vector3 across = propGripRight.position - propGripLeft.position;
             Vector3 facing = Mathf.Abs(across.normalized.z) > 0.99f ? Vector3.Cross(across, Vector3.up) : Vector3.forward;
             _gripFrameInverse = TryBuildFrame(across, facing, out Quaternion gripFrame) ? Quaternion.Inverse(gripFrame) : Quaternion.identity;
             return _gripFrameInverse;

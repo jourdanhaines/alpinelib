@@ -38,6 +38,13 @@ namespace AlpineLib.Animation.Procedural {
         public abstract void Bind(Transform actorRoot, PoseBones bones);
 
         /// <summary>
+        /// Snapshot of the pure animated pose, called for every live layer before any layer applies.
+        /// Override to read bones a later <see cref="Apply"/> rebuilds from scratch.
+        /// </summary>
+        public virtual void Capture(PoseBones bones) {
+        }
+
+        /// <summary>
         /// Adds this layer's motion to the pose the animator and any earlier layer left behind.
         /// </summary>
         public abstract void Apply(PoseBones bones, float deltaTime);

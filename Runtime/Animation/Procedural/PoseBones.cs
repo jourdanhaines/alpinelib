@@ -53,6 +53,14 @@ namespace AlpineLib.Animation.Procedural {
             bone.Rotate(worldAxis, degrees, Space.World);
         }
 
+        /// <summary>Sets a bone's world rotation outright, replacing whatever earlier layers added.</summary>
+        public void RotateWorldTo(Transform bone, Quaternion worldRotation) {
+            if (bone == null) return;
+
+            Track(bone);
+            bone.rotation = worldRotation;
+        }
+
         /// <summary>Closes the frame, remembering what each touched bone was left with.</summary>
         public void EndFrame() {
             foreach (Transform bone in _touched) {

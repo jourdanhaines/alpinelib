@@ -40,9 +40,11 @@ namespace AlpineLib.Animation.Procedural {
             _bones.BeginFrame();
 
             foreach (PoseModifier modifier in _modifiers) {
-                if (!modifier.isActiveAndEnabled || modifier.Weight <= 0f) continue;
+                if (IsLive(modifier)) modifier.Capture(_bones);
+            }
 
-                modifier.Apply(_bones, deltaTime);
+            foreach (PoseModifier modifier in _modifiers) {
+                if (IsLive(modifier)) modifier.Apply(_bones, deltaTime);
             }
 
             _bones.EndFrame();
@@ -67,6 +69,10 @@ namespace AlpineLib.Animation.Procedural {
             foreach (PoseModifier modifier in _modifiers) {
                 modifier.Bind(transform, _bones);
             }
+        }
+
+        private static bool IsLive(PoseModifier modifier) {
+            return modifier.isActiveAndEnabled && modifier.Weight > 0f;
         }
 
         private static int CompareOrder(PoseModifier left, PoseModifier right) {
