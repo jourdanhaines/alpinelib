@@ -11,12 +11,18 @@ namespace AlpineLib.UI {
     /// The held prefab's root carries a child <see cref="SlideMotion"/> whose authored local position is
     /// the closed (lowered) pose; beneath it a renderer and a non-convex <see cref="MeshCollider"/> share
     /// the surface mesh. The instance is parented to the holder (typically the player's actor root) so it
-    /// rides any moving carrier, posed once in world space at open, and kept fixed while open.
+    /// rides any moving carrier, posed in world space at open, and kept fixed while open.
+    ///
+    /// Posed once in <c>LateUpdate</c> after <see cref="Present"/> so camera rigs have written this frame's
+    /// eye pose; the execution order puts it after the rigs and <see cref="CameraPerspectiveController"/>,
+    /// so the provisional pose Present writes from <c>Update</c> is never drawn (a Present issued after
+    /// this component's LateUpdate shows it for one frame).
     ///
     /// The holder can be destroyed under the instance (player despawn), so every access is Unity-null
     /// aware and a later <see cref="Present"/> simply spawns a fresh instance. The holder should be
     /// uniformly scaled, or the posed surface is skewed.
     /// </remarks>
+    [DefaultExecutionOrder(300)]
     public class HeldSurfacePresenter : MonoBehaviour {
         [Tooltip("Prop spawned under the holder: root → SlideMotion → Renderer + non-convex MeshCollider.")]
         [SerializeField] private GameObject heldPrefab;
@@ -42,6 +48,7 @@ namespace AlpineLib.UI {
         private MeshCollider _collider;
         private bool _warnedMissingLayer;
         private bool _warnedBeyondPointerReach;
+        private Camera _pendingEye;
 
         /// <summary>True from <see cref="Present"/> until <see cref="Dismiss"/>, including while sliding.</summary>
         public bool IsPresented { get; private set; }
@@ -71,6 +78,7 @@ namespace AlpineLib.UI {
             // A prop already up or sliding away is re-posed and reversed from where it is, never popped closed.
             bool alreadyShowing = hadInstance && _instance.gameObject.activeSelf;
             PoseInFrontOf(eye);
+            _pendingEye = eye;
             _instance.gameObject.SetActive(true);
             if (!alreadyShowing) _slide.Snap(false);
 
@@ -84,6 +92,7 @@ namespace AlpineLib.UI {
         /// <summary>Slides the prop away and stops pointer routing; <paramref name="instant"/> hides it this frame.</summary>
         public void Dismiss(bool instant) {
             IsPresented = false;
+            _pendingEye = null;
             if (raycaster != null) raycaster.ClearSource();
             if (_instance == null || _slide == null) {
                 StopSurface();
@@ -97,6 +106,7 @@ namespace AlpineLib.UI {
         /// <summary>Destroys the instance and unbinds the surface, e.g. when the holder is going away.</summary>
         public void ReleaseInstance() {
             IsPresented = false;
+            _pendingEye = null;
             if (raycaster != null) raycaster.ClearSource();
 
             StopSurface();
@@ -118,6 +128,17 @@ namespace AlpineLib.UI {
             if (!_instance.gameObject.activeSelf || _slide.Fraction > 0f) return;
 
             Conceal();
+        }
+
+        /// <summary>Re-poses a freshly presented prop against the eye pose the rigs wrote this frame.</summary>
+        private void LateUpdate() {
+            if (_pendingEye == null) return;
+
+            Camera eye = _pendingEye;
+            _pendingEye = null;
+            if (!IsPresented || _instance == null || _collider == null) return;
+
+            PoseInFrontOf(eye);
         }
 
         /// <summary>Spawns the prop, or re-parents a live one that is under a different holder.</summary>

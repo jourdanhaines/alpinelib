@@ -72,6 +72,10 @@ namespace AlpineLib.UI {
         /// must be one of the listed entries; anything else is refused with a warning so
         /// <see cref="CurrentScreen"/> can never point at a screen this coordinator does not own.
         /// </summary>
+        /// <remarks>
+        /// Every other listed screen is snapped hidden first — even ones left visible by something
+        /// outside this coordinator — so at most the incoming and a fading outgoing screen are up.
+        /// </remarks>
         public void ShowScreen(UIScreen screen, bool instant = false) {
             UIScreenEntry incomingEntry = FindEntry(screen);
             if (incomingEntry == null) {
@@ -81,7 +85,10 @@ namespace AlpineLib.UI {
 
             UIScreen outgoing = CurrentScreen;
             CurrentScreen = screen;
-            CancelTransition(screen);
+            bool interrupted = StopTransition();
+
+            // Only the incoming screen, plus an outgoing one still fading out, may remain visible.
+            HideAllExcept(screen, instant || interrupted ? null : outgoing);
 
             if (instant) {
                 CompleteSwitchTo(incomingEntry, true);
@@ -104,7 +111,7 @@ namespace AlpineLib.UI {
         /// caught mid-fade by the transition's own screen grab.
         /// </summary>
         public void HideAll(bool instant = false) {
-            CancelTransition(null);
+            if (StopTransition()) HideAllExcept(null, null);
             CurrentScreen = null;
 
             foreach (UIScreenEntry entry in screens) {
@@ -143,19 +150,23 @@ namespace AlpineLib.UI {
             incomingEntry.Screen.Show(instant);
         }
 
-        /// <summary>
-        /// Stops any switch in flight and snaps every listed screen except
-        /// <paramref name="protectedScreen"/> to hidden, so an interrupted sequence cannot leave a
-        /// half-faded straggler behind.
-        /// </summary>
-        private void CancelTransition(UIScreen protectedScreen) {
-            if (_transition == null) return;
+        /// <summary>Stops any switch in flight; true when one was running.</summary>
+        private bool StopTransition() {
+            if (_transition == null) return false;
 
             StopCoroutine(_transition);
             _transition = null;
+            return true;
+        }
 
+        /// <summary>
+        /// Snaps every listed screen except <paramref name="keep"/> and <paramref name="fadingOut"/> to
+        /// hidden, so a switch never leaves a straggler visible underneath the incoming screen.
+        /// </summary>
+        private void HideAllExcept(UIScreen keep, UIScreen fadingOut) {
             foreach (UIScreenEntry entry in screens) {
-                if (entry?.Screen == null || entry.Screen == protectedScreen) continue;
+                if (entry?.Screen == null) continue;
+                if (entry.Screen == keep || entry.Screen == fadingOut) continue;
 
                 entry.Screen.Hide(true);
             }

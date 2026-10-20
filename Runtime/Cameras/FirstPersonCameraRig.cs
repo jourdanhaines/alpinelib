@@ -1,3 +1,4 @@
+using AlpineLib.Origin;
 using UnityEngine;
 
 namespace AlpineLib.Cameras {
@@ -30,7 +31,7 @@ namespace AlpineLib.Cameras {
     /// <see cref="PlanarForward"/>/<see cref="PlanarRight"/> stay yaw-only so movement never tilts into
     /// or out of the ground with the aim.
     /// </remarks>
-    public class FirstPersonCameraRig : MonoBehaviour, ICameraRig {
+    public class FirstPersonCameraRig : MonoBehaviour, ICameraRig, IOriginShiftListener {
         [Header("Target")]
         [Tooltip("Child transform the camera pose is published on. Falls back to the first child, then to a created anchor.")]
         [SerializeField] private Transform cameraAnchor;
@@ -91,6 +92,22 @@ namespace AlpineLib.Cameras {
             Vector3 startingAngles = transform.rotation.eulerAngles;
             _frameYaw = startingAngles.y;
             _pitch = Mathf.Clamp(Mathf.DeltaAngle(0f, startingAngles.x), pitchMin, pitchMax);
+            OriginShiftRegistry.RegisterListener(this);
+        }
+
+        private void OnDestroy() {
+            OriginShiftRegistry.UnregisterListener(this);
+        }
+
+        /// <summary>
+        /// A floating-origin rebase: the eye moves with the world at once, so anything reading the camera
+        /// before this frame's <c>LateUpdate</c> is not a rebase away. Translated rather than re-snapped because
+        /// listeners run in registration order and the target's own shift may not have landed yet.
+        /// Assumes the rig is not parented under a shifted root.
+        /// </summary>
+        void IOriginShiftListener.OnOriginShifted(Vector3 delta) {
+            transform.position += delta;
+            PositionAnchor();
         }
 
         /// <inheritdoc />
