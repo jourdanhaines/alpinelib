@@ -20,8 +20,9 @@ namespace AlpineLib.Animation.Procedural {
     /// <c>minDistance</c>, then the hands stop following and lag behind the look.</item>
     /// </list>
     /// Ordered at <see cref="DefaultOrder"/> (10), after the look at 0. The effective weight is
-    /// <see cref="PoseModifier.Weight"/> times the optional follow layer's, and scales the pitch
-    /// followed. Allocation free and time free per frame.
+    /// <see cref="PoseModifier.Weight"/> times the optional follow layer's: the arms are solved at the
+    /// full pitch and each written bone is blended from the look's pose toward the solve by it, so 0
+    /// leaves the look's pose and 1 is the exact solve. Allocation free and time free per frame.
     /// </remarks>
     [RequireComponent(typeof(Actor))]
     public class ArmReachPoseModifier : PoseModifier {
@@ -78,7 +79,8 @@ namespace AlpineLib.Animation.Procedural {
         private readonly Vector3[] _upperStart = new Vector3[ArmCount];
         private readonly Vector3[] _elbowStart = new Vector3[ArmCount];
         private readonly Vector3[] _handStart = new Vector3[ArmCount];
-        private readonly Vector3[] _bendStart = { Vector3.up, Vector3.down };
+        private readonly Vector3[] _bendStart = new Vector3[ArmCount];
+        private readonly bool[] _hasBend = new bool[ArmCount];
         private readonly Quaternion[] _upperRotationStart = new Quaternion[ArmCount];
         private readonly Quaternion[] _lowerRotationStart = new Quaternion[ArmCount];
         private readonly Quaternion[] _handRotationStart = new Quaternion[ArmCount];
@@ -86,6 +88,15 @@ namespace AlpineLib.Animation.Procedural {
         private readonly float[] _lowerLength = new float[ArmCount];
         private readonly Vector3[] _armPivot = new Vector3[ArmCount];
         private readonly Vector3[] _baseTarget = new Vector3[ArmCount];
+        private readonly bool[] _shrugged = new bool[ArmCount];
+        private readonly Quaternion[] _shoulderFrom = new Quaternion[ArmCount];
+        private readonly Quaternion[] _upperFrom = new Quaternion[ArmCount];
+        private readonly Quaternion[] _lowerFrom = new Quaternion[ArmCount];
+        private readonly Quaternion[] _handFrom = new Quaternion[ArmCount];
+        private readonly Quaternion[] _shoulderSolved = new Quaternion[ArmCount];
+        private readonly Quaternion[] _upperSolved = new Quaternion[ArmCount];
+        private readonly Quaternion[] _lowerSolved = new Quaternion[ArmCount];
+        private readonly Quaternion[] _handSolved = new Quaternion[ArmCount];
 
         private Actor _actor;
         private Transform _actorRoot;
@@ -104,10 +115,13 @@ namespace AlpineLib.Animation.Procedural {
         public ArmReachPoseModifier() : base(DefaultOrder) {
         }
 
-        /// <summary>Weighted look pitch, in degrees (positive down), the hands followed last apply; less than the look while lagging.</summary>
+        /// <summary>
+        /// Followed pitch times the effective weight, in degrees (positive down), last apply; the
+        /// followed pitch falls short of the look while lagging.
+        /// </summary>
         public float AppliedPitch => IsLive ? _appliedPitch : 0f;
 
-        /// <summary>Metres the hands moved along the view last apply: out to clear the chest, negative when pulled in.</summary>
+        /// <summary>Shift along the view times the effective weight, in metres, last apply: out to clear the chest, negative when pulled in.</summary>
         public float AppliedPush => IsLive ? _appliedPush : 0f;
 
         /// <summary>Effective weight this frame: the layer's own weight times the follow layer's.</summary>
@@ -153,19 +167,24 @@ namespace AlpineLib.Animation.Procedural {
             float weight = EffectiveWeight;
             if (weight <= 0f || (!IsMapped(0) && !IsMapped(1))) return;
 
-            float pitch = Mathf.Clamp(_actor.LookPitch, -maxFollowPitchUp, maxFollowPitchDown) * weight;
+            float pitch = Mathf.Clamp(_actor.LookPitch, -maxFollowPitchUp, maxFollowPitchDown);
             _restingEye = RestingEye();
             _chestFront = ChestFront();
+            ReadBlendSources();
             ReadArmPivots();
 
             float shift = ResolveShift(bones, ref pitch);
             Quaternion rootRotation = _actorRoot.rotation;
             for (int arm = 0; arm < ArmCount; arm++) {
-                if (IsMapped(arm)) SolveArm(bones, arm, _baseTarget[arm] + _view * shift, rootRotation);
+                if (IsMapped(arm)) SolveArm(arm, _baseTarget[arm] + _view * shift, rootRotation);
             }
 
-            _appliedPitch = pitch;
-            _appliedPush = shift;
+            for (int arm = 0; arm < ArmCount; arm++) {
+                if (IsMapped(arm)) WriteArm(bones, arm, weight);
+            }
+
+            _appliedPitch = pitch * weight;
+            _appliedPush = shift * weight;
         }
 
         private void OnDisable() {
@@ -200,7 +219,23 @@ namespace AlpineLib.Animation.Procedural {
             _handRotationStart[arm] = toLocal * _hands[arm].rotation;
             _upperLength[arm] = Vector3.Distance(upper, elbow);
             _lowerLength[arm] = Vector3.Distance(elbow, hand);
-            _bendStart[arm] = ArmReachSolver.BendNormal(upper, elbow, hand, _bendStart[arm]);
+            CaptureBend(arm, upper, elbow, hand);
+        }
+
+        /// <summary>
+        /// Bend plane of the captured arm. A straight arm has none, so it keeps the last one seen, or
+        /// takes one from the hand's turn before any was seen.
+        /// </summary>
+        private void CaptureBend(int arm, Vector3 upper, Vector3 elbow, Vector3 hand) {
+            if (ArmReachSolver.TryBendNormal(upper, elbow, hand, out Vector3 bend)) {
+                _bendStart[arm] = bend;
+                _hasBend[arm] = true;
+                return;
+            }
+
+            Vector3 reach = hand - upper;
+            bool keepsLast = _hasBend[arm] && ArmReachSolver.PoleFromBend(reach.normalized, _bendStart[arm]).sqrMagnitude > 1e-4f;
+            if (!keepsLast) _bendStart[arm] = ArmReachSolver.BendNormalFromHand(reach, _handRotationStart[arm]);
         }
 
         /// <summary>
@@ -291,29 +326,61 @@ namespace AlpineLib.Animation.Procedural {
             if (degrees <= 0f || axis.sqrMagnitude < 1e-12f) return;
 
             bones.RotateWorld(_shoulders[arm], _actorRoot.TransformDirection(axis.normalized), degrees);
+            _shoulderSolved[arm] = _shoulders[arm].rotation;
+            _shrugged[arm] = true;
         }
 
-        /// <summary>Two-bone solve of one arm onto <paramref name="target"/>, twist carried from the captured pose.</summary>
-        private void SolveArm(PoseBones bones, int arm, Vector3 target, Quaternion rootRotation) {
+        /// <summary>
+        /// Two-bone solve of one arm onto <paramref name="target"/>, twist carried from the captured
+        /// pose; fills the solved world rotations without writing them.
+        /// </summary>
+        private void SolveArm(int arm, Vector3 target, Quaternion rootRotation) {
             Vector3 upperStart = _upperStart[arm];
             Vector3 elbowStart = _elbowStart[arm];
             Vector3 handStart = _handStart[arm];
             Vector3 bendStart = _bendStart[arm];
-            Vector3 reachStart = (handStart - upperStart).normalized;
-            Vector3 elbowOffset = elbowStart - upperStart;
-            Vector3 pole = _turn * (elbowOffset - reachStart * Vector3.Dot(elbowOffset, reachStart));
+            Vector3 pole = _turn * ArmReachSolver.PoleFromBend((handStart - upperStart).normalized, bendStart);
 
             Vector3 pivot = _armPivot[arm];
             Vector3 elbow = ArmReachSolver.SolveElbow(pivot, target, _upperLength[arm], _lowerLength[arm], pole);
             Vector3 bend = ArmReachSolver.BendNormal(pivot, elbow, target, _turn * bendStart);
+            Quaternion upper = ArmReachSolver.Reorient(elbowStart - upperStart, bendStart, elbow - pivot, bend, _upperRotationStart[arm]);
 
-            Quaternion upper = ArmReachSolver.Reorient(elbowOffset, bendStart, elbow - pivot, bend, _upperRotationStart[arm]);
-            bones.RotateWorldTo(_upperArms[arm], rootRotation * upper);
-
-            Vector3 elbowNow = _actorRoot.InverseTransformPoint(_lowerArms[arm].position);
+            // Where the elbow lands once the upper arm takes its solved rotation, from the bone as it is now.
+            Quaternion toLocal = Quaternion.Inverse(_actorRoot.rotation);
+            Quaternion upperTurn = upper * Quaternion.Inverse(toLocal * _upperArms[arm].rotation);
+            Vector3 elbowNow = pivot + upperTurn * (_actorRoot.InverseTransformPoint(_lowerArms[arm].position) - pivot);
             Quaternion lower = ArmReachSolver.Reorient(handStart - elbowStart, bendStart, target - elbowNow, bend, _lowerRotationStart[arm]);
-            bones.RotateWorldTo(_lowerArms[arm], rootRotation * lower);
-            bones.RotateWorldTo(_hands[arm], rootRotation * (_turn * _handRotationStart[arm]));
+
+            _upperSolved[arm] = rootRotation * upper;
+            _lowerSolved[arm] = rootRotation * lower;
+            _handSolved[arm] = rootRotation * (_turn * _handRotationStart[arm]);
+        }
+
+        /// <summary>Writes one arm top-down, each bone blended from the look's pose toward its solve.</summary>
+        private void WriteArm(PoseBones bones, int arm, float weight) {
+            if (_shrugged[arm]) bones.RotateWorldTo(_shoulders[arm], Blend(_shoulderFrom[arm], _shoulderSolved[arm], weight));
+
+            bones.RotateWorldTo(_upperArms[arm], Blend(_upperFrom[arm], _upperSolved[arm], weight));
+            bones.RotateWorldTo(_lowerArms[arm], Blend(_lowerFrom[arm], _lowerSolved[arm], weight));
+            bones.RotateWorldTo(_hands[arm], Blend(_handFrom[arm], _handSolved[arm], weight));
+        }
+
+        private static Quaternion Blend(Quaternion from, Quaternion to, float weight) {
+            return weight >= 1f ? to : Quaternion.Slerp(from, to, weight);
+        }
+
+        /// <summary>World rotations the look left the arms with, before any shrug: the pose weight 0 keeps.</summary>
+        private void ReadBlendSources() {
+            for (int arm = 0; arm < ArmCount; arm++) {
+                _shrugged[arm] = false;
+                if (!IsMapped(arm)) continue;
+
+                if (_shoulders[arm] != null) _shoulderFrom[arm] = _shoulders[arm].rotation;
+                _upperFrom[arm] = _upperArms[arm].rotation;
+                _lowerFrom[arm] = _lowerArms[arm].rotation;
+                _handFrom[arm] = _hands[arm].rotation;
+            }
         }
 
         /// <summary>Current upper-arm pivots, after the look and any shrug, in the actor's local space.</summary>
@@ -327,7 +394,9 @@ namespace AlpineLib.Animation.Procedural {
         private Vector3 RestingEye() {
             if (_cameraTarget == null || standingHeight <= 0f) return eyeLocal;
 
-            return eyeLocal + Vector3.up * (_cameraTarget.Height - standingHeight);
+            Vector3 eye = eyeLocal;
+            eye.y = Mathf.Max(eyeLocal.y + _cameraTarget.Height - standingHeight, 0f);
+            return eye;
         }
 
         private Vector3 EyeAt(float pitch) {

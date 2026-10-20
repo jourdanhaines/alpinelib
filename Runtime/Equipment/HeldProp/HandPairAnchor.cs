@@ -195,28 +195,26 @@ namespace AlpineLib.Equipment {
             pose = default;
             Vector3 pinchLeft = _leftHand.TransformPoint(leftPinch.position);
             Vector3 pinchRight = _rightHand.TransformPoint(rightPinch.position);
-            Quaternion impliedLeft = _leftHand.rotation * leftPinch.rotation * Quaternion.Inverse(propGripLeft.rotation);
-            Quaternion impliedRight = _rightHand.rotation * rightPinch.rotation * Quaternion.Inverse(propGripRight.rotation);
-            Vector3 facing = Quaternion.Slerp(impliedLeft, impliedRight, 0.5f) * Vector3.forward;
-            if (!TryBuildFrame(pinchRight - pinchLeft, facing, out Quaternion handFrame)) return false;
-
             Vector3 gripLeft = Vector3.Scale(propGripLeft.position, propScale);
             Vector3 gripRight = Vector3.Scale(propGripRight.position, propScale);
-            if (!TryBuildFrame(gripRight - gripLeft, PropFacing(gripRight - gripLeft), out Quaternion propFrame)) return false;
+            Vector3 propFacing = PropFacing(gripRight - gripLeft);
+            if (!TryBuildFrame(gripRight - gripLeft, propFacing, out Quaternion propFrame)) return false;
+
+            // The same prop-local facing carried to the world by each pinch, so a consistent pair
+            // reproduces the prop rotation the pinches imply exactly.
+            Quaternion impliedLeft = _leftHand.rotation * leftPinch.rotation * Quaternion.Inverse(propGripLeft.rotation);
+            Quaternion impliedRight = _rightHand.rotation * rightPinch.rotation * Quaternion.Inverse(propGripRight.rotation);
+            Vector3 facing = Quaternion.Slerp(impliedLeft, impliedRight, 0.5f) * propFacing;
+            if (!TryBuildFrame(pinchRight - pinchLeft, facing, out Quaternion handFrame)) return false;
 
             Quaternion rotation = Smooth(handFrame * Quaternion.Inverse(propFrame));
             pose = new Pose((pinchLeft + pinchRight) * 0.5f - rotation * ((gripLeft + gripRight) * 0.5f), rotation);
             return true;
         }
 
-        /// <summary>The prop-local facing halfway between the grip frames, or +Z when that runs along the grips.</summary>
-        private Vector3 PropFacing(Vector3 across) {
-            Vector3 facing = Quaternion.Slerp(propGripLeft.rotation, propGripRight.rotation, 0.5f) * Vector3.forward;
-            Vector3 right = across.normalized;
-            Vector3 flattened = facing - right * Vector3.Dot(facing, right);
-            if (flattened.sqrMagnitude >= MinimumLengthSquared) return flattened;
-
-            return Mathf.Abs(right.z) > 0.99f ? Vector3.Cross(across, Vector3.up) : Vector3.forward;
+        /// <summary>The prop's +Z, or a level direction across it when the grips run along +Z.</summary>
+        private static Vector3 PropFacing(Vector3 across) {
+            return Mathf.Abs(across.normalized.z) > 0.99f ? Vector3.Cross(across, Vector3.up) : Vector3.forward;
         }
 
         /// <summary>The obsolete point-grip fit, used while any of its inputs is set.</summary>

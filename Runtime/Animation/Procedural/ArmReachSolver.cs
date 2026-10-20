@@ -17,6 +17,9 @@ namespace AlpineLib.Animation.Procedural {
         /// <summary>Share of the full reach a straight arm is allowed, so the elbow never locks.</summary>
         public const float StraightLimit = 0.999f;
 
+        /// <summary>Sine of the bend below which an arm counts as straight and its bend plane as unknown.</summary>
+        public const float StraightSine = 1e-3f;
+
         private const float MinimumLengthSquared = 1e-12f;
         private const float MinimumCosine = 0.05f;
 
@@ -56,8 +59,40 @@ namespace AlpineLib.Animation.Procedural {
         /// chain is straight.
         /// </summary>
         public static Vector3 BendNormal(Vector3 shoulder, Vector3 elbow, Vector3 hand, Vector3 fallback) {
-            Vector3 normal = Vector3.Cross(elbow - shoulder, hand - elbow);
-            return normal.sqrMagnitude > MinimumLengthSquared ? normal.normalized : fallback;
+            return TryBendNormal(shoulder, elbow, hand, out Vector3 normal) ? normal : fallback;
+        }
+
+        /// <summary>
+        /// Bend-plane normal of a chain shoulder → elbow → hand; false when the chain is straight to
+        /// within <see cref="StraightSine"/>, where the plane is noise.
+        /// </summary>
+        public static bool TryBendNormal(Vector3 shoulder, Vector3 elbow, Vector3 hand, out Vector3 normal) {
+            Vector3 upper = elbow - shoulder;
+            Vector3 lower = hand - elbow;
+            normal = Vector3.Cross(upper, lower);
+            float limit = StraightSine * StraightSine * upper.sqrMagnitude * lower.sqrMagnitude;
+            if (normal.sqrMagnitude <= Mathf.Max(limit, MinimumLengthSquared)) return false;
+
+            normal.Normalize();
+            return true;
+        }
+
+        /// <summary>
+        /// A bend normal for a straight arm reaching along <paramref name="reach"/>, taken from the hand's
+        /// own frame so the elbow bends the way the wrist is turned rather than an arbitrary way.
+        /// </summary>
+        public static Vector3 BendNormalFromHand(Vector3 reach, Quaternion handRotation) {
+            Vector3 normal = Vector3.Cross(handRotation * Vector3.up, reach);
+            if (normal.sqrMagnitude <= MinimumLengthSquared) normal = Vector3.Cross(handRotation * Vector3.forward, reach);
+            return normal.sqrMagnitude > MinimumLengthSquared ? normal.normalized : AnyPerpendicular(reach);
+        }
+
+        /// <summary>
+        /// Direction the elbow sits off the shoulder → hand line, for a chain reaching along
+        /// <paramref name="reach"/> with bend normal <paramref name="bendNormal"/> (cross(upper, lower)).
+        /// </summary>
+        public static Vector3 PoleFromBend(Vector3 reach, Vector3 bendNormal) {
+            return Vector3.Cross(reach, bendNormal);
         }
 
         /// <summary>
