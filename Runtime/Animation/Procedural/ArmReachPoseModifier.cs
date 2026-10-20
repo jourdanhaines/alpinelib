@@ -15,6 +15,11 @@ namespace AlpineLib.Animation.Procedural {
     /// gave the arms is replaced, not added to. Both hands share one shift along the view, so the
     /// spacing between them never changes:
     /// <list type="bullet">
+    /// <item>with a <c>followStartPitch</c> the hands hold their animated place in the actor's frame
+    /// until the look passes it, then turn by the look beyond it about the eye at the start pitch,
+    /// carried to the eye at the look, so a prop held on that line of sight stays on the view axis;</item>
+    /// <item>the elbow swivels, over the first <c>swivelBlendPitch</c> degrees followed, from the
+    /// animated one to the one that bends the wrist least (the hand's long axis, +Y, reversed);</item>
     /// <item>looking down, the pair pushes out just enough that the carried prop's bottom (its centre's
     /// offset from the hands turned with them, less <c>carriedExtentDown</c>) clears the chest-front point;</item>
     /// <item>out of reach, the clavicles shrug a little, then the pair pulls in toward
@@ -68,7 +73,15 @@ namespace AlpineLib.Animation.Procedural {
         [Range(0f, 45f)]
         [SerializeField] private float clavicleMaxDegrees = 12f;
 
-        [Tooltip("Largest upward look pitch the hands follow.")]
+        [Tooltip("Look pitch (down) the hands start following from; below it, looking up included, the animated pose stays fixed in the body. 0 follows from level, both ways.")]
+        [Range(0f, 85f)]
+        [SerializeField] private float followStartPitch;
+
+        [Tooltip("Degrees of followed pitch over which the elbow swivel moves from the animated one to the least-wrist-bend one.")]
+        [Min(0f)]
+        [SerializeField] private float swivelBlendPitch = 10f;
+
+        [Tooltip("Largest upward look pitch the hands follow; unused once a follow start pitch is set.")]
         [Range(0f, 85f)]
         [SerializeField] private float maxFollowPitchUp = 20f;
 
@@ -109,6 +122,7 @@ namespace AlpineLib.Animation.Procedural {
         private Func<float, bool> _isReachableAt;
         private bool _captured;
         private Vector3 _restingEye;
+        private Vector3 _pivotEye;
         private Vector3 _chestFront;
         private Quaternion _turn = Quaternion.identity;
         private Vector3 _view = Vector3.forward;
@@ -120,13 +134,16 @@ namespace AlpineLib.Animation.Procedural {
         }
 
         /// <summary>
-        /// Followed pitch times the effective weight, in degrees (positive down), last apply; the
-        /// followed pitch falls short of the look while lagging.
+        /// Followed pitch times the effective weight, in degrees (positive down), last apply: the look
+        /// past <see cref="FollowStartPitch"/>; it falls short of that while lagging.
         /// </summary>
         public float AppliedPitch => IsLive ? _appliedPitch : 0f;
 
         /// <summary>Shift along the view times the effective weight, in metres, last apply: out to clear the chest, negative when pulled in.</summary>
         public float AppliedPush => IsLive ? _appliedPush : 0f;
+
+        /// <summary>Look pitch the hands start following from; 0 follows from level, up and down.</summary>
+        public float FollowStartPitch => followStartPitch;
 
         /// <summary>Effective weight this frame: the layer's own weight times the follow layer's.</summary>
         public float EffectiveWeight => followLayer != null ? Weight * followLayer.Weight : Weight;
@@ -171,16 +188,18 @@ namespace AlpineLib.Animation.Procedural {
             float weight = EffectiveWeight;
             if (weight <= 0f || (!IsMapped(0) && !IsMapped(1))) return;
 
-            float pitch = Mathf.Clamp(_actor.LookPitch, -maxFollowPitchUp, maxFollowPitchDown);
+            float pitch = FollowedPitch(_actor.LookPitch);
             _restingEye = RestingEye();
+            _pivotEye = EyeAt(followStartPitch);
             _chestFront = ChestFront();
             ReadBlendSources();
             ReadArmPivots();
 
             float shift = ResolveShift(bones, ref pitch);
+            float swivelShare = swivelBlendPitch > 0f ? Mathf.Clamp01(Mathf.Abs(pitch) / swivelBlendPitch) : 1f;
             Quaternion rootRotation = _actorRoot.rotation;
             for (int arm = 0; arm < ArmCount; arm++) {
-                if (IsMapped(arm)) SolveArm(arm, _baseTarget[arm] + _view * shift, rootRotation);
+                if (IsMapped(arm)) SolveArm(arm, _baseTarget[arm] + _view * shift, rootRotation, swivelShare);
             }
 
             for (int arm = 0; arm < ArmCount; arm++) {
@@ -261,18 +280,30 @@ namespace AlpineLib.Animation.Procedural {
         private bool IsReachableAt(float pitch) => TrySolveShift(pitch, out _);
 
         /// <summary>
-        /// Lays out the hands' targets at <paramref name="pitch"/> and finds the shift along the view
+        /// The pitch the hands turn by: the look past the follow start (never negative, so looking up
+        /// from it leaves them be), or with no follow start the look itself within both limits.
+        /// </summary>
+        private float FollowedPitch(float lookPitch) {
+            if (followStartPitch <= 0f) return Mathf.Clamp(lookPitch, -maxFollowPitchUp, maxFollowPitchDown);
+
+            return Mathf.Clamp(lookPitch - followStartPitch, 0f, Mathf.Max(0f, maxFollowPitchDown - followStartPitch));
+        }
+
+        /// <summary>
+        /// Lays out the hands' targets at followed <paramref name="pitch"/> (the hands turned by it about
+        /// the eye at the follow start, carried to the eye at the look) and finds the shift along the view
         /// nearest the chest clearance that keeps both in reach. False, with the clearance shift, when
         /// none does.
         /// </summary>
         private bool TrySolveShift(float pitch, out float shift) {
+            float lookPitch = followStartPitch + pitch;
             _turn = Quaternion.AngleAxis(pitch, Vector3.right);
-            _view = _turn * Vector3.forward;
-            Vector3 eye = EyeAt(pitch);
+            _view = Quaternion.AngleAxis(lookPitch, Vector3.right) * Vector3.forward;
+            Vector3 eye = EyeAt(lookPitch);
             Vector3 centre = LayOutTargets(eye);
             Vector3 bottom = centre + _turn * (carriedCentreOffset + new Vector3(0f, -carriedExtentDown, 0f));
 
-            float clearanceFloor = ArmReachSolver.ClearanceShift(_chestFront, bottom, Vector3.forward, bodyClearance, pitch);
+            float clearanceFloor = ArmReachSolver.ClearanceShift(_chestFront, bottom, Vector3.forward, bodyClearance, lookPitch);
             _clearancePush = Mathf.Max(0f, clearanceFloor);
             shift = _clearancePush;
 
@@ -295,14 +326,14 @@ namespace AlpineLib.Animation.Procedural {
             return true;
         }
 
-        /// <summary>Fills each hand's unshifted target about <paramref name="eye"/>; returns their centre.</summary>
+        /// <summary>Fills each hand's unshifted target: turned about the follow-start eye, placed at <paramref name="eye"/>; returns their centre.</summary>
         private Vector3 LayOutTargets(Vector3 eye) {
             Vector3 sum = Vector3.zero;
             int count = 0;
             for (int arm = 0; arm < ArmCount; arm++) {
                 if (!IsMapped(arm)) continue;
 
-                _baseTarget[arm] = eye + _turn * (_handStart[arm] - _restingEye);
+                _baseTarget[arm] = eye + _turn * (_handStart[arm] - _pivotEye);
                 sum += _baseTarget[arm];
                 count++;
             }
@@ -336,16 +367,19 @@ namespace AlpineLib.Animation.Procedural {
 
         /// <summary>
         /// Two-bone solve of one arm onto <paramref name="target"/>, twist carried from the captured
-        /// pose; fills the solved world rotations without writing them.
+        /// pose, the elbow swivel moved by <paramref name="swivelShare"/> from the captured one to the
+        /// least wrist bend; fills the solved world rotations without writing them.
         /// </summary>
-        private void SolveArm(int arm, Vector3 target, Quaternion rootRotation) {
+        private void SolveArm(int arm, Vector3 target, Quaternion rootRotation, float swivelShare) {
             Vector3 upperStart = _upperStart[arm];
             Vector3 elbowStart = _elbowStart[arm];
             Vector3 handStart = _handStart[arm];
             Vector3 bendStart = _bendStart[arm];
-            Vector3 pole = _turn * ArmReachSolver.PoleFromBend((handStart - upperStart).normalized, bendStart);
-
             Vector3 pivot = _armPivot[arm];
+            Vector3 capturedPole = _turn * ArmReachSolver.PoleFromBend((handStart - upperStart).normalized, bendStart);
+            Vector3 handAxis = _turn * (_handRotationStart[arm] * Vector3.up);
+            Vector3 pole = ArmReachSolver.SwivelPole(pivot, target, handAxis, capturedPole, swivelShare);
+
             Vector3 elbow = ArmReachSolver.SolveElbow(pivot, target, _upperLength[arm], _lowerLength[arm], pole);
             Vector3 bend = ArmReachSolver.BendNormal(pivot, elbow, target, _turn * bendStart);
             Quaternion upper = ArmReachSolver.Reorient(elbowStart - upperStart, bendStart, elbow - pivot, bend, _upperRotationStart[arm]);

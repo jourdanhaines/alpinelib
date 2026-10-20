@@ -54,6 +54,20 @@ namespace AlpineLib.Cameras {
         float LookGain { get; set; }
 
         /// <summary>
+        /// Eases the pitch by <paramref name="degrees"/> (positive looks down) over <paramref name="seconds"/>
+        /// (0 turns at once), on top of the player's own look and within the rig's pitch limits, e.g.
+        /// glancing down at a prop raised into the hands. A nudge started while one runs takes over its
+        /// remainder. Returns the degrees it will turn from the current pitch once clamped.
+        /// </summary>
+        float NudgePitch(float degrees, float seconds);
+
+        /// <summary>
+        /// Degrees the pitch has actually turned for nudges since the last <see cref="NudgePitch"/>,
+        /// after the limits: what a caller undoes to put the view back.
+        /// </summary>
+        float PitchNudgeApplied { get; }
+
+        /// <summary>
         /// Queues a look delta in degrees — X yaws, positive Y looks up. Deltas accumulate across the
         /// frame and are consumed once in <c>LateUpdate</c>.
         /// </summary>
@@ -65,8 +79,8 @@ namespace AlpineLib.Cameras {
         void SetTarget(Transform target);
 
         /// <summary>
-        /// Overwrites the look angles outright, bypassing sensitivity and any queued look input. Pitch is
-        /// clamped to the rig's authored range.
+        /// Overwrites the look angles outright, bypassing sensitivity, any queued look input and any running
+        /// pitch nudge. Pitch is clamped to the rig's authored range.
         /// </summary>
         void SetLookAngles(float yawDegrees, float pitchDegrees);
     }

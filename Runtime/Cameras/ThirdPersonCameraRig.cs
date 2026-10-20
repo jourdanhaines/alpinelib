@@ -73,6 +73,21 @@ namespace AlpineLib.Cameras {
         }
 
         private float _lookGain = 1f;
+        private readonly PitchNudge _nudge = new PitchNudge();
+        private float _nudgeApplied;
+
+        /// <inheritdoc />
+        public float PitchNudgeApplied => _nudgeApplied;
+
+        /// <inheritdoc />
+        public float NudgePitch(float degrees, float seconds) {
+            _nudge.Begin(degrees, seconds);
+            _nudgeApplied = 0f;
+            float planned = Mathf.Clamp(_pitch + _nudge.Remaining, pitchMin, pitchMax) - _pitch;
+            if (seconds <= 0f) ApplyNudge(0f);
+
+            return planned;
+        }
 
         /// <summary>
         /// Where the camera is looking, flattened onto the ground plane and normalised. Use this to make
@@ -171,6 +186,7 @@ namespace AlpineLib.Cameras {
             _pendingLook = Vector2.zero;
             _yaw = Mathf.Repeat(yawDegrees, 360f);
             _pitch = Mathf.Clamp(pitchDegrees, pitchMin, pitchMax);
+            _nudge.Cancel();
         }
 
         private void LateUpdate() {
@@ -187,6 +203,16 @@ namespace AlpineLib.Cameras {
             _yaw = Mathf.Repeat(_yaw + _pendingLook.x * lookSensitivity * LookGain, 360f);
             _pitch = Mathf.Clamp(_pitch - _pendingLook.y * lookSensitivity * LookGain, pitchMin, pitchMax);
             _pendingLook = Vector2.zero;
+            ApplyNudge(Time.deltaTime);
+        }
+
+        /// <summary>This frame's share of a running pitch nudge, through the same clamp as look input.</summary>
+        private void ApplyNudge(float deltaTime) {
+            if (!_nudge.IsRunning) return;
+
+            float before = _pitch;
+            _pitch = Mathf.Clamp(_pitch + _nudge.Step(deltaTime), pitchMin, pitchMax);
+            _nudgeApplied += _pitch - before;
         }
 
         private void FollowTarget() {

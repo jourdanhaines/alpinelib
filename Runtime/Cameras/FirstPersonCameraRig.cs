@@ -73,6 +73,21 @@ namespace AlpineLib.Cameras {
         }
 
         private float _lookGain = 1f;
+        private readonly PitchNudge _nudge = new PitchNudge();
+        private float _nudgeApplied;
+
+        /// <inheritdoc />
+        public float PitchNudgeApplied => _nudgeApplied;
+
+        /// <inheritdoc />
+        public float NudgePitch(float degrees, float seconds) {
+            _nudge.Begin(degrees, seconds);
+            _nudgeApplied = 0f;
+            float planned = Mathf.Clamp(_pitch + _nudge.Remaining, pitchMin, pitchMax) - _pitch;
+            if (seconds <= 0f) ApplyNudge(0f);
+
+            return planned;
+        }
 
         /// <inheritdoc />
         public Vector3 PlanarForward => Quaternion.Euler(0f, Yaw, 0f) * Vector3.forward;
@@ -151,6 +166,7 @@ namespace AlpineLib.Cameras {
             _pendingLook = Vector2.zero;
             _frameYaw = Mathf.Repeat(yawDegrees, 360f) - FrameHeading();
             _pitch = Mathf.Clamp(pitchDegrees, pitchMin, pitchMax);
+            _nudge.Cancel();
         }
 
         /// <remarks>
@@ -171,6 +187,16 @@ namespace AlpineLib.Cameras {
             _frameYaw += _pendingLook.x * lookSensitivity * LookGain;
             _pitch = Mathf.Clamp(_pitch - _pendingLook.y * lookSensitivity * LookGain, pitchMin, pitchMax);
             _pendingLook = Vector2.zero;
+            ApplyNudge(Time.deltaTime);
+        }
+
+        /// <summary>This frame's share of a running pitch nudge, through the same clamp as look input.</summary>
+        private void ApplyNudge(float deltaTime) {
+            if (!_nudge.IsRunning) return;
+
+            float before = _pitch;
+            _pitch = Mathf.Clamp(_pitch + _nudge.Step(deltaTime), pitchMin, pitchMax);
+            _nudgeApplied += _pitch - before;
         }
 
         /// <summary>

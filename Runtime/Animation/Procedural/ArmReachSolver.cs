@@ -20,6 +20,9 @@ namespace AlpineLib.Animation.Procedural {
         /// <summary>Sine of the bend below which an arm counts as straight and its bend plane as unknown.</summary>
         public const float StraightSine = 1e-3f;
 
+        /// <summary>Length of the hand axis's part off the reach line below which it gives no swivel.</summary>
+        public const float LeastBendMinimum = 1e-3f;
+
         private const float MinimumLengthSquared = 1e-12f;
         private const float MinimumCosine = 0.05f;
 
@@ -93,6 +96,28 @@ namespace AlpineLib.Animation.Procedural {
         /// </summary>
         public static Vector3 PoleFromBend(Vector3 reach, Vector3 bendNormal) {
             return Vector3.Cross(reach, bendNormal);
+        }
+
+        /// <summary>
+        /// Pole for an arm reaching from <paramref name="shoulder"/> to <paramref name="target"/>, moved
+        /// by <paramref name="share"/> (0..1) from <paramref name="capturedPole"/> to the least-wrist-bend
+        /// swivel: the elbow on the side the hand's long axis (<paramref name="handAxis"/>, unit) points
+        /// away from, so the forearm lines up with the hand. Falls back to the captured pole when the hand
+        /// axis runs along the reach line (part off it under <see cref="LeastBendMinimum"/>).
+        /// </summary>
+        public static Vector3 SwivelPole(Vector3 shoulder, Vector3 target, Vector3 handAxis, Vector3 capturedPole, float share) {
+            Vector3 reach = target - shoulder;
+            if (share <= 0f || reach.sqrMagnitude <= MinimumLengthSquared) return capturedPole;
+
+            Vector3 direction = reach.normalized;
+            Vector3 least = -handAxis - direction * Vector3.Dot(-handAxis, direction);
+            if (least.magnitude < LeastBendMinimum) return capturedPole;
+
+            Vector3 captured = capturedPole - direction * Vector3.Dot(capturedPole, direction);
+            if (captured.sqrMagnitude <= MinimumLengthSquared || share >= 1f) return least.normalized;
+
+            Vector3 blended = Vector3.Lerp(captured.normalized, least.normalized, share);
+            return blended.sqrMagnitude > MinimumLengthSquared ? blended.normalized : least.normalized;
         }
 
         /// <summary>
