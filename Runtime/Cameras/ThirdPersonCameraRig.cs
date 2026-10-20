@@ -66,6 +66,9 @@ namespace AlpineLib.Cameras {
         /// <inheritdoc />
         public float Pitch => _pitch;
 
+        /// <inheritdoc />
+        public float LookGain { get; set; } = 1f;
+
         /// <summary>
         /// Where the camera is looking, flattened onto the ground plane and normalised. Use this to make
         /// movement input camera-relative.
@@ -176,8 +179,8 @@ namespace AlpineLib.Cameras {
         }
 
         private void ConsumeLookInput() {
-            _yaw = Mathf.Repeat(_yaw + _pendingLook.x * lookSensitivity, 360f);
-            _pitch = Mathf.Clamp(_pitch - _pendingLook.y * lookSensitivity, pitchMin, pitchMax);
+            _yaw = Mathf.Repeat(_yaw + _pendingLook.x * lookSensitivity * LookGain, 360f);
+            _pitch = Mathf.Clamp(_pitch - _pendingLook.y * lookSensitivity * LookGain, pitchMin, pitchMax);
             _pendingLook = Vector2.zero;
         }
 

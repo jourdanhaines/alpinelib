@@ -76,6 +76,36 @@ namespace AlpineLib.Animation.Procedural {
             }
         }
 
+        /// <summary>
+        /// Total share of a look, in the given direction, taken by bound chain bones that carry
+        /// <paramref name="bone"/> (its ancestors), e.g. how much of a downward look already swings an
+        /// upper arm by way of the chest. Zero before bind.
+        /// </summary>
+        public float AncestorShare(Transform bone, bool lookingDown) {
+            float share = 0f;
+            for (int index = 0; index < _bones.Count; index++) {
+                if (!IsStrictAncestor(_bones[index], bone)) continue;
+
+                share += lookingDown ? _joints[index].ShareDown : _joints[index].ShareUp;
+            }
+
+            return share;
+        }
+
+        /// <summary>
+        /// Appends the bound joints that carry <paramref name="bone"/>, root first, in the resting pose
+        /// and the actor's local space, for solving where a bend moves a point that bone carries.
+        /// </summary>
+        public void GetAncestorJoints(Transform bone, List<LookPoseJoint> results) {
+            for (int index = 0; index < _bones.Count; index++) {
+                if (IsStrictAncestor(_bones[index], bone)) results.Add(_joints[index]);
+            }
+        }
+
+        private static bool IsStrictAncestor(Transform candidate, Transform bone) {
+            return bone != null && candidate != null && candidate != bone && bone.IsChildOf(candidate);
+        }
+
         /// <inheritdoc />
         public Vector3 ResolveEyeOffset(float pitchDegrees, Vector3 restingEyeLocal) {
             if (!isActiveAndEnabled || _joints.Length == 0) return Vector3.zero;

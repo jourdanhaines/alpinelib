@@ -67,6 +67,9 @@ namespace AlpineLib.Cameras {
         public float Pitch => _pitch;
 
         /// <inheritdoc />
+        public float LookGain { get; set; } = 1f;
+
+        /// <inheritdoc />
         public Vector3 PlanarForward => Quaternion.Euler(0f, Yaw, 0f) * Vector3.forward;
 
         /// <inheritdoc />
@@ -160,8 +163,8 @@ namespace AlpineLib.Cameras {
         }
 
         private void ConsumeLookInput() {
-            _frameYaw += _pendingLook.x * lookSensitivity;
-            _pitch = Mathf.Clamp(_pitch - _pendingLook.y * lookSensitivity, pitchMin, pitchMax);
+            _frameYaw += _pendingLook.x * lookSensitivity * LookGain;
+            _pitch = Mathf.Clamp(_pitch - _pendingLook.y * lookSensitivity * LookGain, pitchMin, pitchMax);
             _pendingLook = Vector2.zero;
         }
 

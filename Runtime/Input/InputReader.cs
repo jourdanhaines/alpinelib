@@ -103,5 +103,15 @@ namespace AlpineLib.Input {
 
             return resolvedAction;
         }
+
+        /// <summary>
+        /// Reads a pointer-delta look action, returning zero on the frames a cursor lock change warps
+        /// the pointer (see <see cref="PointerLookGuard"/>).
+        /// </summary>
+        protected Vector2 ReadPointerLook(InputAction action) {
+            if (action == null || PointerLookGuard.ShouldDrop()) return Vector2.zero;
+
+            return action.ReadValue<Vector2>();
+        }
     }
 }

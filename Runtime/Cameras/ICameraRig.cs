@@ -47,6 +47,12 @@ namespace AlpineLib.Cameras {
         Transform CameraAnchor { get; }
 
         /// <summary>
+        /// Extra multiplier on queued look input, on top of the rig's sensitivity; 1 by default. Lowered
+        /// while the player steadies the view, e.g. reading a held prop.
+        /// </summary>
+        float LookGain { get; set; }
+
+        /// <summary>
         /// Queues a look delta in degrees — X yaws, positive Y looks up. Deltas accumulate across the
         /// frame and are consumed once in <c>LateUpdate</c>.
         /// </summary>

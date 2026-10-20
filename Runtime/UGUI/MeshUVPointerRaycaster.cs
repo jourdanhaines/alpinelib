@@ -34,6 +34,8 @@ namespace AlpineLib.UI {
         private Camera _pointerCamera;
         private MeshCollider _surfaceCollider;
         private bool _canReadUv;
+        private int _syncedFrame = -1;
+        private Matrix4x4 _syncedPose;
 
         /// <summary>The camera pointer rays are cast from, null while no source is set.</summary>
         public override Camera eventCamera => _pointerCamera;
@@ -48,6 +50,8 @@ namespace AlpineLib.UI {
             _pointerCamera = pointerCamera;
             _surfaceCollider = surfaceCollider;
             _canReadUv = false;
+            _syncedFrame = -1;
+            _syncedPose = default;
             if (surfaceCollider == null) return;
 
             Mesh mesh = surfaceCollider.sharedMesh;
@@ -72,6 +76,7 @@ namespace AlpineLib.UI {
         public override void Raycast(PointerEventData eventData, List<RaycastResult> resultAppendList) {
             if (!_canReadUv || !HasLiveSource()) return;
 
+            SyncMovedCollider();
             Ray ray = _pointerCamera.ScreenPointToRay(eventData.position);
             if (!_surfaceCollider.Raycast(ray, out RaycastHit hit, maxDistance)) return;
 
@@ -141,6 +146,24 @@ namespace AlpineLib.UI {
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// A prop posed in <c>LateUpdate</c> (hand-held, following bones) has moved since physics last
+        /// read transforms, and the event system raycasts in the next <c>Update</c>, before any fixed
+        /// step syncs it; without this the ray would hit where the prop was a frame ago. At most once
+        /// per frame, and only when the collider actually moved.
+        /// </summary>
+        private void SyncMovedCollider() {
+            int frame = Time.frameCount;
+            if (_syncedFrame == frame) return;
+
+            _syncedFrame = frame;
+            Matrix4x4 pose = _surfaceCollider.transform.localToWorldMatrix;
+            if (pose == _syncedPose) return;
+
+            _syncedPose = pose;
+            Physics.SyncTransforms();
         }
 
         private bool HasLiveSource() {
