@@ -139,6 +139,7 @@ namespace AlpineLib.Animation.Procedural {
         private Quaternion _turn = Quaternion.identity;
         private Quaternion _lean = Quaternion.identity;
         private Transform _rootBone;
+        private bool _warnedNoJoints;
         private readonly List<LookPoseJoint> _jointScratch = new List<LookPoseJoint>();
         private readonly LookPoseJoint[][] _armJoints = new LookPoseJoint[ArmCount][];
         private Vector3 _view = Vector3.forward;
@@ -341,6 +342,11 @@ namespace AlpineLib.Animation.Procedural {
 
             _jointScratch.Clear();
             look.GetAncestorJoints(_upperArms[arm], _jointScratch);
+            if (_jointScratch.Count == 0 && followStartPitch > 0f && !_warnedNoJoints) {
+                _warnedNoJoints = true;
+                Debug.LogWarning($"{nameof(ArmReachPoseModifier)} on '{name}': the look carries no joints above the arms at bind, so the follow start's chest lean is skipped; order the {nameof(LookPoseModifier)} before this layer and map its spine bones.", this);
+            }
+
             return _jointScratch.ToArray();
         }
 
