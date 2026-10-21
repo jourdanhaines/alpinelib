@@ -274,6 +274,35 @@ namespace AlpineLib.Animation.Procedural {
         }
 
         /// <summary>
+        /// Smallest <c>t ≥ 0</c> that brings <c>target + direction·t</c> (unit <paramref name="direction"/>)
+        /// within <paramref name="reach"/> of <paramref name="shoulder"/>: 0 when already in reach, the
+        /// closest approach when the ray never gets there.
+        /// </summary>
+        public static float ReachEntry(Vector3 target, Vector3 shoulder, Vector3 direction, float reach) {
+            float closest = Mathf.Max(0f, Vector3.Dot(shoulder - target, direction));
+            if (!ReachInterval(target, shoulder, direction, reach, out float min, out float max)) return closest;
+            if (max < 0f) return closest;
+
+            return Mathf.Max(0f, min);
+        }
+
+        /// <summary>
+        /// Shift both hand targets take together, toward the shoulders' midpoint from the targets' centre,
+        /// so each comes within its arm's reach: the larger of the two arms' <see cref="ReachEntry"/>.
+        /// Zero when both already reach. One shared move keeps the spacing, so a prop held between the
+        /// hands stays rigid; when the arms disagree past each other's reach the farther arm wins.
+        /// </summary>
+        public static Vector3 PairShift(Vector3 leftTarget, Vector3 leftShoulder, float leftReach, Vector3 rightTarget, Vector3 rightShoulder, float rightReach) {
+            Vector3 direction = (leftShoulder + rightShoulder) - (leftTarget + rightTarget);
+            if (direction.sqrMagnitude <= MinimumLengthSquared) return Vector3.zero;
+
+            direction.Normalize();
+            float left = ReachEntry(leftTarget, leftShoulder, direction, leftReach);
+            float right = ReachEntry(rightTarget, rightShoulder, direction, rightReach);
+            return direction * Mathf.Max(left, right);
+        }
+
+        /// <summary>
         /// Degrees a clavicle must turn about <paramref name="clavicle"/> so the arm pivot at
         /// <paramref name="armPivot"/> comes within <paramref name="reach"/> of <paramref name="target"/>;
         /// zero when it already is, the full angle to the target line when no turn is enough.

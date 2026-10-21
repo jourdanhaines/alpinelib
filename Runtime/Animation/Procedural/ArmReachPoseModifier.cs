@@ -21,10 +21,10 @@ namespace AlpineLib.Animation.Procedural {
     /// then hold that place in the actor's frame
     /// until the look passes it, then turn by the look beyond it about the eye at the start pitch,
     /// carried to the eye at the look, so a prop held on that line of sight stays on the view axis;</item>
-    /// <item>with <c>cancelRootSway</c> (off by default) the root bone's move away from <c>rootReference</c>
-    /// is taken back out of the animated hands first, so a lower layer's hips (idle sway, walk bob) do not
-    /// swing them; they are also carried with the resting eye when a crouch lowers it. The shoulders still
-    /// ride the hips, so a big root move (a jump) can leave the pinned hands out of reach;</item>
+    /// <item>with <c>cancelRootSway</c> (recommended for a view-rigid camera) the root bone's move away
+    /// from <c>rootReference</c> is taken back out of the animated hands first, so a lower layer's hips
+    /// (idle sway, walk bob, jump) do not swing them; they are also carried with the resting eye when a
+    /// crouch lowers it. The shoulders still ride the hips; the pair shift below covers a jump;</item>
     /// <item>the elbow swivels, over the first <c>swivelBlendPitch</c> degrees followed, from the
     /// animated one to the least-roll one (the bend plane's normal along the palm, from
     /// <c>leftPalmLocal</c>/<c>rightPalmLocal</c>), or with no palm set to the one that bends the wrist
@@ -32,7 +32,10 @@ namespace AlpineLib.Animation.Procedural {
     /// <item>looking down, the pair pushes out just enough that the carried prop's bottom (its centre's
     /// offset from the hands turned with them, less <c>carriedExtentDown</c>) clears the chest-front point;</item>
     /// <item>out of reach, the clavicles shrug a little, then the pair pulls in toward
-    /// <c>minDistance</c>, then the hands stop following and lag behind the look.</item>
+    /// <c>minDistance</c>, then the hands stop following and lag behind the look; still out of reach
+    /// (the body's own move, a jump, pulled the shoulders away), both targets shift together toward the
+    /// shoulders just far enough for each arm (<see cref="PairShiftMetres"/>), so the spacing and the
+    /// hands' turn never change and a prop held between them stays rigid.</item>
     /// </list>
     /// Ordered at <see cref="DefaultOrder"/> (10), after the look at 0. The effective weight is
     /// <see cref="PoseModifier.Weight"/> times the optional follow layer's: the arms are solved at the
@@ -65,7 +68,7 @@ namespace AlpineLib.Animation.Procedural {
         [Tooltip("How far the carried prop reaches below its centre, in metres.")]
         [SerializeField] private float carriedExtentDown = 0.133f;
 
-        [Tooltip("Off by default. Hold the hands against the body's own sway: un-apply the root bone's move away from rootReference from the animated hands, so a lower layer's hips (idle sway, walk bob) do not carry them. The shoulders still ride the hips, so a jump can pull the pinned hands out of reach.")]
+        [Tooltip("Hold the hands against the body's own sway (recommended for a view-rigid camera): un-apply the root bone's move away from rootReference from the animated hands, so a lower layer's hips (idle sway, walk bob, jump) do not carry them. The shoulders still ride the hips; a hand they pull out of reach is met by shifting both targets together.")]
         [SerializeField] private bool cancelRootSway;
 
         [Tooltip("Root bone (Hips) pose in the actor's local space that the animated hands were authored over; set from the held clip's own first frame.")]
@@ -157,6 +160,7 @@ namespace AlpineLib.Animation.Procedural {
         private float _clearancePush;
         private float _appliedPitch;
         private float _appliedPush;
+        private Vector3 _pairShift;
 
         public ArmReachPoseModifier() : base(DefaultOrder) {
         }
@@ -182,6 +186,12 @@ namespace AlpineLib.Animation.Procedural {
 
         /// <summary>The larger of both arms' <see cref="LastMissMetres"/>.</summary>
         public float HandMissMetres => Mathf.Max(LastMissMetres(0), LastMissMetres(1));
+
+        /// <summary>
+        /// Distance, in metres, both hand targets moved together toward the shoulders last apply because a
+        /// hand was still out of reach after the shrug and the pitch lag; 0 when not shifting.
+        /// </summary>
+        public float PairShiftMetres => IsLive ? _pairShift.magnitude : 0f;
 
         /// <summary>Look pitch the hands start following from; 0 follows from level, up and down.</summary>
         public float FollowStartPitch => followStartPitch;
@@ -226,6 +236,7 @@ namespace AlpineLib.Animation.Procedural {
         public override void Apply(PoseBones bones, float deltaTime) {
             _appliedPitch = 0f;
             _appliedPush = 0f;
+            _pairShift = Vector3.zero;
             ClearMiss();
             if (!_captured) return;
 
@@ -246,7 +257,7 @@ namespace AlpineLib.Animation.Procedural {
             float swivelShare = swivelBlendPitch > 0f ? Mathf.Clamp01(Mathf.Abs(pitch) / swivelBlendPitch) : 1f;
             Quaternion rootRotation = _actorRoot.rotation;
             for (int arm = 0; arm < ArmCount; arm++) {
-                if (IsMapped(arm)) SolveArm(arm, _baseTarget[arm] + _view * shift, rootRotation, swivelShare);
+                if (IsMapped(arm)) SolveArm(arm, _baseTarget[arm] + _view * shift + _pairShift, rootRotation, swivelShare);
             }
 
             for (int arm = 0; arm < ArmCount; arm++) {
@@ -265,6 +276,7 @@ namespace AlpineLib.Animation.Procedural {
             _appliedPitch = 0f;
             _appliedPush = 0f;
             _captured = false;
+            _pairShift = Vector3.zero;
             ClearMiss();
         }
 
@@ -331,8 +343,41 @@ namespace AlpineLib.Animation.Procedural {
             if (TrySolveShift(pitch, out shift)) return shift;
 
             pitch = ArmReachSolver.BisectToward(0f, pitch, LagSteps, _isReachableAt);
-            TrySolveShift(pitch, out shift);
+            if (!TrySolveShift(pitch, out shift)) _pairShift = PairShift(shift);
             return shift;
+        }
+
+        /// <summary>
+        /// Shift both targets (at view shift <paramref name="shift"/>) take together toward the arm
+        /// pivots' midpoint so every mapped arm reaches; see <see cref="ArmReachSolver.PairShift"/>.
+        /// </summary>
+        private Vector3 PairShift(float shift) {
+            Vector3 targetSum = Vector3.zero;
+            Vector3 pivotSum = Vector3.zero;
+            int count = 0;
+            for (int arm = 0; arm < ArmCount; arm++) {
+                if (!IsMapped(arm)) continue;
+
+                targetSum += _baseTarget[arm] + _view * shift;
+                pivotSum += _armPivot[arm];
+                count++;
+            }
+
+            if (count == 0) return Vector3.zero;
+
+            Vector3 direction = pivotSum - targetSum;
+            if (direction.sqrMagnitude < 1e-12f) return Vector3.zero;
+
+            direction.Normalize();
+            float distance = 0f;
+            for (int arm = 0; arm < ArmCount; arm++) {
+                if (!IsMapped(arm)) continue;
+
+                float reach = reachLimit * (_upperLength[arm] + _lowerLength[arm]);
+                distance = Mathf.Max(distance, ArmReachSolver.ReachEntry(_baseTarget[arm] + _view * shift, _armPivot[arm], direction, reach));
+            }
+
+            return direction * distance;
         }
 
         private bool IsReachableAt(float pitch) => TrySolveShift(pitch, out _);
