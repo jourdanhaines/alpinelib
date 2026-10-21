@@ -119,9 +119,9 @@ namespace AlpineLib.Animation.Procedural {
         [Min(0f)]
         [SerializeField] private float pairShiftMaxSpeed = 1.2f;
 
-        [Tooltip("Fastest the pair's shift along the view (chest push-out, pull-in) may change, in metres per second; never slower than the chest clearance allows; 0 snaps.")]
+        [Tooltip("Fastest the pair's shift along the view (chest push-out, pull-in) may release back toward zero, in metres per second; a shift that is needed (further from zero) always applies at once; 0 snaps.")]
         [Min(0f)]
-        [SerializeField] private float viewShiftMaxSpeed = 0.6f;
+        [SerializeField] private float viewShiftMaxSpeed = 0.3f;
 
         [Tooltip("Largest upward look pitch the hands follow; unused once a follow start pitch is set.")]
         [Range(0f, 85f)]
@@ -180,6 +180,7 @@ namespace AlpineLib.Animation.Procedural {
         private float _clearancePush;
         private float _clearanceFloor;
         private float _viewShift;
+        private bool _hasViewShift;
         private float _appliedPitch;
         private float _appliedPush;
         private Vector3 _pairShift;
@@ -245,6 +246,7 @@ namespace AlpineLib.Animation.Procedural {
             _isClearAt = IsClearAt;
             _pairShift = Vector3.zero;
             _viewShift = 0f;
+            _hasViewShift = false;
             if (look == null) look = GetComponent<LookPoseModifier>();
 
             BindArm(bones, 0, HumanBodyBones.LeftShoulder, HumanBodyBones.LeftUpperArm, HumanBodyBones.LeftLowerArm, HumanBodyBones.LeftHand);
@@ -280,6 +282,7 @@ namespace AlpineLib.Animation.Procedural {
             if (!_captured) {
                 _pairShift = Vector3.zero;
                 _viewShift = 0f;
+                _hasViewShift = false;
                 return;
             }
 
@@ -288,6 +291,7 @@ namespace AlpineLib.Animation.Procedural {
             if (weight <= 0f || (!IsMapped(0) && !IsMapped(1))) {
                 _pairShift = Vector3.zero;
                 _viewShift = 0f;
+                _hasViewShift = false;
                 return;
             }
 
@@ -328,6 +332,7 @@ namespace AlpineLib.Animation.Procedural {
             _captured = false;
             _pairShift = Vector3.zero;
             _viewShift = 0f;
+            _hasViewShift = false;
             _pairShiftClearanceViolated = false;
             ClearMiss();
         }
@@ -435,18 +440,23 @@ namespace AlpineLib.Animation.Procedural {
         }
 
         /// <summary>
-        /// The applied view shift moved toward the solved <paramref name="shift"/> at no more than
-        /// <c>viewShiftMaxSpeed</c>, but never nearer the chest than the clearance allows.
+        /// The applied view shift: the solved <paramref name="shift"/> at once on the first live frame and
+        /// whenever it is further from zero (a need), else released toward it at no more than
+        /// <c>viewShiftMaxSpeed</c>; never nearer the chest than the clearance allows.
         /// </summary>
         private float StepViewShift(float shift, float deltaTime) {
-            if (viewShiftMaxSpeed <= 0f || deltaTime <= 0f) {
-                _viewShift = shift;
-                return shift;
-            }
-
-            float eased = Mathf.MoveTowards(_viewShift, shift, viewShiftMaxSpeed * deltaTime);
+            bool snaps = !_hasViewShift || viewShiftMaxSpeed <= 0f || deltaTime <= 0f || IsViewShiftNeed(_viewShift, shift);
+            float eased = snaps ? shift : Mathf.MoveTowards(_viewShift, shift, viewShiftMaxSpeed * deltaTime);
             _viewShift = Mathf.Max(eased, Mathf.Min(shift, _clearanceFloor));
+            _hasViewShift = true;
             return _viewShift;
+        }
+
+        /// <summary>True when <paramref name="solved"/> lies further from zero than <paramref name="applied"/>, or across it.</summary>
+        private static bool IsViewShiftNeed(float applied, float solved) {
+            if (applied * solved < 0f) return true;
+
+            return Mathf.Abs(solved) >= Mathf.Abs(applied);
         }
 
         /// <summary>The applied pair shift moved toward the solved one at no more than <c>pairShiftMaxSpeed</c>.</summary>
