@@ -119,6 +119,10 @@ namespace AlpineLib.Animation.Procedural {
         [Min(0f)]
         [SerializeField] private float pairShiftMaxSpeed = 1.2f;
 
+        [Tooltip("Fastest the pair's shift along the view (chest push-out, pull-in) may change, in metres per second; never slower than the chest clearance allows; 0 snaps.")]
+        [Min(0f)]
+        [SerializeField] private float viewShiftMaxSpeed = 0.6f;
+
         [Tooltip("Largest upward look pitch the hands follow; unused once a follow start pitch is set.")]
         [Range(0f, 85f)]
         [SerializeField] private float maxFollowPitchUp = 20f;
@@ -174,6 +178,8 @@ namespace AlpineLib.Animation.Procedural {
         private readonly LookPoseJoint[][] _armJoints = new LookPoseJoint[ArmCount][];
         private Vector3 _view = Vector3.forward;
         private float _clearancePush;
+        private float _clearanceFloor;
+        private float _viewShift;
         private float _appliedPitch;
         private float _appliedPush;
         private Vector3 _pairShift;
@@ -238,6 +244,7 @@ namespace AlpineLib.Animation.Procedural {
             _cameraTarget = GetComponent<ICameraTarget>();
             _isClearAt = IsClearAt;
             _pairShift = Vector3.zero;
+            _viewShift = 0f;
             if (look == null) look = GetComponent<LookPoseModifier>();
 
             BindArm(bones, 0, HumanBodyBones.LeftShoulder, HumanBodyBones.LeftUpperArm, HumanBodyBones.LeftLowerArm, HumanBodyBones.LeftHand);
@@ -272,6 +279,7 @@ namespace AlpineLib.Animation.Procedural {
             ClearMiss();
             if (!_captured) {
                 _pairShift = Vector3.zero;
+                _viewShift = 0f;
                 return;
             }
 
@@ -279,6 +287,7 @@ namespace AlpineLib.Animation.Procedural {
             float weight = EffectiveWeight;
             if (weight <= 0f || (!IsMapped(0) && !IsMapped(1))) {
                 _pairShift = Vector3.zero;
+                _viewShift = 0f;
                 return;
             }
 
@@ -294,6 +303,7 @@ namespace AlpineLib.Animation.Procedural {
 
             float shift = ResolveShift(bones, ref pitch);
             _pairShift = StepPairShift(deltaTime);
+            shift = StepViewShift(shift, deltaTime);
             float swivelShare = swivelBlendPitch > 0f ? Mathf.Clamp01(Mathf.Abs(pitch) / swivelBlendPitch) : 1f;
             Quaternion rootRotation = _actorRoot.rotation;
             for (int arm = 0; arm < ArmCount; arm++) {
@@ -317,6 +327,7 @@ namespace AlpineLib.Animation.Procedural {
             _appliedPush = 0f;
             _captured = false;
             _pairShift = Vector3.zero;
+            _viewShift = 0f;
             _pairShiftClearanceViolated = false;
             ClearMiss();
         }
@@ -421,6 +432,21 @@ namespace AlpineLib.Animation.Procedural {
             _lagShift = _compromiseShift;
             _lagPair = MinimalPairShift(_lagShift);
             return PairKeepsClearance(_lagShift, _lagPair);
+        }
+
+        /// <summary>
+        /// The applied view shift moved toward the solved <paramref name="shift"/> at no more than
+        /// <c>viewShiftMaxSpeed</c>, but never nearer the chest than the clearance allows.
+        /// </summary>
+        private float StepViewShift(float shift, float deltaTime) {
+            if (viewShiftMaxSpeed <= 0f || deltaTime <= 0f) {
+                _viewShift = shift;
+                return shift;
+            }
+
+            float eased = Mathf.MoveTowards(_viewShift, shift, viewShiftMaxSpeed * deltaTime);
+            _viewShift = Mathf.Max(eased, Mathf.Min(shift, _clearanceFloor));
+            return _viewShift;
         }
 
         /// <summary>The applied pair shift moved toward the solved one at no more than <c>pairShiftMaxSpeed</c>.</summary>
@@ -573,6 +599,7 @@ namespace AlpineLib.Animation.Procedural {
 
             float clearanceFloor = ArmReachSolver.ClearanceShift(_chestFront, bottom, Vector3.forward, bodyClearance, lookPitch);
             _clearancePush = Mathf.Max(0f, clearanceFloor);
+            _clearanceFloor = clearanceFloor;
             shift = _clearancePush;
 
             float pullFloor = Mathf.Min(_clearancePush, minDistance - Vector3.Dot(centre - eye, _view));
