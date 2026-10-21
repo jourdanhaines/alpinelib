@@ -294,6 +294,14 @@ namespace AlpineLib.Animation.Procedural {
         /// </summary>
         public static Vector3 PairShift(Vector3 leftTarget, Vector3 leftShoulder, float leftReach, Vector3 rightTarget, Vector3 rightShoulder, float rightReach) {
             Vector3 direction = (leftShoulder + rightShoulder) - (leftTarget + rightTarget);
+            return PairShiftAlong(direction, leftTarget, leftShoulder, leftReach, rightTarget, rightShoulder, rightReach);
+        }
+
+        /// <summary>
+        /// <see cref="PairShift"/> along a given <paramref name="direction"/> (any length), e.g. the way the
+        /// shoulders moved since the hands were captured. Zero when the direction is degenerate.
+        /// </summary>
+        public static Vector3 PairShiftAlong(Vector3 direction, Vector3 leftTarget, Vector3 leftShoulder, float leftReach, Vector3 rightTarget, Vector3 rightShoulder, float rightReach) {
             if (direction.sqrMagnitude <= MinimumLengthSquared) return Vector3.zero;
 
             direction.Normalize();
