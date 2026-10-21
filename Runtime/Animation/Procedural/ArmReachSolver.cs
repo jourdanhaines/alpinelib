@@ -363,26 +363,13 @@ namespace AlpineLib.Animation.Procedural {
         }
 
         /// <summary>
-        /// Next applied shift easing toward <paramref name="solved"/>: <paramref name="solved"/> at once when
-        /// it is a need (<see cref="IsShiftNeed"/>), <paramref name="maxStep"/> is not positive, or the
-        /// interval is empty; else a release of at most <paramref name="maxStep"/>, clamped into
-        /// [<paramref name="lowest"/>, <paramref name="highest"/>] (the shifts both arms reach with the chest
-        /// clear), so easing only slows a release the arms can afford and never leaves a hand short.
+        /// Next applied shift: <paramref name="applied"/> moved toward <paramref name="solved"/> by at most
+        /// <paramref name="maxStep"/> either way (<paramref name="solved"/> at once when it is not positive),
+        /// never below <paramref name="floor"/> (e.g. the chest clearance, which therefore always snaps).
         /// </summary>
-        public static float EaseShiftRelease(float applied, float solved, float maxStep, float lowest, float highest) {
-            if (maxStep <= 0f || lowest > highest || IsShiftNeed(applied, solved)) return solved;
-
-            return Mathf.Clamp(Mathf.MoveTowards(applied, solved, maxStep), lowest, highest);
-        }
-
-        /// <summary>
-        /// True when <paramref name="solved"/> lies at least as far from zero as <paramref name="applied"/>
-        /// on the same side, or across zero: more pull-in or push-out is needed, never eased.
-        /// </summary>
-        public static bool IsShiftNeed(float applied, float solved) {
-            if (applied * solved < 0f) return true;
-
-            return Mathf.Abs(solved) >= Mathf.Abs(applied);
+        public static float EaseShift(float applied, float solved, float maxStep, float floor) {
+            float eased = maxStep > 0f ? Mathf.MoveTowards(applied, solved, maxStep) : solved;
+            return Mathf.Max(eased, Mathf.Min(floor, solved));
         }
 
         /// <summary>

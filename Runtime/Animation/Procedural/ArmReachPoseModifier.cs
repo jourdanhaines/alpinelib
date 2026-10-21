@@ -52,6 +52,7 @@ namespace AlpineLib.Animation.Procedural {
 
         private const int ArmCount = 2;
         private const int LagSteps = 10;
+        private const float ReachTolerance = 1e-4f;
         private const float ClearanceTolerance = 1e-4f;
 
         [Tooltip("Look whose eye model the hands orbit; found on this object when left empty.")]
@@ -178,14 +179,12 @@ namespace AlpineLib.Animation.Procedural {
         private readonly LookPoseJoint[][] _armJoints = new LookPoseJoint[ArmCount][];
         private Vector3 _view = Vector3.forward;
         private float _clearancePush;
-        private float _reachLowest;
-        private float _reachHighest;
+        private float _shiftFloor;
         private float _viewShift;
         private bool _hasViewShift;
         private float _appliedPitch;
         private float _appliedPush;
         private Vector3 _pairShift;
-        private Vector3 _pairTarget;
         private Vector3 _lagPair;
         private float _lagShift;
         private float _compromiseShift;
@@ -307,8 +306,7 @@ namespace AlpineLib.Animation.Procedural {
             ReadArmPivots();
 
             float shift = ResolveShift(bones, ref pitch);
-            _pairShift = StepPairShift(deltaTime);
-            shift = StepViewShift(shift, deltaTime);
+            shift = EaseShifts(shift, deltaTime);
             float swivelShare = swivelBlendPitch > 0f ? Mathf.Clamp01(Mathf.Abs(pitch) / swivelBlendPitch) : 1f;
             Quaternion rootRotation = _actorRoot.rotation;
             for (int arm = 0; arm < ArmCount; arm++) {
@@ -398,28 +396,22 @@ namespace AlpineLib.Animation.Procedural {
         /// when no pitch keeps it, the followed pitch is kept and the clearance given up.
         /// </summary>
         private float ResolveShift(PoseBones bones, ref float pitch) {
-            _pairTarget = Vector3.zero;
             if (TrySolveShift(pitch, out float shift)) return shift;
 
             Shrug(bones, _compromiseShift);
             ReadArmPivots();
-            if (IsClearAt(pitch)) {
-                _pairTarget = _lagPair;
-                return _lagShift;
-            }
+            if (IsClearAt(pitch)) return _lagShift;
 
             float followed = pitch;
             float lagged = ArmReachSolver.BisectToward(0f, pitch, LagSteps, _isClearAt);
             if (IsClearAt(lagged)) {
                 pitch = lagged;
-                _pairTarget = _lagPair;
                 return _lagShift;
             }
 
             // No pitch keeps the chest clear: keep the followed pitch, since a prop swung into the camera
             // is worse than one near the chest.
             IsClearAt(followed);
-            _pairTarget = _lagPair;
             _pairShiftClearanceViolated = true;
             return _lagShift;
         }
@@ -441,22 +433,73 @@ namespace AlpineLib.Animation.Procedural {
         }
 
         /// <summary>
-        /// The applied view shift: the solved <paramref name="shift"/> at once on the first live frame and
-        /// whenever it is a need, else released toward it at no more than <c>viewShiftMaxSpeed</c> while
-        /// both arms still reach and the chest stays clear (<see cref="ArmReachSolver.EaseShiftRelease"/>).
+        /// Eases the applied view shift toward the <paramref name="solved"/> one at <c>viewShiftMaxSpeed</c>
+        /// both ways (snapping out to the chest clearance), and lets the pair shift, solved at that eased
+        /// shift and eased at <c>pairShiftMaxSpeed</c>, cover the reach meanwhile. When the two cannot
+        /// reach this frame the view shift moves toward the solved one only as far as reaching needs, and
+        /// failing that the pair shift snaps: reach wins over smoothness, and both hands always move
+        /// together. Snaps on the first live frame.
         /// </summary>
-        private float StepViewShift(float shift, float deltaTime) {
-            float maxStep = _hasViewShift && deltaTime > 0f ? viewShiftMaxSpeed * deltaTime : 0f;
-            _viewShift = ArmReachSolver.EaseShiftRelease(_viewShift, shift, maxStep, _reachLowest, _reachHighest);
+        private float EaseShifts(float solved, float deltaTime) {
+            bool snaps = !_hasViewShift || deltaTime <= 0f;
+            float viewStep = snaps ? 0f : viewShiftMaxSpeed * deltaTime;
+            float pairStep = snaps ? 0f : pairShiftMaxSpeed * deltaTime;
+            float eased = ArmReachSolver.EaseShift(_viewShift, solved, viewStep, _shiftFloor);
+            Vector3 pair = EasedPair(eased, pairStep);
+            if (!PairReaches(eased, pair)) eased = ReachingViewShift(eased, solved, pairStep, out pair);
+
+            _viewShift = eased;
+            _pairShift = pair;
             _hasViewShift = true;
-            return _viewShift;
+            return eased;
         }
 
-        /// <summary>The applied pair shift moved toward the solved one at no more than <c>pairShiftMaxSpeed</c>.</summary>
-        private Vector3 StepPairShift(float deltaTime) {
-            if (pairShiftMaxSpeed <= 0f || deltaTime <= 0f) return _pairTarget;
+        /// <summary>The pair shift at view shift <paramref name="shift"/>, moved from the applied one by at most <paramref name="pairStep"/> (0 snaps).</summary>
+        private Vector3 EasedPair(float shift, float pairStep) {
+            Vector3 needed = MinimalPairShift(shift);
+            return pairStep > 0f ? Vector3.MoveTowards(_pairShift, needed, pairStep) : needed;
+        }
 
-            return Vector3.MoveTowards(_pairShift, _pairTarget, pairShiftMaxSpeed * deltaTime);
+        /// <summary>
+        /// The view shift nearest <paramref name="eased"/> toward <paramref name="solved"/> at which the
+        /// eased pair shift lets both arms reach (bisection); when even the solved one does not, the eased
+        /// view shift with the pair shift snapped to what it needs.
+        /// </summary>
+        private float ReachingViewShift(float eased, float solved, float pairStep, out Vector3 pair) {
+            pair = EasedPair(solved, pairStep);
+            if (!PairReaches(solved, pair)) {
+                pair = MinimalPairShift(eased);
+                return eased;
+            }
+
+            float reaching = solved;
+            Vector3 reachingPair = pair;
+            float shortShift = eased;
+            for (int step = 0; step < LagSteps; step++) {
+                float middle = (reaching + shortShift) * 0.5f;
+                Vector3 middlePair = EasedPair(middle, pairStep);
+                if (PairReaches(middle, middlePair)) {
+                    reaching = middle;
+                    reachingPair = middlePair;
+                } else {
+                    shortShift = middle;
+                }
+            }
+
+            pair = reachingPair;
+            return reaching;
+        }
+
+        /// <summary>True when every mapped arm reaches its target at view shift <paramref name="shift"/> plus <paramref name="pair"/>.</summary>
+        private bool PairReaches(float shift, Vector3 pair) {
+            for (int arm = 0; arm < ArmCount; arm++) {
+                if (!IsMapped(arm)) continue;
+
+                float reach = ArmReach(arm) + ReachTolerance;
+                if ((_baseTarget[arm] + _view * shift + pair - _armPivot[arm]).sqrMagnitude > reach * reach) return false;
+            }
+
+            return true;
         }
 
         /// <summary>True when the carried prop's bottom, shifted with the pair, still keeps <c>bodyClearance</c> ahead of the chest.</summary>
@@ -607,6 +650,7 @@ namespace AlpineLib.Animation.Procedural {
             float pullFloor = Mathf.Min(_clearancePush, minDistance - Vector3.Dot(centre - eye, _view));
             float lowest = Mathf.Max(clearanceFloor, pullFloor);
             float floor = lowest;
+            _shiftFloor = floor;
             float armLowest = float.NegativeInfinity;
             float armHighest = float.PositiveInfinity;
             for (int arm = 0; arm < ArmCount; arm++) {
@@ -624,8 +668,6 @@ namespace AlpineLib.Animation.Procedural {
 
             lowest = Mathf.Max(lowest, armLowest);
             float highest = Mathf.Min(_clearancePush, armHighest);
-            _reachLowest = lowest;
-            _reachHighest = armHighest;
             if (lowest <= highest) {
                 shift = highest;
                 _compromiseShift = highest;
