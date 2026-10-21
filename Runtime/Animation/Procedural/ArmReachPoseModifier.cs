@@ -135,6 +135,8 @@ namespace AlpineLib.Animation.Procedural {
         private readonly Quaternion[] _upperSolved = new Quaternion[ArmCount];
         private readonly Quaternion[] _lowerSolved = new Quaternion[ArmCount];
         private readonly Quaternion[] _handSolved = new Quaternion[ArmCount];
+        private readonly Vector3[] _solvedTarget = new Vector3[ArmCount];
+        private readonly float[] _miss = new float[ArmCount];
 
         private Actor _actor;
         private Transform _actorRoot;
@@ -167,6 +169,19 @@ namespace AlpineLib.Animation.Procedural {
 
         /// <summary>Shift along the view times the effective weight, in metres, last apply: out to clear the chest, negative when pulled in.</summary>
         public float AppliedPush => IsLive ? _appliedPush : 0f;
+
+        /// <summary>
+        /// Distance, in metres, from <paramref name="arm"/>'s (0 left, 1 right) written hand bone to its
+        /// target, last apply: 0 when the arm reached it at full weight; a partial weight blends it short.
+        /// </summary>
+        public float LastMissMetres(int arm) {
+            if (!IsLive || arm < 0 || arm >= ArmCount) return 0f;
+
+            return _miss[arm];
+        }
+
+        /// <summary>The larger of both arms' <see cref="LastMissMetres"/>.</summary>
+        public float HandMissMetres => Mathf.Max(LastMissMetres(0), LastMissMetres(1));
 
         /// <summary>Look pitch the hands start following from; 0 follows from level, up and down.</summary>
         public float FollowStartPitch => followStartPitch;
@@ -211,6 +226,7 @@ namespace AlpineLib.Animation.Procedural {
         public override void Apply(PoseBones bones, float deltaTime) {
             _appliedPitch = 0f;
             _appliedPush = 0f;
+            ClearMiss();
             if (!_captured) return;
 
             _captured = false;
@@ -237,6 +253,10 @@ namespace AlpineLib.Animation.Procedural {
                 if (IsMapped(arm)) WriteArm(bones, arm, weight);
             }
 
+            for (int arm = 0; arm < ArmCount; arm++) {
+                if (IsMapped(arm)) _miss[arm] = Vector3.Distance(_hands[arm].position, _actorRoot.TransformPoint(_solvedTarget[arm]));
+            }
+
             _appliedPitch = pitch * weight;
             _appliedPush = shift * weight;
         }
@@ -245,6 +265,13 @@ namespace AlpineLib.Animation.Procedural {
             _appliedPitch = 0f;
             _appliedPush = 0f;
             _captured = false;
+            ClearMiss();
+        }
+
+        private void ClearMiss() {
+            for (int arm = 0; arm < ArmCount; arm++) {
+                _miss[arm] = 0f;
+            }
         }
 
         private void BindArm(PoseBones bones, int arm, HumanBodyBones shoulder, HumanBodyBones upper, HumanBodyBones lower, HumanBodyBones hand) {
@@ -487,6 +514,7 @@ namespace AlpineLib.Animation.Procedural {
             Vector3 handAxis = _turn * (_handRotationStart[arm] * Vector3.up);
             Vector3 palm = _turn * (_handRotationStart[arm] * PalmLocal(arm));
             Vector3 pole = ArmReachSolver.SwivelPole(pivot, target, _upperLength[arm], _lowerLength[arm], handAxis, palm, capturedPole, swivelShare);
+            _solvedTarget[arm] = target;
 
             Vector3 elbow = ArmReachSolver.SolveElbow(pivot, target, _upperLength[arm], _lowerLength[arm], pole);
             Vector3 bend = ArmReachSolver.BendNormal(pivot, elbow, target, _turn * bendStart);

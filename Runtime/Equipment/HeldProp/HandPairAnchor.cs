@@ -51,6 +51,12 @@ namespace AlpineLib.Equipment {
         /// <inheritdoc />
         public bool IsContinuous => true;
 
+        /// <summary>
+        /// Largest distance, in metres, between a hand's pinch point and the prop's grip point it holds,
+        /// after the last successful fit: half any spacing mismatch, so it catches the hands drifting apart.
+        /// </summary>
+        public float LastResidual { get; private set; }
+
         /// <summary>The left hand bone, or null while no humanoid animator is available.</summary>
         public Transform LeftHand => ResolveHands() ? _leftHand : null;
 
@@ -135,6 +141,9 @@ namespace AlpineLib.Equipment {
 
             Quaternion rotation = Smooth(handFrame * Quaternion.Inverse(propFrame));
             pose = new Pose((pinchLeft + pinchRight) * 0.5f - rotation * ((gripLeft + gripRight) * 0.5f), rotation);
+            float leftResidual = Vector3.Distance(pinchLeft, pose.position + rotation * gripLeft);
+            float rightResidual = Vector3.Distance(pinchRight, pose.position + rotation * gripRight);
+            LastResidual = Mathf.Max(leftResidual, rightResidual);
             return true;
         }
 
