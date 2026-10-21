@@ -382,6 +382,40 @@ namespace AlpineLib.Animation.Procedural {
         }
 
         /// <summary>
+        /// <see cref="EaseShift(float, float, float, float)"/> that also settles exponentially: each way the
+        /// step is at least <paramref name="settleShare"/> of the gap (<see cref="SettleShare"/>), so a large
+        /// gap closes quickly and a small one at the rate limit.
+        /// </summary>
+        public static float EaseShift(float applied, float solved, float outStep, float inStep, float settleShare) {
+            float settle = Mathf.Abs(solved - applied) * Mathf.Clamp01(settleShare);
+            return EaseShift(applied, solved, outStep > 0f ? Mathf.Max(outStep, settle) : 0f, inStep > 0f ? Mathf.Max(inStep, settle) : 0f);
+        }
+
+        /// <summary>
+        /// Share of a gap an exponential settle with time constant <paramref name="settleSeconds"/> closes over
+        /// <paramref name="deltaTime"/>, the same curve at any frame rate; 0 when either is not positive.
+        /// </summary>
+        public static float SettleShare(float deltaTime, float settleSeconds) {
+            if (deltaTime <= 0f || settleSeconds <= 0f) return 0f;
+
+            return 1f - Mathf.Exp(-deltaTime / settleSeconds);
+        }
+
+        /// <summary>
+        /// Clearance a carried prop keeps ahead of the chest, faded out by its <paramref name="bottom"/>'s
+        /// height above <paramref name="chestFront"/> along <paramref name="up"/>: the full
+        /// <paramref name="clearance"/> up to <paramref name="top"/>, none from <paramref name="top"/> +
+        /// <paramref name="fade"/> (smoothstep between), so a prop held up in front of the face is not pushed
+        /// off a chest it is clear of. A <paramref name="fade"/> of 0 or less keeps the full clearance.
+        /// </summary>
+        public static float FadedClearance(Vector3 chestFront, Vector3 bottom, Vector3 up, float clearance, float top, float fade) {
+            if (fade <= 0f) return clearance;
+
+            float share = Mathf.Clamp01((Vector3.Dot(bottom - chestFront, up) - top) / fade);
+            return clearance * (1f - share * share * (3f - 2f * share));
+        }
+
+        /// <summary>
         /// Backlash on a non-negative <paramref name="value"/>: <paramref name="held"/> kept while it sits
         /// no more than <paramref name="band"/> above the value, and never more above it than the value
         /// itself, so the result follows the value up at once, ignores dips smaller than the band and is 0

@@ -33,8 +33,10 @@ namespace AlpineLib.Animation.Procedural {
     /// least (the hand's long axis, +Y, reversed);</item>
     /// <item>the pair pushes out just enough that the carried prop's bottom (its centre's offset from the
     /// hands turned with them, less <c>carriedExtentDown</c>) clears the chest-front point (read after the
-    /// torso is steadied), with a <c>pushDeadband</c> backlash, eased out at <c>pushOutSpeed</c> and back
-    /// in at <c>viewShiftMaxSpeed</c>;</item>
+    /// torso is steadied; the clearance fades out over <c>clearanceFade</c> above <c>clearanceTop</c> of
+    /// the prop bottom's height over that point), with a <c>pushDeadband</c> backlash, eased out at
+    /// <c>pushOutSpeed</c> and back in at <c>viewShiftMaxSpeed</c>, settling faster from large gaps
+    /// (<c>shiftSettleSeconds</c>);</item>
     /// <item>out of reach, the pair pulls in toward <c>minDistance</c>, the clavicles shrug toward the
     /// pulled-in targets, then both targets shift together by the least move that lets each arm reach
     /// (<see cref="PairShiftMetres"/>, rate-limited by <c>pairShiftMaxSpeed</c>), so the spacing and the
@@ -149,6 +151,17 @@ namespace AlpineLib.Animation.Procedural {
         [Tooltip("Floor on the cosine of the look pitch the chest clearance is divided by, so a steep look down does not magnify the chest's small moves into large pushes.")]
         [Range(0.05f, 1f)]
         [SerializeField] private float clearanceMinCosine = 0.4f;
+
+        [Tooltip("Height of the carried prop's bottom above the chest-front point, in metres, up to which the full body clearance is kept; see clearanceFade.")]
+        [SerializeField] private float clearanceTop = 0.15f;
+
+        [Tooltip("Height, in metres, over which the body clearance fades out above clearanceTop, so a prop held up in front of the face is not pushed off the chest; 0 keeps the full clearance at every height.")]
+        [Min(0f)]
+        [SerializeField] private float clearanceFade;
+
+        [Tooltip("Time constant, in seconds, of the exponential settle the view shift also takes both ways, so a large gap (an open from a steep look) closes quickly while small ones keep the speed limits; 0 uses the speed limits alone.")]
+        [Min(0f)]
+        [SerializeField] private float shiftSettleSeconds = 0.15f;
 
         [Tooltip("Fastest the hands catch up with the look once they lag it, in degrees per second; 0 snaps.")]
         [Min(0f)]
@@ -547,7 +560,8 @@ namespace AlpineLib.Animation.Procedural {
 
         /// <summary>
         /// Eases the applied view shift toward the <paramref name="solved"/> one, out at
-        /// <c>pushOutSpeed</c> and back in at <c>viewShiftMaxSpeed</c>, and lets the pair shift, solved at
+        /// <c>pushOutSpeed</c> and back in at <c>viewShiftMaxSpeed</c> or faster by the exponential
+        /// <c>shiftSettleSeconds</c> settle, and lets the pair shift, solved at
         /// that eased shift and eased at <c>pairShiftMaxSpeed</c>, cover the reach meanwhile. When the two
         /// cannot reach this frame the view shift moves toward the solved one only as far as reaching needs,
         /// and failing that the pair shift catches up at <c>pairShiftCatchUpSpeed</c>, what is left showing
@@ -559,7 +573,8 @@ namespace AlpineLib.Animation.Procedural {
             float inStep = snaps ? 0f : viewShiftMaxSpeed * deltaTime;
             float pairStep = snaps ? 0f : pairShiftMaxSpeed * deltaTime;
             float catchUpStep = snaps ? 0f : pairShiftCatchUpSpeed * deltaTime;
-            float eased = ArmReachSolver.EaseShift(_viewShift, solved, outStep, inStep);
+            float settleShare = snaps ? 0f : ArmReachSolver.SettleShare(deltaTime, shiftSettleSeconds);
+            float eased = ArmReachSolver.EaseShift(_viewShift, solved, outStep, inStep, settleShare);
             Vector3 pair = EasedPair(eased, pairStep);
             if (!PairReaches(eased, pair)) eased = ReachingViewShift(eased, solved, pairStep, catchUpStep, out pair);
 
@@ -622,7 +637,7 @@ namespace AlpineLib.Animation.Procedural {
         /// <summary>True when the carried prop's bottom, shifted with the pair, still keeps <c>bodyClearance</c> ahead of the chest.</summary>
         private bool PairKeepsClearance(float shift, Vector3 pair) {
             Vector3 bottom = _bottom + _view * shift + pair;
-            return ArmReachSolver.ClearanceShift(_chestFront, bottom, Vector3.forward, bodyClearance, _lookPitch, clearanceMinCosine) <= ClearanceTolerance;
+            return ClearanceShift(bottom, _lookPitch) <= ClearanceTolerance;
         }
 
         /// <summary>
@@ -799,7 +814,7 @@ namespace AlpineLib.Animation.Procedural {
             _bottom = bottom;
             _lookPitch = lookPitch;
 
-            float clearanceFloor = ArmReachSolver.ClearanceShift(_chestFront, bottom, Vector3.forward, bodyClearance, lookPitch, clearanceMinCosine);
+            float clearanceFloor = ClearanceShift(bottom, lookPitch);
             _clearancePush = Mathf.Max(0f, clearanceFloor);
             float push = _clearancePush;
             if (holdsPush) {
@@ -838,6 +853,12 @@ namespace AlpineLib.Animation.Procedural {
             // Out of reach: the view shift the shrug and pair shift start from, matching the solve at the edge.
             _compromiseShift = Mathf.Clamp((armLowest + armHighest) * 0.5f, floor, push);
             return false;
+        }
+
+        /// <summary>Shift along the view that brings <paramref name="bottom"/> to the body clearance (faded by its height over the chest) at <paramref name="lookPitch"/>.</summary>
+        private float ClearanceShift(Vector3 bottom, float lookPitch) {
+            float clearance = ArmReachSolver.FadedClearance(_chestFront, bottom, Vector3.up, bodyClearance, clearanceTop, clearanceFade);
+            return ArmReachSolver.ClearanceShift(_chestFront, bottom, Vector3.forward, clearance, lookPitch, clearanceMinCosine);
         }
 
         /// <summary>Fills each hand's unshifted target: turned about the follow-start eye, placed at <paramref name="eye"/>; returns their centre.</summary>
