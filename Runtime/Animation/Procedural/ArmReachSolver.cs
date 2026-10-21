@@ -23,8 +23,24 @@ namespace AlpineLib.Animation.Procedural {
         /// <summary>Length of the hand axis's part off the reach line below which it gives no swivel.</summary>
         public const float LeastBendMinimum = 1e-3f;
 
+        /// <summary>Length of reach × palm below which the palm gives no least-roll swivel.</summary>
+        public const float LeastRollMinimum = 1e-3f;
+
+        /// <summary>Forearm roll, in degrees, the swivel refine weighs as one unit of cost.</summary>
+        public const float RollReference = 40f;
+
+        /// <summary>Wrist bend, in degrees, the swivel refine weighs as one unit of cost.</summary>
+        public const float BendReference = 30f;
+
+        /// <summary>Swivel, in degrees either way of the least-roll pole, the refine searches.</summary>
+        public const float SwivelRefineDegrees = 40f;
+
+        /// <summary>Golden-section steps of the swivel refine (about 0.25° left of the 80° span).</summary>
+        public const int SwivelRefineSteps = 12;
+
         private const float MinimumLengthSquared = 1e-12f;
         private const float MinimumCosine = 0.05f;
+        private const float GoldenSection = 0.618034f;
 
         /// <summary>
         /// Elbow for an arm of <paramref name="upperLength"/> and <paramref name="lowerLength"/> from
@@ -113,11 +129,116 @@ namespace AlpineLib.Animation.Procedural {
             Vector3 least = -handAxis - direction * Vector3.Dot(-handAxis, direction);
             if (least.magnitude < LeastBendMinimum) return capturedPole;
 
-            Vector3 captured = capturedPole - direction * Vector3.Dot(capturedPole, direction);
-            if (captured.sqrMagnitude <= MinimumLengthSquared || share >= 1f) return least.normalized;
+            return BlendPole(direction, capturedPole, least.normalized, share);
+        }
 
-            Vector3 blended = Vector3.Lerp(captured.normalized, least.normalized, share);
-            return blended.sqrMagnitude > MinimumLengthSquared ? blended.normalized : least.normalized;
+        /// <summary>
+        /// Pole for an arm reaching from <paramref name="shoulder"/> to <paramref name="target"/>, moved
+        /// by <paramref name="share"/> (0..1) from <paramref name="capturedPole"/> to the least-roll swivel
+        /// (<see cref="LeastRollPole"/> refined by <see cref="RefineSwivel"/>), so the forearm turns with
+        /// the palm instead of twisting under it. Falls back to the least-wrist-bend rule when
+        /// <paramref name="palmNormal"/> is zero or runs along the reach line.
+        /// </summary>
+        public static Vector3 SwivelPole(Vector3 shoulder, Vector3 target, float upperLength, float lowerLength, Vector3 handAxis, Vector3 palmNormal, Vector3 capturedPole, float share) {
+            if (share <= 0f) return capturedPole;
+            if (!TryLeastRollPole(shoulder, target, palmNormal, capturedPole, out Vector3 seed)) {
+                return SwivelPole(shoulder, target, handAxis, capturedPole, share);
+            }
+
+            Vector3 least = RefineSwivel(shoulder, target, upperLength, lowerLength, palmNormal, handAxis, seed);
+            return BlendPole((target - shoulder).normalized, capturedPole, least, share);
+        }
+
+        /// <summary>
+        /// Closed-form least-roll pole: ±(reach × palm), off the reach line, signed to agree with
+        /// <paramref name="referencePole"/> (which side the elbow hinges is the reference's to say). It lays
+        /// the bend plane's normal along the palm, the bind relation of a rig without twist bones.
+        /// <paramref name="referencePole"/> when the reach or palm is degenerate.
+        /// </summary>
+        public static Vector3 LeastRollPole(Vector3 shoulder, Vector3 target, Vector3 palmNormal, Vector3 referencePole) {
+            return TryLeastRollPole(shoulder, target, palmNormal, referencePole, out Vector3 pole) ? pole : referencePole;
+        }
+
+        /// <summary>
+        /// <see cref="LeastRollPole"/>, unit; false when the reach is degenerate or the palm runs along it
+        /// (reach × palm under <see cref="LeastRollMinimum"/>).
+        /// </summary>
+        public static bool TryLeastRollPole(Vector3 shoulder, Vector3 target, Vector3 palmNormal, Vector3 referencePole, out Vector3 pole) {
+            pole = referencePole;
+            Vector3 reach = target - shoulder;
+            if (reach.sqrMagnitude <= MinimumLengthSquared || palmNormal.sqrMagnitude <= MinimumLengthSquared) return false;
+
+            Vector3 candidate = Vector3.Cross(reach.normalized, palmNormal.normalized);
+            if (candidate.magnitude < LeastRollMinimum) return false;
+
+            candidate.Normalize();
+            pole = Vector3.Dot(candidate, referencePole) < 0f ? -candidate : candidate;
+            return true;
+        }
+
+        /// <summary>
+        /// Swings <paramref name="seedPole"/> about the reach line, within <see cref="SwivelRefineDegrees"/>,
+        /// to the swivel that minimises (roll / <see cref="RollReference"/>)² + (wrist bend /
+        /// <see cref="BendReference"/>)² (golden section, <see cref="SwivelRefineSteps"/> steps). Roll is
+        /// measured against the hinge side the seed picks; bend is the angle between
+        /// <paramref name="handAxis"/> and the forearm. Never returns a costlier pole than the seed.
+        /// </summary>
+        public static Vector3 RefineSwivel(Vector3 shoulder, Vector3 target, float upperLength, float lowerLength, Vector3 palmNormal, Vector3 handAxis, Vector3 seedPole) {
+            Vector3 reach = target - shoulder;
+            if (reach.sqrMagnitude <= MinimumLengthSquared) return seedPole;
+
+            Vector3 axis = reach.normalized;
+            float hingeSign = Vector3.Dot(Vector3.Cross(seedPole, axis), palmNormal) < 0f ? -1f : 1f;
+            float low = -SwivelRefineDegrees;
+            float high = SwivelRefineDegrees;
+            float left = high - GoldenSection * (high - low);
+            float right = low + GoldenSection * (high - low);
+            float leftCost = SwivelCost(shoulder, target, upperLength, lowerLength, palmNormal, handAxis, seedPole, axis, hingeSign, left);
+            float rightCost = SwivelCost(shoulder, target, upperLength, lowerLength, palmNormal, handAxis, seedPole, axis, hingeSign, right);
+            for (int step = 0; step < SwivelRefineSteps; step++) {
+                if (leftCost < rightCost) {
+                    high = right;
+                    right = left;
+                    rightCost = leftCost;
+                    left = high - GoldenSection * (high - low);
+                    leftCost = SwivelCost(shoulder, target, upperLength, lowerLength, palmNormal, handAxis, seedPole, axis, hingeSign, left);
+                } else {
+                    low = left;
+                    left = right;
+                    leftCost = rightCost;
+                    right = low + GoldenSection * (high - low);
+                    rightCost = SwivelCost(shoulder, target, upperLength, lowerLength, palmNormal, handAxis, seedPole, axis, hingeSign, right);
+                }
+            }
+
+            float best = (low + high) * 0.5f;
+            float seedCost = SwivelCost(shoulder, target, upperLength, lowerLength, palmNormal, handAxis, seedPole, axis, hingeSign, 0f);
+            float bestCost = SwivelCost(shoulder, target, upperLength, lowerLength, palmNormal, handAxis, seedPole, axis, hingeSign, best);
+            return bestCost < seedCost ? Quaternion.AngleAxis(best, axis) * seedPole : seedPole;
+        }
+
+        /// <summary>
+        /// Signed roll, in degrees, about <paramref name="axis"/> from <paramref name="from"/> to
+        /// <paramref name="to"/>, both projected off it (Unity's <see cref="Vector3.SignedAngle"/> sign).
+        /// Zero when either lies along the axis.
+        /// </summary>
+        public static float RollAbout(Vector3 axis, Vector3 from, Vector3 to) {
+            Vector3 fromOff = Vector3.ProjectOnPlane(from, axis);
+            Vector3 toOff = Vector3.ProjectOnPlane(to, axis);
+            if (fromOff.sqrMagnitude <= MinimumLengthSquared || toOff.sqrMagnitude <= MinimumLengthSquared) return 0f;
+
+            return Vector3.SignedAngle(fromOff, toOff, axis);
+        }
+
+        /// <summary>
+        /// Forearm roll of a chain shoulder → elbow → wrist, in degrees: <see cref="RollAbout"/> the forearm
+        /// (elbow → wrist) from <paramref name="hingeSign"/>·(upper × forearm) to <paramref name="palmNormal"/>.
+        /// Zero when the chain is straight.
+        /// </summary>
+        public static float ForearmRollDegrees(Vector3 shoulder, Vector3 elbow, Vector3 wrist, Vector3 palmNormal, float hingeSign) {
+            if (!TryBendNormal(shoulder, elbow, wrist, out Vector3 hinge)) return 0f;
+
+            return RollAbout(wrist - elbow, hinge * hingeSign, palmNormal);
         }
 
         /// <summary>
@@ -192,6 +313,29 @@ namespace AlpineLib.Animation.Procedural {
             }
 
             return feasible;
+        }
+
+        /// <summary>
+        /// <paramref name="capturedPole"/> (off the reach line) turned toward unit <paramref name="least"/> by
+        /// <paramref name="share"/>; <paramref name="least"/> when the captured pole runs along the reach.
+        /// </summary>
+        private static Vector3 BlendPole(Vector3 direction, Vector3 capturedPole, Vector3 least, float share) {
+            Vector3 captured = capturedPole - direction * Vector3.Dot(capturedPole, direction);
+            if (captured.sqrMagnitude <= MinimumLengthSquared || share >= 1f) return least;
+
+            Vector3 blended = Vector3.Lerp(captured.normalized, least, share);
+            return blended.sqrMagnitude > MinimumLengthSquared ? blended.normalized : least;
+        }
+
+        /// <summary>Refine cost of the seed pole swung <paramref name="degrees"/> about the reach line.</summary>
+        private static float SwivelCost(Vector3 shoulder, Vector3 target, float upperLength, float lowerLength, Vector3 palmNormal, Vector3 handAxis, Vector3 seedPole, Vector3 axis, float hingeSign, float degrees) {
+            Vector3 pole = Quaternion.AngleAxis(degrees, axis) * seedPole;
+            Vector3 elbow = SolveElbow(shoulder, target, upperLength, lowerLength, pole);
+            Vector3 forearm = target - elbow;
+            Vector3 hinge = BendNormal(shoulder, elbow, target, Vector3.Cross(pole, axis).normalized);
+            float roll = RollAbout(forearm, hinge * hingeSign, palmNormal) / RollReference;
+            float bend = Vector3.Angle(handAxis, forearm) / BendReference;
+            return roll * roll + bend * bend;
         }
 
         private static Vector3 AnyPerpendicular(Vector3 vector) {

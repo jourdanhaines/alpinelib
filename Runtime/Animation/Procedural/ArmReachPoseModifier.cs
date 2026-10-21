@@ -21,11 +21,14 @@ namespace AlpineLib.Animation.Procedural {
     /// then hold that place in the actor's frame
     /// until the look passes it, then turn by the look beyond it about the eye at the start pitch,
     /// carried to the eye at the look, so a prop held on that line of sight stays on the view axis;</item>
-    /// <item>with <c>cancelRootSway</c> the root bone's move away from <c>rootReference</c> is taken back
-    /// out of the animated hands first, so a lower layer's hips (idle sway, walk bob) do not swing them;
-    /// they are also carried with the resting eye when a crouch lowers it;</item>
+    /// <item>with <c>cancelRootSway</c> (off by default) the root bone's move away from <c>rootReference</c>
+    /// is taken back out of the animated hands first, so a lower layer's hips (idle sway, walk bob) do not
+    /// swing them; they are also carried with the resting eye when a crouch lowers it. The shoulders still
+    /// ride the hips, so a big root move (a jump) can leave the pinned hands out of reach;</item>
     /// <item>the elbow swivels, over the first <c>swivelBlendPitch</c> degrees followed, from the
-    /// animated one to the one that bends the wrist least (the hand's long axis, +Y, reversed);</item>
+    /// animated one to the least-roll one (the bend plane's normal along the palm, from
+    /// <c>leftPalmLocal</c>/<c>rightPalmLocal</c>), or with no palm set to the one that bends the wrist
+    /// least (the hand's long axis, +Y, reversed);</item>
     /// <item>looking down, the pair pushes out just enough that the carried prop's bottom (its centre's
     /// offset from the hands turned with them, less <c>carriedExtentDown</c>) clears the chest-front point;</item>
     /// <item>out of reach, the clavicles shrug a little, then the pair pulls in toward
@@ -62,7 +65,7 @@ namespace AlpineLib.Animation.Procedural {
         [Tooltip("How far the carried prop reaches below its centre, in metres.")]
         [SerializeField] private float carriedExtentDown = 0.133f;
 
-        [Tooltip("Hold the hands against the body's own sway: un-apply the root bone's move away from rootReference from the animated hands, so a lower layer's hips (idle sway, walk bob) do not carry them.")]
+        [Tooltip("Off by default. Hold the hands against the body's own sway: un-apply the root bone's move away from rootReference from the animated hands, so a lower layer's hips (idle sway, walk bob) do not carry them. The shoulders still ride the hips, so a jump can pull the pinned hands out of reach.")]
         [SerializeField] private bool cancelRootSway;
 
         [Tooltip("Root bone (Hips) pose in the actor's local space that the animated hands were authored over; set from the held clip's own first frame.")]
@@ -89,9 +92,15 @@ namespace AlpineLib.Animation.Procedural {
         [Range(0f, 85f)]
         [SerializeField] private float followStartPitch;
 
-        [Tooltip("Degrees of followed pitch over which the elbow swivel moves from the animated one to the least-wrist-bend one.")]
+        [Tooltip("Degrees of followed pitch over which the elbow swivel moves from the animated one to the least-roll one (least wrist bend with no palm set).")]
         [Min(0f)]
         [SerializeField] private float swivelBlendPitch = 10f;
+
+        [Tooltip("Direction the left palm faces, unit, in the left hand bone's local space; zero swivels for the least wrist bend instead of the least forearm roll.")]
+        [SerializeField] private Vector3 leftPalmLocal;
+
+        [Tooltip("Direction the right palm faces, unit, in the right hand bone's local space; zero swivels for the least wrist bend instead of the least forearm roll.")]
+        [SerializeField] private Vector3 rightPalmLocal;
 
         [Tooltip("Largest upward look pitch the hands follow; unused once a follow start pitch is set.")]
         [Range(0f, 85f)]
@@ -465,7 +474,8 @@ namespace AlpineLib.Animation.Procedural {
         /// <summary>
         /// Two-bone solve of one arm onto <paramref name="target"/>, twist carried from the captured
         /// pose, the elbow swivel moved by <paramref name="swivelShare"/> from the captured one to the
-        /// least wrist bend; fills the solved world rotations without writing them.
+        /// least forearm roll (least wrist bend with no palm set); fills the solved world rotations
+        /// without writing them.
         /// </summary>
         private void SolveArm(int arm, Vector3 target, Quaternion rootRotation, float swivelShare) {
             Vector3 upperStart = _upperStart[arm];
@@ -475,7 +485,8 @@ namespace AlpineLib.Animation.Procedural {
             Vector3 pivot = _armPivot[arm];
             Vector3 capturedPole = _turn * ArmReachSolver.PoleFromBend((handStart - upperStart).normalized, bendStart);
             Vector3 handAxis = _turn * (_handRotationStart[arm] * Vector3.up);
-            Vector3 pole = ArmReachSolver.SwivelPole(pivot, target, handAxis, capturedPole, swivelShare);
+            Vector3 palm = _turn * (_handRotationStart[arm] * PalmLocal(arm));
+            Vector3 pole = ArmReachSolver.SwivelPole(pivot, target, _upperLength[arm], _lowerLength[arm], handAxis, palm, capturedPole, swivelShare);
 
             Vector3 elbow = ArmReachSolver.SolveElbow(pivot, target, _upperLength[arm], _lowerLength[arm], pole);
             Vector3 bend = ArmReachSolver.BendNormal(pivot, elbow, target, _turn * bendStart);
@@ -490,6 +501,10 @@ namespace AlpineLib.Animation.Procedural {
             _upperSolved[arm] = rootRotation * upper;
             _lowerSolved[arm] = rootRotation * lower;
             _handSolved[arm] = rootRotation * (_turn * _handRotationStart[arm]);
+        }
+
+        private Vector3 PalmLocal(int arm) {
+            return arm == 0 ? leftPalmLocal : rightPalmLocal;
         }
 
         /// <summary>Writes one arm top-down, each bone blended from the look's pose toward its solve.</summary>
