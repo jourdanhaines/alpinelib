@@ -40,6 +40,7 @@ namespace AlpineLib.Animation.Procedural {
 
         private const float MinimumLengthSquared = 1e-12f;
         private const float MinimumCosine = 0.05f;
+        private const float MinimumViewShare = 0.5f;
         private const float GoldenSection = 0.618034f;
         private const float PairTolerance = 1e-6f;
 
@@ -413,6 +414,17 @@ namespace AlpineLib.Animation.Procedural {
 
             float share = Mathf.Clamp01((Vector3.Dot(bottom - chestFront, up) - top) / fade);
             return clearance * (1f - share * share * (3f - 2f * share));
+        }
+
+        /// <summary>
+        /// Shift along <paramref name="shiftDirection"/> (unit) that brings <paramref name="centre"/> to
+        /// <paramref name="minDistance"/> along the actual <paramref name="view"/> (unit) from
+        /// <paramref name="eye"/>; negative when it is further. The shift's share along the view is floored
+        /// at a half, so a shift direction far off the view cannot ask for a huge move.
+        /// </summary>
+        public static float DistanceFloor(Vector3 centre, Vector3 eye, Vector3 view, Vector3 shiftDirection, float minDistance) {
+            float along = Mathf.Max(Vector3.Dot(shiftDirection, view), MinimumViewShare);
+            return (minDistance - Vector3.Dot(centre - eye, view)) / along;
         }
 
         /// <summary>

@@ -37,7 +37,7 @@ namespace AlpineLib.Animation.Procedural {
     /// the prop bottom's height over that point), with a <c>pushDeadband</c> backlash, eased out at
     /// <c>pushOutSpeed</c> and back in at <c>viewShiftMaxSpeed</c>, settling faster from large gaps
     /// (<c>shiftSettleSeconds</c>);</item>
-    /// <item>out of reach, the pair pulls in toward <c>minDistance</c>, the clavicles shrug toward the
+    /// <item>out of reach, the pair pulls the view point in toward <c>minDistance</c>, the clavicles shrug toward the
     /// pulled-in targets, then both targets shift together by the least move that lets each arm reach
     /// (<see cref="PairShiftMetres"/>, rate-limited by <c>pairShiftMaxSpeed</c>), so the spacing and the
     /// hands' turn never change and a prop held between them stays rigid; each step starts where the last
@@ -103,8 +103,11 @@ namespace AlpineLib.Animation.Procedural {
         [Tooltip("Front of the chest in UpperChest-local space (Chest when unmapped, else the actor's).")]
         [SerializeField] private Vector3 chestFrontLocal;
 
-        [Tooltip("Nearest the hands' centre may pull in toward the eye, along the view, when out of reach.")]
+        [Tooltip("Nearest the view point (the hands' centre plus viewPointOffset) may come to the actual eye along the actual view: out of reach the pair pulls in no closer, and a look past the followed pitch pushes it out to keep it.")]
         [SerializeField] private float minDistance = 0.24f;
+
+        [Tooltip("Point kept minDistance from the eye, relative to the hands' centre (hand bones), in the actor's frame at level look, in metres: e.g. the carried sheet's centre. Zero uses the hands' centre.")]
+        [SerializeField] private Vector3 viewPointOffset;
 
         [Tooltip("Share of an arm's full length it may stretch to.")]
         [Range(0.5f, 1f)]
@@ -240,6 +243,7 @@ namespace AlpineLib.Animation.Procedural {
         private Vector3 _bottom;
         private float _lookPitch;
         private float _targetPitch;
+        private float _actualLookPitch;
         private float _followLag;
         private float _solvedPush;
         private float _followPitch;
@@ -357,7 +361,8 @@ namespace AlpineLib.Animation.Procedural {
                 return;
             }
 
-            _targetPitch = FollowedPitch(_actor.LookPitch);
+            _actualLookPitch = _actor.LookPitch;
+            _targetPitch = FollowedPitch(_actualLookPitch);
             _restingEye = RestingEye();
             _pivotEye = StandingEyeAt(followStartPitch);
             CancelRootSway();
@@ -801,7 +806,9 @@ namespace AlpineLib.Animation.Procedural {
         /// <summary>
         /// Lays out the hands' targets at followed <paramref name="pitch"/> (the hands turned by it about
         /// the eye at the follow start, carried to the eye at the look) and finds the shift along the view
-        /// nearest the chest clearance that keeps both in reach. False, with the clearance shift, when
+        /// nearest the chest clearance that keeps both in reach and the view point at least <c>minDistance</c>
+        /// from the actual eye along the actual view (which differ from the laid-out ones past a limit or
+        /// while lagging). False, with the clearance shift, when
         /// none does.
         /// </summary>
         private bool TrySolveShift(float pitch, bool holdsPush, out float shift) {
@@ -819,12 +826,18 @@ namespace AlpineLib.Animation.Procedural {
             float push = _clearancePush;
             if (holdsPush) {
                 _heldPush = ArmReachSolver.Backlash(_heldPush, _clearancePush, pushDeadband);
-                _solvedPush = _heldPush;
                 push = _heldPush;
             }
 
+            // Kept from the actual eye: a look down past the followed pitch leans the eye toward the hands.
+            // Looking up past it the eye leans away and the prop leaves the view, so it never pushes out.
+            Vector3 viewPoint = centre + _turn * (_lean * viewPointOffset);
+            float distanceFloor = ArmReachSolver.DistanceFloor(viewPoint, EyeAt(_actualLookPitch), Quaternion.AngleAxis(_actualLookPitch, Vector3.right) * Vector3.forward, _view, minDistance);
+            if (_actualLookPitch > lookPitch) push = Mathf.Max(push, distanceFloor);
+            if (holdsPush) _solvedPush = push;
+
             shift = push;
-            float pullFloor = Mathf.Min(push, minDistance - Vector3.Dot(centre - eye, _view));
+            float pullFloor = Mathf.Min(push, distanceFloor);
             float lowest = Mathf.Max(clearanceFloor, pullFloor);
             float floor = lowest;
             float armLowest = float.NegativeInfinity;
