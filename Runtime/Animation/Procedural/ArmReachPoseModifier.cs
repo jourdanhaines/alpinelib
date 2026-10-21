@@ -178,7 +178,8 @@ namespace AlpineLib.Animation.Procedural {
         private readonly LookPoseJoint[][] _armJoints = new LookPoseJoint[ArmCount][];
         private Vector3 _view = Vector3.forward;
         private float _clearancePush;
-        private float _clearanceFloor;
+        private float _reachLowest;
+        private float _reachHighest;
         private float _viewShift;
         private bool _hasViewShift;
         private float _appliedPitch;
@@ -441,22 +442,14 @@ namespace AlpineLib.Animation.Procedural {
 
         /// <summary>
         /// The applied view shift: the solved <paramref name="shift"/> at once on the first live frame and
-        /// whenever it is further from zero (a need), else released toward it at no more than
-        /// <c>viewShiftMaxSpeed</c>; never nearer the chest than the clearance allows.
+        /// whenever it is a need, else released toward it at no more than <c>viewShiftMaxSpeed</c> while
+        /// both arms still reach and the chest stays clear (<see cref="ArmReachSolver.EaseShiftRelease"/>).
         /// </summary>
         private float StepViewShift(float shift, float deltaTime) {
-            bool snaps = !_hasViewShift || viewShiftMaxSpeed <= 0f || deltaTime <= 0f || IsViewShiftNeed(_viewShift, shift);
-            float eased = snaps ? shift : Mathf.MoveTowards(_viewShift, shift, viewShiftMaxSpeed * deltaTime);
-            _viewShift = Mathf.Max(eased, Mathf.Min(shift, _clearanceFloor));
+            float maxStep = _hasViewShift && deltaTime > 0f ? viewShiftMaxSpeed * deltaTime : 0f;
+            _viewShift = ArmReachSolver.EaseShiftRelease(_viewShift, shift, maxStep, _reachLowest, _reachHighest);
             _hasViewShift = true;
             return _viewShift;
-        }
-
-        /// <summary>True when <paramref name="solved"/> lies further from zero than <paramref name="applied"/>, or across it.</summary>
-        private static bool IsViewShiftNeed(float applied, float solved) {
-            if (applied * solved < 0f) return true;
-
-            return Mathf.Abs(solved) >= Mathf.Abs(applied);
         }
 
         /// <summary>The applied pair shift moved toward the solved one at no more than <c>pairShiftMaxSpeed</c>.</summary>
@@ -609,7 +602,6 @@ namespace AlpineLib.Animation.Procedural {
 
             float clearanceFloor = ArmReachSolver.ClearanceShift(_chestFront, bottom, Vector3.forward, bodyClearance, lookPitch);
             _clearancePush = Mathf.Max(0f, clearanceFloor);
-            _clearanceFloor = clearanceFloor;
             shift = _clearancePush;
 
             float pullFloor = Mathf.Min(_clearancePush, minDistance - Vector3.Dot(centre - eye, _view));
@@ -632,6 +624,8 @@ namespace AlpineLib.Animation.Procedural {
 
             lowest = Mathf.Max(lowest, armLowest);
             float highest = Mathf.Min(_clearancePush, armHighest);
+            _reachLowest = lowest;
+            _reachHighest = armHighest;
             if (lowest <= highest) {
                 shift = highest;
                 _compromiseShift = highest;

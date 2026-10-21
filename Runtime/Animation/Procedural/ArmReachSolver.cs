@@ -363,6 +363,29 @@ namespace AlpineLib.Animation.Procedural {
         }
 
         /// <summary>
+        /// Next applied shift easing toward <paramref name="solved"/>: <paramref name="solved"/> at once when
+        /// it is a need (<see cref="IsShiftNeed"/>), <paramref name="maxStep"/> is not positive, or the
+        /// interval is empty; else a release of at most <paramref name="maxStep"/>, clamped into
+        /// [<paramref name="lowest"/>, <paramref name="highest"/>] (the shifts both arms reach with the chest
+        /// clear), so easing only slows a release the arms can afford and never leaves a hand short.
+        /// </summary>
+        public static float EaseShiftRelease(float applied, float solved, float maxStep, float lowest, float highest) {
+            if (maxStep <= 0f || lowest > highest || IsShiftNeed(applied, solved)) return solved;
+
+            return Mathf.Clamp(Mathf.MoveTowards(applied, solved, maxStep), lowest, highest);
+        }
+
+        /// <summary>
+        /// True when <paramref name="solved"/> lies at least as far from zero as <paramref name="applied"/>
+        /// on the same side, or across zero: more pull-in or push-out is needed, never eased.
+        /// </summary>
+        public static bool IsShiftNeed(float applied, float solved) {
+            if (applied * solved < 0f) return true;
+
+            return Mathf.Abs(solved) >= Mathf.Abs(applied);
+        }
+
+        /// <summary>
         /// Degrees a clavicle must turn about <paramref name="clavicle"/> so the arm pivot at
         /// <paramref name="armPivot"/> comes within <paramref name="reach"/> of <paramref name="target"/>;
         /// zero when it already is, the full angle to the target line when no turn is enough.
