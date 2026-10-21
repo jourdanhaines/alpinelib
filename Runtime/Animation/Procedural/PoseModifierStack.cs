@@ -40,7 +40,11 @@ namespace AlpineLib.Animation.Procedural {
             _bones.BeginFrame();
 
             foreach (PoseModifier modifier in _modifiers) {
-                if (IsLive(modifier)) modifier.Capture(_bones);
+                if (IsLive(modifier)) {
+                    modifier.Capture(_bones);
+                } else {
+                    modifier.Skip();
+                }
             }
 
             foreach (PoseModifier modifier in _modifiers) {

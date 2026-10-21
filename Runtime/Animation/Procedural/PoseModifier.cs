@@ -48,5 +48,13 @@ namespace AlpineLib.Animation.Procedural {
         /// Adds this layer's motion to the pose the animator and any earlier layer left behind.
         /// </summary>
         public abstract void Apply(PoseBones bones, float deltaTime);
+
+        /// <summary>
+        /// Called once per frame instead of <see cref="Capture"/> and <see cref="Apply"/> while the layer is
+        /// not live (disabled or at weight 0). Override to drop state eased across frames, so the layer
+        /// comes back from its solve rather than from where it last left off.
+        /// </summary>
+        protected internal virtual void Skip() {
+        }
     }
 }
