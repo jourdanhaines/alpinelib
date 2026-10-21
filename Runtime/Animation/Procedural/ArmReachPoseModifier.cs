@@ -18,9 +18,9 @@ namespace AlpineLib.Animation.Procedural {
     /// <list type="bullet">
     /// <item>with a <c>followStartPitch</c> the animated arms are taken as authored for the look at that
     /// pitch: the look's chest lean there (its share on the arms' ancestors) carries them first; the hands
-    /// then hold that place in the actor's frame
-    /// until the look passes it, then turn by the look beyond it about the eye at the start pitch,
-    /// carried to the eye at the look, so a prop held on that line of sight stays on the view axis;</item>
+    /// then turn by the look's difference from it (both ways, within <c>maxFollowPitchUp</c> above level
+    /// and <c>maxFollowPitchDown</c>) about the eye at the start pitch, carried to the eye at the look, so
+    /// a prop held on that line of sight stays on the view axis;</item>
     /// <item>with <c>cancelRootSway</c> (recommended for a view-rigid camera) the root bone's move away
     /// from <c>rootReference</c> is taken back out of the animated hands first, so a lower layer's hips
     /// (idle sway, walk bob, jump) do not swing them; they are also carried with the resting eye when a
@@ -31,20 +31,24 @@ namespace AlpineLib.Animation.Procedural {
     /// animated one to the least-roll one (the bend plane's normal along the palm, from
     /// <c>leftPalmLocal</c>/<c>rightPalmLocal</c>), or with no palm set to the one that bends the wrist
     /// least (the hand's long axis, +Y, reversed);</item>
-    /// <item>looking down, the pair pushes out just enough that the carried prop's bottom (its centre's
-    /// offset from the hands turned with them, less <c>carriedExtentDown</c>) clears the chest-front point;</item>
+    /// <item>the pair pushes out just enough that the carried prop's bottom (its centre's offset from the
+    /// hands turned with them, less <c>carriedExtentDown</c>) clears the chest-front point (read after the
+    /// torso is steadied), with a <c>pushDeadband</c> backlash, eased out at <c>pushOutSpeed</c> and back
+    /// in at <c>viewShiftMaxSpeed</c>;</item>
     /// <item>out of reach, the pair pulls in toward <c>minDistance</c>, the clavicles shrug toward the
     /// pulled-in targets, then both targets shift together by the least move that lets each arm reach
     /// (<see cref="PairShiftMetres"/>, rate-limited by <c>pairShiftMaxSpeed</c>), so the spacing and the
     /// hands' turn never change and a prop held between them stays rigid; each step starts where the last
-    /// ends, so the hands move continuously. If the shift breaks the chest clearance the look lags toward
-    /// level until it does not; when no pitch keeps it, the followed pitch is kept
-    /// (<see cref="PairShiftClearanceViolated"/>).</item>
+    /// ends, so the hands move continuously. Where that cannot reach (or breaks the chest clearance) the
+    /// followed pitch lags toward level at once and catches up at <c>followLagSpeed</c> with a
+    /// <c>followLagHysteresis</c> (<see cref="FollowLagDegrees"/>); when no pitch reaches, the target
+    /// is kept (<see cref="PairShiftClearanceViolated"/>). Eased state resets whenever the layer is not
+    /// live (<see cref="ResetShifts"/>).</item>
     /// </list>
     /// Ordered at <see cref="DefaultOrder"/> (10), after the look at 0. The effective weight is
     /// <see cref="PoseModifier.Weight"/> times the optional follow layer's: the arms are solved at the
     /// full pitch and each written bone is blended from the look's pose toward the solve by it, so 0
-    /// leaves the look's pose and 1 is the exact solve. Allocation free and time free per frame.
+    /// leaves the look's pose and 1 is the exact solve. Allocation free per frame.
     /// </remarks>
     [RequireComponent(typeof(Actor))]
     public class ArmReachPoseModifier : PoseModifier {
@@ -55,6 +59,7 @@ namespace AlpineLib.Animation.Procedural {
         private const int LagSteps = 10;
         private const float ReachTolerance = 1e-4f;
         private const float ClearanceTolerance = 1e-4f;
+        private const float LagTolerance = 1e-4f;
 
         [Tooltip("Look whose eye model the hands orbit; found on this object when left empty.")]
         [SerializeField] private LookPoseModifier look;
@@ -125,15 +130,39 @@ namespace AlpineLib.Animation.Procedural {
         [Min(0f)]
         [SerializeField] private float pairShiftMaxSpeed = 1.2f;
 
-        [Tooltip("Fastest the pair's shift along the view (chest push-out, pull-in) may release back toward zero, in metres per second; a shift that is needed (further from zero) always applies at once; 0 snaps.")]
+        [Tooltip("Fastest the shared shift may catch up when the eased view shift leaves a hand out of reach even with it, in metres per second; what it cannot cover stays a hand miss; 0 snaps.")]
         [Min(0f)]
-        [SerializeField] private float viewShiftMaxSpeed = 0.3f;
+        [SerializeField] private float pairShiftCatchUpSpeed = 3f;
 
-        [Tooltip("Largest upward look pitch the hands follow; unused once a follow start pitch is set.")]
-        [Range(0f, 85f)]
+        [Tooltip("Fastest the pair's shift along the view may come back in (the chest push-out releasing, a pull-in), in metres per second; 0 snaps.")]
+        [Min(0f)]
+        [SerializeField] private float viewShiftMaxSpeed = 0.25f;
+
+        [Tooltip("Fastest the pair's shift along the view may move out (the chest push-out growing), in metres per second; 0 snaps.")]
+        [Min(0f)]
+        [SerializeField] private float pushOutSpeed = 0.5f;
+
+        [Tooltip("Backlash on the chest push-out, in metres: the push only comes back in once the clearance asks for this much less, so breath-sized wobbles do not move the hands.")]
+        [Min(0f)]
+        [SerializeField] private float pushDeadband = 0.004f;
+
+        [Tooltip("Floor on the cosine of the look pitch the chest clearance is divided by, so a steep look down does not magnify the chest's small moves into large pushes.")]
+        [Range(0.05f, 1f)]
+        [SerializeField] private float clearanceMinCosine = 0.4f;
+
+        [Tooltip("Fastest the hands catch up with the look once they lag it, in degrees per second; 0 snaps.")]
+        [Min(0f)]
+        [SerializeField] private float followLagSpeed = 120f;
+
+        [Tooltip("Degrees past the eased pitch that must also be reachable before the lag releases, so it does not flip at the reach edge.")]
+        [Min(0f)]
+        [SerializeField] private float followLagHysteresis = 1f;
+
+        [Tooltip("With a follow start pitch: the highest look, in degrees above level, the hands follow up to (past it they stay in the body). Without one: the largest upward look pitch they follow.")]
+        [Range(-85f, 85f)]
         [SerializeField] private float maxFollowPitchUp = 20f;
 
-        [Tooltip("Largest downward look pitch the hands follow.")]
+        [Tooltip("Largest downward look pitch the hands follow; looking further down they stay in the body.")]
         [Range(0f, 85f)]
         [SerializeField] private float maxFollowPitchDown = 85f;
 
@@ -169,7 +198,7 @@ namespace AlpineLib.Animation.Procedural {
         private Transform _actorRoot;
         private ICameraTarget _cameraTarget;
         private Transform _chestBone;
-        private Func<float, bool> _isClearAt;
+        private Func<float, bool> _isFeasible;
         private bool _captured;
         private Vector3 _restingEye;
         private Vector3 _pivotEye;
@@ -185,7 +214,7 @@ namespace AlpineLib.Animation.Procedural {
         private readonly LookPoseJoint[][] _armJoints = new LookPoseJoint[ArmCount][];
         private Vector3 _view = Vector3.forward;
         private float _clearancePush;
-        private float _shiftFloor;
+        private float _heldPush;
         private float _viewShift;
         private bool _hasViewShift;
         private float _appliedPitch;
@@ -197,6 +226,11 @@ namespace AlpineLib.Animation.Procedural {
         private bool _pairShiftClearanceViolated;
         private Vector3 _bottom;
         private float _lookPitch;
+        private float _targetPitch;
+        private float _followLag;
+        private float _solvedPush;
+        private float _followPitch;
+        private bool _hasFollow;
 
         public ArmReachPoseModifier() : base(DefaultOrder) {
         }
@@ -236,6 +270,21 @@ namespace AlpineLib.Animation.Procedural {
         /// </summary>
         public bool PairShiftClearanceViolated => IsLive && _pairShiftClearanceViolated;
 
+        /// <summary>Pitch, in degrees past the follow start (negative up), the hands would follow to last apply with no reach limit.</summary>
+        public float TargetFollowPitch => IsLive ? _targetPitch : 0f;
+
+        /// <summary>Degrees the followed pitch trails <see cref="TargetFollowPitch"/> last apply while out of reach; 0 when following.</summary>
+        public float FollowLagDegrees => IsLive ? _followLag : 0f;
+
+        /// <summary>Chest push-out, in metres, last apply after its backlash and before easing.</summary>
+        public float SolvedPush => IsLive ? _solvedPush : 0f;
+
+        /// <summary>See the <c>maxFollowPitchUp</c> field.</summary>
+        public float MaxFollowPitchUp => maxFollowPitchUp;
+
+        /// <summary>Largest downward look pitch the hands follow.</summary>
+        public float MaxFollowPitchDown => maxFollowPitchDown;
+
         /// <summary>Look pitch the hands start following from; 0 follows from level, up and down.</summary>
         public float FollowStartPitch => followStartPitch;
 
@@ -249,10 +298,8 @@ namespace AlpineLib.Animation.Procedural {
             _actor = GetComponent<Actor>();
             _actorRoot = actorRoot;
             _cameraTarget = GetComponent<ICameraTarget>();
-            _isClearAt = IsClearAt;
-            _pairShift = Vector3.zero;
-            _viewShift = 0f;
-            _hasViewShift = false;
+            _isFeasible = IsFeasible;
+            ResetShifts();
             if (look == null) look = GetComponent<LookPoseModifier>();
 
             BindArm(bones, 0, HumanBodyBones.LeftShoulder, HumanBodyBones.LeftUpperArm, HumanBodyBones.LeftLowerArm, HumanBodyBones.LeftHand);
@@ -286,33 +333,29 @@ namespace AlpineLib.Animation.Procedural {
             _pairShiftClearanceViolated = false;
             ClearMiss();
             if (!_captured) {
-                _pairShift = Vector3.zero;
-                _viewShift = 0f;
-                _hasViewShift = false;
+                ResetShifts();
                 return;
             }
 
             _captured = false;
             float weight = EffectiveWeight;
             if (weight <= 0f || (!IsMapped(0) && !IsMapped(1))) {
-                _pairShift = Vector3.zero;
-                _viewShift = 0f;
-                _hasViewShift = false;
+                ResetShifts();
                 return;
             }
 
-            float pitch = FollowedPitch(_actor.LookPitch);
+            _targetPitch = FollowedPitch(_actor.LookPitch);
             _restingEye = RestingEye();
             _pivotEye = StandingEyeAt(followStartPitch);
-            _chestFront = ChestFront();
             CancelRootSway();
             LeanCapturedArms();
             SteadyTorso(bones, weight);
+            _chestFront = ChestFront();
             ReadBlendSources();
             ReadArmPivots();
 
-            float shift = ResolveShift(bones, ref pitch);
-            shift = EaseShifts(shift, deltaTime);
+            float pitch = FollowPitch(bones, deltaTime);
+            float shift = EaseShifts(SolveShift(pitch), deltaTime);
             float swivelShare = swivelBlendPitch > 0f ? Mathf.Clamp01(Mathf.Abs(pitch) / swivelBlendPitch) : 1f;
             Quaternion rootRotation = _actorRoot.rotation;
             for (int arm = 0; arm < ArmCount; arm++) {
@@ -335,11 +378,29 @@ namespace AlpineLib.Animation.Procedural {
             _appliedPitch = 0f;
             _appliedPush = 0f;
             _captured = false;
+            ResetShifts();
+            _pairShiftClearanceViolated = false;
+            ClearMiss();
+        }
+
+        /// <summary>
+        /// Drops every eased state (view and pair shifts, push backlash, followed-pitch lag), so the next live
+        /// frame starts from the solve, not from a pose last seen frames ago.
+        /// </summary>
+        public void ResetShifts() {
             _pairShift = Vector3.zero;
             _viewShift = 0f;
             _hasViewShift = false;
-            _pairShiftClearanceViolated = false;
-            ClearMiss();
+            _heldPush = 0f;
+            _solvedPush = 0f;
+            _followPitch = 0f;
+            _followLag = 0f;
+            _hasFollow = false;
+        }
+
+        /// <inheritdoc />
+        protected internal override void Skip() {
+            ResetShifts();
         }
 
         private void ClearMiss() {
@@ -394,40 +455,77 @@ namespace AlpineLib.Animation.Procedural {
         }
 
         /// <summary>
-        /// The shift along the view both hands take. Out of reach, each step starts where the one before
-        /// ends, so the hands move continuously as the reach deficit grows: the view shift pulled in as far
-        /// as allowed, then the clavicles shrug toward the targets there, then both targets shift together
-        /// by the least move that lets each arm reach (<see cref="ArmReachSolver.MinimalPairShift"/>). If
-        /// that breaks the chest clearance <paramref name="pitch"/> lags toward level until it does not;
-        /// when no pitch keeps it, the followed pitch is kept and the clearance given up.
+        /// The pitch the hands follow this frame: the target pitch while every arm reaches it (after the
+        /// pull-in, the shrug at the target and a pair shift that keeps the chest clearance); out of reach it
+        /// lags toward level at once, as far as reaching needs, then eases back toward the target at
+        /// <c>followLagSpeed</c> once a pitch <c>followLagHysteresis</c> further on reaches too. When no
+        /// pitch from level reaches, the target is kept and the clearance given up.
         /// </summary>
-        private float ResolveShift(PoseBones bones, ref float pitch) {
-            if (TrySolveShift(pitch, out float shift)) return shift;
-
+        private float FollowPitch(PoseBones bones, float deltaTime) {
+            float target = _targetPitch;
+            TrySolveShift(target, false, out _);
             Shrug(bones, _compromiseShift);
             ReadArmPivots();
-            if (IsClearAt(pitch)) return _lagShift;
 
-            float followed = pitch;
-            float lagged = ArmReachSolver.BisectToward(0f, pitch, LagSteps, _isClearAt);
-            if (IsClearAt(lagged)) {
-                pitch = lagged;
-                return _lagShift;
+            float followed = _hasFollow ? NextFollowPitch(target, deltaTime) : LaggedPitch(target);
+            _hasFollow = true;
+            if (float.IsNaN(followed)) {
+                // No pitch keeps the chest clear: keep the target, since a prop swung into the camera is
+                // worse than one near the chest.
+                _pairShiftClearanceViolated = true;
+                followed = target;
             }
 
-            // No pitch keeps the chest clear: keep the followed pitch, since a prop swung into the camera
-            // is worse than one near the chest.
-            IsClearAt(followed);
-            _pairShiftClearanceViolated = true;
-            return _lagShift;
+            _followPitch = followed;
+            _followLag = target - followed;
+            return followed;
         }
 
         /// <summary>
-        /// Lays out <paramref name="pitch"/> and solves its view shift and pair shift (into
-        /// <c>_lagShift</c>/<c>_lagPair</c>); true when the carried prop then keeps its chest clearance.
+        /// Last frame's followed pitch carried on (the target itself when it was following): the lag grows at once when it no longer reaches, else
+        /// releases toward <paramref name="target"/> at <c>followLagSpeed</c> while a pitch the hysteresis
+        /// further on reaches too. NaN when no pitch from level reaches.
         /// </summary>
-        private bool IsClearAt(float pitch) {
-            if (TrySolveShift(pitch, out float shift)) {
+        private float NextFollowPitch(float target, float deltaTime) {
+            bool following = Mathf.Abs(_followLag) <= LagTolerance;
+            float held = following ? target : Mathf.Clamp(_followPitch, Mathf.Min(0f, target), Mathf.Max(0f, target));
+            if (!IsFeasible(held)) return LaggedPitch(held);
+
+            float step = followLagSpeed > 0f ? followLagSpeed * Mathf.Max(deltaTime, 0f) : float.PositiveInfinity;
+            float eased = Mathf.MoveTowards(held, target, step);
+            if (eased == held || IsFeasible(LagProbe(eased, target))) return eased;
+
+            float reaching = held;
+            float failing = eased;
+            for (int index = 0; index < LagSteps; index++) {
+                float middle = (reaching + failing) * 0.5f;
+                if (IsFeasible(LagProbe(middle, target))) {
+                    reaching = middle;
+                } else {
+                    failing = middle;
+                }
+            }
+
+            return reaching;
+        }
+
+        private float LagProbe(float pitch, float target) {
+            return Mathf.MoveTowards(pitch, target, followLagHysteresis);
+        }
+
+        /// <summary>The reaching pitch nearest <paramref name="wanted"/> on the way from level; NaN when level does not reach either.</summary>
+        private float LaggedPitch(float wanted) {
+            float lagged = ArmReachSolver.BisectToward(0f, wanted, LagSteps, _isFeasible);
+            return lagged == wanted || IsFeasible(lagged) ? lagged : float.NaN;
+        }
+
+        /// <summary>
+        /// True when every arm reaches its target at <paramref name="pitch"/>: by the view shift alone, or
+        /// with a pair shift that brings both into reach and keeps the chest clearance. Fills
+        /// <c>_lagShift</c>/<c>_lagPair</c>; measured against the raw chest push, not the held one.
+        /// </summary>
+        private bool IsFeasible(float pitch) {
+            if (TrySolveShift(pitch, false, out float shift)) {
                 _lagShift = shift;
                 _lagPair = Vector3.zero;
                 return true;
@@ -435,24 +533,35 @@ namespace AlpineLib.Animation.Procedural {
 
             _lagShift = _compromiseShift;
             _lagPair = MinimalPairShift(_lagShift);
-            return PairKeepsClearance(_lagShift, _lagPair);
+            return PairReaches(_lagShift, _lagPair) && PairKeepsClearance(_lagShift, _lagPair);
         }
 
         /// <summary>
-        /// Eases the applied view shift toward the <paramref name="solved"/> one at <c>viewShiftMaxSpeed</c>
-        /// both ways (snapping out to the chest clearance), and lets the pair shift, solved at that eased
-        /// shift and eased at <c>pairShiftMaxSpeed</c>, cover the reach meanwhile. When the two cannot
-        /// reach this frame the view shift moves toward the solved one only as far as reaching needs, and
-        /// failing that the pair shift snaps: reach wins over smoothness, and both hands always move
-        /// together. Snaps on the first live frame.
+        /// Lays out the followed <paramref name="pitch"/> for the solve and returns the shift along the view
+        /// it wants, the chest push held by its backlash; out of reach, the compromise the pair shift
+        /// covers from.
+        /// </summary>
+        private float SolveShift(float pitch) {
+            return TrySolveShift(pitch, true, out float shift) ? shift : _compromiseShift;
+        }
+
+        /// <summary>
+        /// Eases the applied view shift toward the <paramref name="solved"/> one, out at
+        /// <c>pushOutSpeed</c> and back in at <c>viewShiftMaxSpeed</c>, and lets the pair shift, solved at
+        /// that eased shift and eased at <c>pairShiftMaxSpeed</c>, cover the reach meanwhile. When the two
+        /// cannot reach this frame the view shift moves toward the solved one only as far as reaching needs,
+        /// and failing that the pair shift catches up at <c>pairShiftCatchUpSpeed</c>, what is left showing
+        /// as a hand miss; both hands always move together. Snaps on the first live frame.
         /// </summary>
         private float EaseShifts(float solved, float deltaTime) {
             bool snaps = !_hasViewShift || deltaTime <= 0f;
-            float viewStep = snaps ? 0f : viewShiftMaxSpeed * deltaTime;
+            float outStep = snaps ? 0f : pushOutSpeed * deltaTime;
+            float inStep = snaps ? 0f : viewShiftMaxSpeed * deltaTime;
             float pairStep = snaps ? 0f : pairShiftMaxSpeed * deltaTime;
-            float eased = ArmReachSolver.EaseShift(_viewShift, solved, viewStep, _shiftFloor);
+            float catchUpStep = snaps ? 0f : pairShiftCatchUpSpeed * deltaTime;
+            float eased = ArmReachSolver.EaseShift(_viewShift, solved, outStep, inStep);
             Vector3 pair = EasedPair(eased, pairStep);
-            if (!PairReaches(eased, pair)) eased = ReachingViewShift(eased, solved, pairStep, out pair);
+            if (!PairReaches(eased, pair)) eased = ReachingViewShift(eased, solved, pairStep, catchUpStep, out pair);
 
             _viewShift = eased;
             _pairShift = pair;
@@ -469,12 +578,14 @@ namespace AlpineLib.Animation.Procedural {
         /// <summary>
         /// The view shift nearest <paramref name="eased"/> toward <paramref name="solved"/> at which the
         /// eased pair shift lets both arms reach (bisection); when even the solved one does not, the eased
-        /// view shift with the pair shift snapped to what it needs.
+        /// view shift with the pair shift moved toward what it needs by <paramref name="catchUpStep"/>
+        /// (0 snaps).
         /// </summary>
-        private float ReachingViewShift(float eased, float solved, float pairStep, out Vector3 pair) {
+        private float ReachingViewShift(float eased, float solved, float pairStep, float catchUpStep, out Vector3 pair) {
             pair = EasedPair(solved, pairStep);
             if (!PairReaches(solved, pair)) {
-                pair = MinimalPairShift(eased);
+                Vector3 needed = MinimalPairShift(eased);
+                pair = catchUpStep > 0f ? Vector3.MoveTowards(_pairShift, needed, catchUpStep) : needed;
                 return eased;
             }
 
@@ -511,7 +622,7 @@ namespace AlpineLib.Animation.Procedural {
         /// <summary>True when the carried prop's bottom, shifted with the pair, still keeps <c>bodyClearance</c> ahead of the chest.</summary>
         private bool PairKeepsClearance(float shift, Vector3 pair) {
             Vector3 bottom = _bottom + _view * shift + pair;
-            return ArmReachSolver.ClearanceShift(_chestFront, bottom, Vector3.forward, bodyClearance, _lookPitch) <= ClearanceTolerance;
+            return ArmReachSolver.ClearanceShift(_chestFront, bottom, Vector3.forward, bodyClearance, _lookPitch, clearanceMinCosine) <= ClearanceTolerance;
         }
 
         /// <summary>
@@ -582,7 +693,7 @@ namespace AlpineLib.Animation.Procedural {
 
         /// <summary>
         /// Takes the root bone's move away from <c>rootReference</c> (actor space, rigid) back out of each
-        /// captured arm (and the chest-front point the prop keeps clear of), so the hands sit where the clip put
+        /// captured arm, so the hands sit where the clip put
         /// them over its own root, not where a lower layer's hips carried them; the arms still solve from the
         /// live shoulders.
         /// </summary>
@@ -594,7 +705,6 @@ namespace AlpineLib.Animation.Procedural {
             Quaternion undo = rootReference.rotation * Quaternion.Inverse(toLocal * _rootBone.rotation);
             _rootUndo = undo;
             _rootPosition = rootPosition;
-            _chestFront = rootReference.position + undo * (_chestFront - rootPosition);
             for (int arm = 0; arm < ArmCount; arm++) {
                 if (!IsMapped(arm)) continue;
 
@@ -663,13 +773,14 @@ namespace AlpineLib.Animation.Procedural {
         }
 
         /// <summary>
-        /// The pitch the hands turn by: the look past the follow start (never negative, so looking up
-        /// from it leaves them be), or with no follow start the look itself within both limits.
+        /// The pitch the hands turn by, before any lag: the look past the follow start, negative looking up
+        /// from it, between <c>maxFollowPitchUp</c> above level and <c>maxFollowPitchDown</c>; with no
+        /// follow start the look itself within both limits.
         /// </summary>
         private float FollowedPitch(float lookPitch) {
-            if (followStartPitch <= 0f) return Mathf.Clamp(lookPitch, -maxFollowPitchUp, maxFollowPitchDown);
+            if (followStartPitch <= 0f) return Mathf.Clamp(lookPitch, -Mathf.Max(0f, maxFollowPitchUp), maxFollowPitchDown);
 
-            return Mathf.Clamp(lookPitch - followStartPitch, 0f, Mathf.Max(0f, maxFollowPitchDown - followStartPitch));
+            return Mathf.Clamp(lookPitch - followStartPitch, -(followStartPitch + maxFollowPitchUp), Mathf.Max(0f, maxFollowPitchDown - followStartPitch));
         }
 
         /// <summary>
@@ -678,7 +789,7 @@ namespace AlpineLib.Animation.Procedural {
         /// nearest the chest clearance that keeps both in reach. False, with the clearance shift, when
         /// none does.
         /// </summary>
-        private bool TrySolveShift(float pitch, out float shift) {
+        private bool TrySolveShift(float pitch, bool holdsPush, out float shift) {
             float lookPitch = followStartPitch + pitch;
             _turn = Quaternion.AngleAxis(pitch, Vector3.right);
             _view = Quaternion.AngleAxis(lookPitch, Vector3.right) * Vector3.forward;
@@ -688,14 +799,19 @@ namespace AlpineLib.Animation.Procedural {
             _bottom = bottom;
             _lookPitch = lookPitch;
 
-            float clearanceFloor = ArmReachSolver.ClearanceShift(_chestFront, bottom, Vector3.forward, bodyClearance, lookPitch);
+            float clearanceFloor = ArmReachSolver.ClearanceShift(_chestFront, bottom, Vector3.forward, bodyClearance, lookPitch, clearanceMinCosine);
             _clearancePush = Mathf.Max(0f, clearanceFloor);
-            shift = _clearancePush;
+            float push = _clearancePush;
+            if (holdsPush) {
+                _heldPush = ArmReachSolver.Backlash(_heldPush, _clearancePush, pushDeadband);
+                _solvedPush = _heldPush;
+                push = _heldPush;
+            }
 
-            float pullFloor = Mathf.Min(_clearancePush, minDistance - Vector3.Dot(centre - eye, _view));
+            shift = push;
+            float pullFloor = Mathf.Min(push, minDistance - Vector3.Dot(centre - eye, _view));
             float lowest = Mathf.Max(clearanceFloor, pullFloor);
             float floor = lowest;
-            _shiftFloor = floor;
             float armLowest = float.NegativeInfinity;
             float armHighest = float.PositiveInfinity;
             for (int arm = 0; arm < ArmCount; arm++) {
@@ -712,7 +828,7 @@ namespace AlpineLib.Animation.Procedural {
             }
 
             lowest = Mathf.Max(lowest, armLowest);
-            float highest = Mathf.Min(_clearancePush, armHighest);
+            float highest = Mathf.Min(push, armHighest);
             if (lowest <= highest) {
                 shift = highest;
                 _compromiseShift = highest;
@@ -720,7 +836,7 @@ namespace AlpineLib.Animation.Procedural {
             }
 
             // Out of reach: the view shift the shrug and pair shift start from, matching the solve at the edge.
-            _compromiseShift = Mathf.Clamp((armLowest + armHighest) * 0.5f, floor, _clearancePush);
+            _compromiseShift = Mathf.Clamp((armLowest + armHighest) * 0.5f, floor, push);
             return false;
         }
 

@@ -249,7 +249,15 @@ namespace AlpineLib.Animation.Procedural {
         /// is room to spare.
         /// </summary>
         public static float ClearanceShift(Vector3 chestFront, Vector3 bottom, Vector3 forward, float clearance, float pitchDegrees) {
-            float cosine = Mathf.Max(Mathf.Cos(pitchDegrees * Mathf.Deg2Rad), MinimumCosine);
+            return ClearanceShift(chestFront, bottom, forward, clearance, pitchDegrees, MinimumCosine);
+        }
+
+        /// <summary>
+        /// <see cref="ClearanceShift(Vector3, Vector3, Vector3, float, float)"/> with the pitch's cosine
+        /// floored at <paramref name="minCosine"/>, which caps how much a steep look magnifies the gap.
+        /// </summary>
+        public static float ClearanceShift(Vector3 chestFront, Vector3 bottom, Vector3 forward, float clearance, float pitchDegrees, float minCosine) {
+            float cosine = Mathf.Max(Mathf.Cos(pitchDegrees * Mathf.Deg2Rad), minCosine, MinimumCosine);
             return (clearance - Vector3.Dot(bottom - chestFront, forward)) / cosine;
         }
 
@@ -364,12 +372,24 @@ namespace AlpineLib.Animation.Procedural {
 
         /// <summary>
         /// Next applied shift: <paramref name="applied"/> moved toward <paramref name="solved"/> by at most
-        /// <paramref name="maxStep"/> either way (<paramref name="solved"/> at once when it is not positive),
-        /// never below <paramref name="floor"/> (e.g. the chest clearance, which therefore always snaps).
+        /// <paramref name="outStep"/> when it grows and <paramref name="inStep"/> when it shrinks; a step
+        /// of 0 snaps that way.
         /// </summary>
-        public static float EaseShift(float applied, float solved, float maxStep, float floor) {
-            float eased = maxStep > 0f ? Mathf.MoveTowards(applied, solved, maxStep) : solved;
-            return Mathf.Max(eased, Mathf.Min(floor, solved));
+        public static float EaseShift(float applied, float solved, float outStep, float inStep) {
+            if (solved > applied) return outStep > 0f ? Mathf.Min(solved, applied + outStep) : solved;
+
+            return inStep > 0f ? Mathf.Max(solved, applied - inStep) : solved;
+        }
+
+        /// <summary>
+        /// Backlash on a non-negative <paramref name="value"/>: <paramref name="held"/> kept while it sits
+        /// no more than <paramref name="band"/> above the value, and never more above it than the value
+        /// itself, so the result follows the value up at once, ignores dips smaller than the band and is 0
+        /// whenever the value is.
+        /// </summary>
+        public static float Backlash(float held, float value, float band) {
+            float slack = Mathf.Clamp(value, 0f, Mathf.Max(band, 0f));
+            return Mathf.Max(value, Mathf.Min(held, value + slack));
         }
 
         /// <summary>
