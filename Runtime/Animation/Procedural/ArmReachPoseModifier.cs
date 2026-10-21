@@ -21,6 +21,9 @@ namespace AlpineLib.Animation.Procedural {
     /// then hold that place in the actor's frame
     /// until the look passes it, then turn by the look beyond it about the eye at the start pitch,
     /// carried to the eye at the look, so a prop held on that line of sight stays on the view axis;</item>
+    /// <item>with <c>cancelRootSway</c> the root bone's move away from <c>rootReference</c> is taken back
+    /// out of the animated hands first, so a lower layer's hips (idle sway, walk bob) do not swing them;
+    /// they are also carried with the resting eye when a crouch lowers it;</item>
     /// <item>the elbow swivels, over the first <c>swivelBlendPitch</c> degrees followed, from the
     /// animated one to the one that bends the wrist least (the hand's long axis, +Y, reversed);</item>
     /// <item>looking down, the pair pushes out just enough that the carried prop's bottom (its centre's
@@ -58,6 +61,12 @@ namespace AlpineLib.Animation.Procedural {
 
         [Tooltip("How far the carried prop reaches below its centre, in metres.")]
         [SerializeField] private float carriedExtentDown = 0.133f;
+
+        [Tooltip("Hold the hands against the body's own sway: un-apply the root bone's move away from rootReference from the animated hands, so a lower layer's hips (idle sway, walk bob) do not carry them.")]
+        [SerializeField] private bool cancelRootSway;
+
+        [Tooltip("Root bone (Hips) pose in the actor's local space that the animated hands were authored over; set from the held clip's own first frame.")]
+        [SerializeField] private Pose rootReference = Pose.identity;
 
         [Tooltip("Gap kept between the carried prop's bottom and the chest-front point, in metres.")]
         [SerializeField] private float bodyClearance = 0.15f;
@@ -129,6 +138,7 @@ namespace AlpineLib.Animation.Procedural {
         private Vector3 _chestFront;
         private Quaternion _turn = Quaternion.identity;
         private Quaternion _lean = Quaternion.identity;
+        private Transform _rootBone;
         private readonly List<LookPoseJoint> _jointScratch = new List<LookPoseJoint>();
         private readonly LookPoseJoint[][] _armJoints = new LookPoseJoint[ArmCount][];
         private Vector3 _view = Vector3.forward;
@@ -167,8 +177,9 @@ namespace AlpineLib.Animation.Procedural {
             BindArm(bones, 0, HumanBodyBones.LeftShoulder, HumanBodyBones.LeftUpperArm, HumanBodyBones.LeftLowerArm, HumanBodyBones.LeftHand);
             BindArm(bones, 1, HumanBodyBones.RightShoulder, HumanBodyBones.RightUpperArm, HumanBodyBones.RightLowerArm, HumanBodyBones.RightHand);
 
-            _armJoints[0] = null;
-            _armJoints[1] = null;
+            _rootBone = bones.Find(HumanBodyBones.Hips);
+            _armJoints[0] = AncestorJoints(0);
+            _armJoints[1] = AncestorJoints(1);
             _chestBone = bones.Find(HumanBodyBones.UpperChest);
             if (_chestBone == null) _chestBone = bones.Find(HumanBodyBones.Chest);
             _captured = false;
@@ -198,8 +209,9 @@ namespace AlpineLib.Animation.Procedural {
 
             float pitch = FollowedPitch(_actor.LookPitch);
             _restingEye = RestingEye();
-            _pivotEye = EyeAt(followStartPitch);
+            _pivotEye = StandingEyeAt(followStartPitch);
             _chestFront = ChestFront();
+            CancelRootSway();
             LeanCapturedArms();
             ReadBlendSources();
             ReadArmPivots();
@@ -320,12 +332,42 @@ namespace AlpineLib.Animation.Procedural {
 
         /// <summary>The look's joints carrying an arm, found once the look is bound.</summary>
         private LookPoseJoint[] ArmJoints(int arm) {
-            if (_armJoints[arm] != null && _armJoints[arm].Length > 0) return _armJoints[arm];
+            return _armJoints[arm] ?? Array.Empty<LookPoseJoint>();
+        }
+
+        /// <summary>The look's joints carrying an arm, read at bind (the stack binds the look, order 0, first).</summary>
+        private LookPoseJoint[] AncestorJoints(int arm) {
+            if (look == null || _upperArms[arm] == null) return Array.Empty<LookPoseJoint>();
 
             _jointScratch.Clear();
             look.GetAncestorJoints(_upperArms[arm], _jointScratch);
-            _armJoints[arm] = _jointScratch.ToArray();
-            return _armJoints[arm];
+            return _jointScratch.ToArray();
+        }
+
+        /// <summary>
+        /// Takes the root bone's move away from <c>rootReference</c> (actor space, rigid) back out of each
+        /// captured arm (and the chest-front point the prop keeps clear of), so the hands sit where the clip put
+        /// them over its own root, not where a lower layer's hips carried them; the arms still solve from the
+        /// live shoulders.
+        /// </summary>
+        private void CancelRootSway() {
+            if (!cancelRootSway || _rootBone == null) return;
+
+            Quaternion toLocal = Quaternion.Inverse(_actorRoot.rotation);
+            Vector3 rootPosition = _actorRoot.InverseTransformPoint(_rootBone.position);
+            Quaternion undo = rootReference.rotation * Quaternion.Inverse(toLocal * _rootBone.rotation);
+            _chestFront = rootReference.position + undo * (_chestFront - rootPosition);
+            for (int arm = 0; arm < ArmCount; arm++) {
+                if (!IsMapped(arm)) continue;
+
+                _upperStart[arm] = rootReference.position + undo * (_upperStart[arm] - rootPosition);
+                _elbowStart[arm] = rootReference.position + undo * (_elbowStart[arm] - rootPosition);
+                _handStart[arm] = rootReference.position + undo * (_handStart[arm] - rootPosition);
+                _upperRotationStart[arm] = undo * _upperRotationStart[arm];
+                _lowerRotationStart[arm] = undo * _lowerRotationStart[arm];
+                _handRotationStart[arm] = undo * _handRotationStart[arm];
+                _bendStart[arm] = undo * _bendStart[arm];
+            }
         }
 
         /// <summary>
@@ -493,6 +535,16 @@ namespace AlpineLib.Animation.Procedural {
             if (look == null) return _restingEye;
 
             return _restingEye + look.ResolveEyeOffset(pitch, _restingEye);
+        }
+
+        /// <summary>
+        /// The standing eye at <paramref name="pitch"/>: the hands are authored around it, so measured from
+        /// it a crouch (the resting eye dropped) carries them down with the eye.
+        /// </summary>
+        private Vector3 StandingEyeAt(float pitch) {
+            if (look == null) return eyeLocal;
+
+            return eyeLocal + look.ResolveEyeOffset(pitch, eyeLocal);
         }
 
         /// <summary>The chest-front point as the torso is bent this frame, in the actor's local space.</summary>
