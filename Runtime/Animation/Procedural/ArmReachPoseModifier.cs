@@ -24,7 +24,8 @@ namespace AlpineLib.Animation.Procedural {
     /// <item>with <c>cancelRootSway</c> (recommended for a view-rigid camera) the root bone's move away
     /// from <c>rootReference</c> is taken back out of the animated hands first, so a lower layer's hips
     /// (idle sway, walk bob, jump) do not swing them; they are also carried with the resting eye when a
-    /// crouch lowers it. The shoulders still ride the hips; the pair shift below covers a jump;</item>
+    /// crouch lowers it. The shoulders still ride the hips unless <c>steadyTorso</c> turns the torso
+    /// bone back by the same turn, leaving only the root's move; the pair shift below covers that;</item>
     /// <item>the elbow swivels, over the first <c>swivelBlendPitch</c> degrees followed, from the
     /// animated one to the least-roll one (the bend plane's normal along the palm, from
     /// <c>leftPalmLocal</c>/<c>rightPalmLocal</c>), or with no palm set to the one that bends the wrist
@@ -76,6 +77,12 @@ namespace AlpineLib.Animation.Procedural {
 
         [Tooltip("Root bone (Hips) pose in the actor's local space that the animated hands were authored over; set from the held clip's own first frame.")]
         [SerializeField] private Pose rootReference = Pose.identity;
+
+        [Tooltip("With cancelRootSway, also turn the torso bone back by the root's turn away from rootReference, so the spine, chest and shoulders keep their reference orientation in the actor's frame and only the root's move still carries them.")]
+        [SerializeField] private bool steadyTorso;
+
+        [Tooltip("Bone steadyTorso counter-turns: the first spine bone under the root.")]
+        [SerializeField] private HumanBodyBones torsoBone = HumanBodyBones.Spine;
 
         [Tooltip("Gap kept between the carried prop's bottom and the chest-front point, in metres.")]
         [SerializeField] private float bodyClearance = 0.15f;
@@ -160,6 +167,8 @@ namespace AlpineLib.Animation.Procedural {
         private Quaternion _turn = Quaternion.identity;
         private Quaternion _lean = Quaternion.identity;
         private Transform _rootBone;
+        private Transform _torso;
+        private Quaternion _rootUndo = Quaternion.identity;
         private bool _warnedNoJoints;
         private readonly List<LookPoseJoint> _jointScratch = new List<LookPoseJoint>();
         private readonly LookPoseJoint[][] _armJoints = new LookPoseJoint[ArmCount][];
@@ -235,6 +244,7 @@ namespace AlpineLib.Animation.Procedural {
             BindArm(bones, 1, HumanBodyBones.RightShoulder, HumanBodyBones.RightUpperArm, HumanBodyBones.RightLowerArm, HumanBodyBones.RightHand);
 
             _rootBone = bones.Find(HumanBodyBones.Hips);
+            _torso = bones.Find(torsoBone);
             _armJoints[0] = AncestorJoints(0);
             _armJoints[1] = AncestorJoints(1);
             _chestBone = bones.Find(HumanBodyBones.UpperChest);
@@ -278,6 +288,7 @@ namespace AlpineLib.Animation.Procedural {
             _chestFront = ChestFront();
             CancelRootSway();
             LeanCapturedArms();
+            SteadyTorso(bones, weight);
             ReadBlendSources();
             ReadArmPivots();
 
@@ -503,6 +514,7 @@ namespace AlpineLib.Animation.Procedural {
             Quaternion toLocal = Quaternion.Inverse(_actorRoot.rotation);
             Vector3 rootPosition = _actorRoot.InverseTransformPoint(_rootBone.position);
             Quaternion undo = rootReference.rotation * Quaternion.Inverse(toLocal * _rootBone.rotation);
+            _rootUndo = undo;
             _chestFront = rootReference.position + undo * (_chestFront - rootPosition);
             for (int arm = 0; arm < ArmCount; arm++) {
                 if (!IsMapped(arm)) continue;
@@ -515,6 +527,22 @@ namespace AlpineLib.Animation.Procedural {
                 _handRotationStart[arm] = undo * _handRotationStart[arm];
                 _bendStart[arm] = undo * _bendStart[arm];
             }
+        }
+
+        /// <summary>
+        /// Turns the torso bone back by the root's turn away from <c>rootReference</c> (the cancel's own
+        /// undo, in world space, times <paramref name="weight"/>), so the upper body keeps its reference
+        /// orientation and the shoulders move only with the root's position.
+        /// </summary>
+        private void SteadyTorso(PoseBones bones, float weight) {
+            if (!cancelRootSway || !steadyTorso || _rootBone == null || _torso == null) return;
+
+            Quaternion worldUndo = _actorRoot.rotation * _rootUndo * Quaternion.Inverse(_actorRoot.rotation);
+            worldUndo.ToAngleAxis(out float degrees, out Vector3 axis);
+            if (degrees > 180f) degrees -= 360f;
+            if (Mathf.Abs(degrees) < 1e-4f || !float.IsFinite(axis.x)) return;
+
+            bones.RotateWorld(_torso, axis, degrees * weight);
         }
 
         /// <summary>
