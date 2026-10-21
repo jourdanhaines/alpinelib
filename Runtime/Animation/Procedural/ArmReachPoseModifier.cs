@@ -31,13 +31,13 @@ namespace AlpineLib.Animation.Procedural {
     /// least (the hand's long axis, +Y, reversed);</item>
     /// <item>looking down, the pair pushes out just enough that the carried prop's bottom (its centre's
     /// offset from the hands turned with them, less <c>carriedExtentDown</c>) clears the chest-front point;</item>
-    /// <item>out of reach (the pair pulls in toward <c>minDistance</c> first), the clavicles shrug a
-    /// little; still out of reach (the body's own move, a jump, pulled the shoulders away), both targets
-    /// shift together the way the shoulders moved since capture, just far enough for each arm
-    /// (<see cref="PairShiftMetres"/>), so the spacing and the hands' turn never change and a prop held
-    /// between them stays rigid, as long as the prop keeps its chest clearance; otherwise the hands lag
-    /// behind the look to a pitch that reaches, and when none does they keep the followed pitch and
-    /// shift anyway (<see cref="PairShiftClearanceViolated"/>).</item>
+    /// <item>out of reach, the pair pulls in toward <c>minDistance</c>, the clavicles shrug toward the
+    /// pulled-in targets, then both targets shift together by the least move that lets each arm reach
+    /// (<see cref="PairShiftMetres"/>, rate-limited by <c>pairShiftMaxSpeed</c>), so the spacing and the
+    /// hands' turn never change and a prop held between them stays rigid; each step starts where the last
+    /// ends, so the hands move continuously. If the shift breaks the chest clearance the look lags toward
+    /// level until it does not; when no pitch keeps it, the followed pitch is kept
+    /// (<see cref="PairShiftClearanceViolated"/>).</item>
     /// </list>
     /// Ordered at <see cref="DefaultOrder"/> (10), after the look at 0. The effective weight is
     /// <see cref="PoseModifier.Weight"/> times the optional follow layer's: the arms are solved at the
@@ -52,8 +52,6 @@ namespace AlpineLib.Animation.Procedural {
         private const int ArmCount = 2;
         private const int LagSteps = 10;
         private const float ClearanceTolerance = 1e-4f;
-        private const float ReachTolerance = 1e-4f;
-        private const float ShoulderMoveMinimum = 1e-3f;
 
         [Tooltip("Look whose eye model the hands orbit; found on this object when left empty.")]
         [SerializeField] private LookPoseModifier look;
@@ -110,6 +108,10 @@ namespace AlpineLib.Animation.Procedural {
         [Tooltip("Direction the right palm faces, unit, in the right hand bone's local space; zero swivels for the least wrist bend instead of the least forearm roll.")]
         [SerializeField] private Vector3 rightPalmLocal;
 
+        [Tooltip("Fastest the shared shift of both hands (when a hand is out of reach) may grow or release, in metres per second; 0 snaps.")]
+        [Min(0f)]
+        [SerializeField] private float pairShiftMaxSpeed = 1.2f;
+
         [Tooltip("Largest upward look pitch the hands follow; unused once a follow start pitch is set.")]
         [Range(0f, 85f)]
         [SerializeField] private float maxFollowPitchUp = 20f;
@@ -150,7 +152,7 @@ namespace AlpineLib.Animation.Procedural {
         private Transform _actorRoot;
         private ICameraTarget _cameraTarget;
         private Transform _chestBone;
-        private Func<float, bool> _isReachableAt;
+        private Func<float, bool> _isClearAt;
         private bool _captured;
         private Vector3 _restingEye;
         private Vector3 _pivotEye;
@@ -166,6 +168,10 @@ namespace AlpineLib.Animation.Procedural {
         private float _appliedPitch;
         private float _appliedPush;
         private Vector3 _pairShift;
+        private Vector3 _pairTarget;
+        private Vector3 _lagPair;
+        private float _lagShift;
+        private float _compromiseShift;
         private bool _pairShiftClearanceViolated;
         private Vector3 _bottom;
         private float _lookPitch;
@@ -196,14 +202,15 @@ namespace AlpineLib.Animation.Procedural {
         public float HandMissMetres => Mathf.Max(LastMissMetres(0), LastMissMetres(1));
 
         /// <summary>
-        /// Distance, in metres, both hand targets moved together toward the shoulders last apply because a
-        /// hand was still out of reach after the shrug and the pitch lag; 0 when not shifting.
+        /// Distance, in metres, both hand targets moved together last apply because a hand was out of reach
+        /// after the pull-in and shrug (the least shared move that lets each arm reach, rate-limited by
+        /// <c>pairShiftMaxSpeed</c>); 0 when not shifting.
         /// </summary>
         public float PairShiftMetres => IsLive ? _pairShift.magnitude : 0f;
 
         /// <summary>
-        /// True when last apply's pair shift broke the chest clearance: no lagged pitch reached either,
-        /// so the hands kept the followed pitch and rode the shoulders closer to the chest.
+        /// True when last apply's pair shift broke the chest clearance at every pitch, so the hands kept the
+        /// followed pitch and rode the shoulders closer to the chest.
         /// </summary>
         public bool PairShiftClearanceViolated => IsLive && _pairShiftClearanceViolated;
 
@@ -220,7 +227,8 @@ namespace AlpineLib.Animation.Procedural {
             _actor = GetComponent<Actor>();
             _actorRoot = actorRoot;
             _cameraTarget = GetComponent<ICameraTarget>();
-            _isReachableAt = IsReachableAt;
+            _isClearAt = IsClearAt;
+            _pairShift = Vector3.zero;
             if (look == null) look = GetComponent<LookPoseModifier>();
 
             BindArm(bones, 0, HumanBodyBones.LeftShoulder, HumanBodyBones.LeftUpperArm, HumanBodyBones.LeftLowerArm, HumanBodyBones.LeftHand);
@@ -250,14 +258,19 @@ namespace AlpineLib.Animation.Procedural {
         public override void Apply(PoseBones bones, float deltaTime) {
             _appliedPitch = 0f;
             _appliedPush = 0f;
-            _pairShift = Vector3.zero;
             _pairShiftClearanceViolated = false;
             ClearMiss();
-            if (!_captured) return;
+            if (!_captured) {
+                _pairShift = Vector3.zero;
+                return;
+            }
 
             _captured = false;
             float weight = EffectiveWeight;
-            if (weight <= 0f || (!IsMapped(0) && !IsMapped(1))) return;
+            if (weight <= 0f || (!IsMapped(0) && !IsMapped(1))) {
+                _pairShift = Vector3.zero;
+                return;
+            }
 
             float pitch = FollowedPitch(_actor.LookPitch);
             _restingEye = RestingEye();
@@ -269,6 +282,7 @@ namespace AlpineLib.Animation.Procedural {
             ReadArmPivots();
 
             float shift = ResolveShift(bones, ref pitch);
+            _pairShift = StepPairShift(deltaTime);
             float swivelShare = swivelBlendPitch > 0f ? Mathf.Clamp01(Mathf.Abs(pitch) / swivelBlendPitch) : 1f;
             Quaternion rootRotation = _actorRoot.rotation;
             for (int arm = 0; arm < ArmCount; arm++) {
@@ -348,48 +362,61 @@ namespace AlpineLib.Animation.Procedural {
         }
 
         /// <summary>
-        /// The shift along the view both hands take, after any clavicle shrug; then a shared pair shift at
-        /// this pitch if it reaches and keeps the chest clearance; else lowers <paramref name="pitch"/>
-        /// toward level, pair-shifting there if still out of reach.
+        /// The shift along the view both hands take. Out of reach, each step starts where the one before
+        /// ends, so the hands move continuously as the reach deficit grows: the view shift pulled in as far
+        /// as allowed, then the clavicles shrug toward the targets there, then both targets shift together
+        /// by the least move that lets each arm reach (<see cref="ArmReachSolver.MinimalPairShift"/>). If
+        /// that breaks the chest clearance <paramref name="pitch"/> lags toward level until it does not;
+        /// when no pitch keeps it, the followed pitch is kept and the clearance given up.
         /// </summary>
         private float ResolveShift(PoseBones bones, ref float pitch) {
+            _pairTarget = Vector3.zero;
             if (TrySolveShift(pitch, out float shift)) return shift;
 
-            Shrug(bones);
+            Shrug(bones, _compromiseShift);
             ReadArmPivots();
-            if (TrySolveShift(pitch, out shift)) return shift;
-
-            Vector3 pair = PairShift(shift);
-            if (PairReaches(shift, pair) && PairKeepsClearance(shift, pair)) {
-                _pairShift = pair;
-                return shift;
+            if (IsClearAt(pitch)) {
+                _pairTarget = _lagPair;
+                return _lagShift;
             }
 
             float followed = pitch;
-            float lagged = ArmReachSolver.BisectToward(0f, pitch, LagSteps, _isReachableAt);
-            if (TrySolveShift(lagged, out float laggedShift)) {
+            float lagged = ArmReachSolver.BisectToward(0f, pitch, LagSteps, _isClearAt);
+            if (IsClearAt(lagged)) {
                 pitch = lagged;
-                return laggedShift;
+                _pairTarget = _lagPair;
+                return _lagShift;
             }
 
-            // No pitch reaches either: keep the followed pitch and shift the pair there regardless of
-            // the chest, since a prop swung into the camera is worse than one near the chest.
-            TrySolveShift(followed, out shift);
-            _pairShift = PairShift(shift);
-            _pairShiftClearanceViolated = !PairKeepsClearance(shift, _pairShift);
-            return shift;
+            // No pitch keeps the chest clear: keep the followed pitch, since a prop swung into the camera
+            // is worse than one near the chest.
+            IsClearAt(followed);
+            _pairTarget = _lagPair;
+            _pairShiftClearanceViolated = true;
+            return _lagShift;
         }
 
-        /// <summary>True when every mapped arm reaches its target at view shift <paramref name="shift"/> plus <paramref name="pair"/>.</summary>
-        private bool PairReaches(float shift, Vector3 pair) {
-            for (int arm = 0; arm < ArmCount; arm++) {
-                if (!IsMapped(arm)) continue;
-
-                float reach = reachLimit * (_upperLength[arm] + _lowerLength[arm]) + ReachTolerance;
-                if ((_baseTarget[arm] + _view * shift + pair - _armPivot[arm]).sqrMagnitude > reach * reach) return false;
+        /// <summary>
+        /// Lays out <paramref name="pitch"/> and solves its view shift and pair shift (into
+        /// <c>_lagShift</c>/<c>_lagPair</c>); true when the carried prop then keeps its chest clearance.
+        /// </summary>
+        private bool IsClearAt(float pitch) {
+            if (TrySolveShift(pitch, out float shift)) {
+                _lagShift = shift;
+                _lagPair = Vector3.zero;
+                return true;
             }
 
-            return true;
+            _lagShift = _compromiseShift;
+            _lagPair = MinimalPairShift(_lagShift);
+            return PairKeepsClearance(_lagShift, _lagPair);
+        }
+
+        /// <summary>The applied pair shift moved toward the solved one at no more than <c>pairShiftMaxSpeed</c>.</summary>
+        private Vector3 StepPairShift(float deltaTime) {
+            if (pairShiftMaxSpeed <= 0f || deltaTime <= 0f) return _pairTarget;
+
+            return Vector3.MoveTowards(_pairShift, _pairTarget, pairShiftMaxSpeed * deltaTime);
         }
 
         /// <summary>True when the carried prop's bottom, shifted with the pair, still keeps <c>bodyClearance</c> ahead of the chest.</summary>
@@ -399,51 +426,21 @@ namespace AlpineLib.Animation.Procedural {
         }
 
         /// <summary>
-        /// Shift both targets (at view shift <paramref name="shift"/>) take together so every mapped arm
-        /// reaches, along <see cref="TryPairShiftDirection"/>; see <see cref="ArmReachSolver.PairShiftAlong"/>.
+        /// Least shift both targets (at view shift <paramref name="shift"/>) take together so every mapped
+        /// arm reaches; see <see cref="ArmReachSolver.MinimalPairShift"/>.
         /// </summary>
-        private Vector3 PairShift(float shift) {
-            if (!TryPairShiftDirection(shift, out Vector3 direction)) return Vector3.zero;
+        private Vector3 MinimalPairShift(float shift) {
+            if (!IsMapped(0) || !IsMapped(1)) return SingleArmShift(IsMapped(0) ? 0 : 1, shift);
 
-            float distance = 0f;
-            for (int arm = 0; arm < ArmCount; arm++) {
-                if (!IsMapped(arm)) continue;
-
-                float reach = reachLimit * (_upperLength[arm] + _lowerLength[arm]);
-                distance = Mathf.Max(distance, ArmReachSolver.ReachEntry(_baseTarget[arm] + _view * shift, _armPivot[arm], direction, reach));
-            }
-
-            return direction * distance;
+            return ArmReachSolver.MinimalPairShift(_baseTarget[0] + _view * shift, _armPivot[0], ArmReach(0), _baseTarget[1] + _view * shift, _armPivot[1], ArmReach(1));
         }
 
-        /// <summary>
-        /// The way the shoulders moved since the hands were captured (live pivots' midpoint less the
-        /// captured one), so the hands ride the body only by the reach deficit; toward the pivots'
-        /// midpoint from the targets' centre when that move is under <see cref="ShoulderMoveMinimum"/>.
-        /// </summary>
-        private bool TryPairShiftDirection(float shift, out Vector3 direction) {
-            Vector3 pivotSum = Vector3.zero;
-            Vector3 startSum = Vector3.zero;
-            Vector3 targetSum = Vector3.zero;
-            int count = 0;
-            for (int arm = 0; arm < ArmCount; arm++) {
-                if (!IsMapped(arm)) continue;
-
-                pivotSum += _armPivot[arm];
-                startSum += _upperStart[arm];
-                targetSum += _baseTarget[arm] + _view * shift;
-                count++;
-            }
-
-            direction = count > 0 ? (pivotSum - startSum) / count : Vector3.zero;
-            if (direction.magnitude < ShoulderMoveMinimum) direction = count > 0 ? (pivotSum - targetSum) / count : Vector3.zero;
-            if (direction.sqrMagnitude < 1e-12f) return false;
-
-            direction.Normalize();
-            return true;
+        private Vector3 SingleArmShift(int arm, float shift) {
+            Vector3 target = _baseTarget[arm] + _view * shift;
+            return ArmReachSolver.IntoReach(target, _armPivot[arm], ArmReach(arm));
         }
 
-        private bool IsReachableAt(float pitch) => TrySolveShift(pitch, out _);
+        private float ArmReach(int arm) => reachLimit * (_upperLength[arm] + _lowerLength[arm]);
 
         /// <summary>
         /// Carries each captured arm the way the look's chest lean at the follow start would (a rigid turn
@@ -552,21 +549,33 @@ namespace AlpineLib.Animation.Procedural {
 
             float pullFloor = Mathf.Min(_clearancePush, minDistance - Vector3.Dot(centre - eye, _view));
             float lowest = Mathf.Max(clearanceFloor, pullFloor);
-            float highest = _clearancePush;
+            float floor = lowest;
+            float armLowest = float.NegativeInfinity;
+            float armHighest = float.PositiveInfinity;
             for (int arm = 0; arm < ArmCount; arm++) {
                 if (!IsMapped(arm)) continue;
 
-                float reach = reachLimit * (_upperLength[arm] + _lowerLength[arm]);
-                if (!ArmReachSolver.ReachInterval(_baseTarget[arm], _armPivot[arm], _view, reach, out float min, out float max)) return false;
+                if (!ArmReachSolver.ReachInterval(_baseTarget[arm], _armPivot[arm], _view, ArmReach(arm), out float min, out float max)) {
+                    // Out of reach along the whole view line: its nearest approach stands in for both ends.
+                    min = Vector3.Dot(_armPivot[arm] - _baseTarget[arm], _view);
+                    max = min;
+                }
 
-                lowest = Mathf.Max(lowest, min);
-                highest = Mathf.Min(highest, max);
+                armLowest = Mathf.Max(armLowest, min);
+                armHighest = Mathf.Min(armHighest, max);
             }
 
-            if (lowest > highest) return false;
+            lowest = Mathf.Max(lowest, armLowest);
+            float highest = Mathf.Min(_clearancePush, armHighest);
+            if (lowest <= highest) {
+                shift = highest;
+                _compromiseShift = highest;
+                return true;
+            }
 
-            shift = highest;
-            return true;
+            // Out of reach: the view shift the shrug and pair shift start from, matching the solve at the edge.
+            _compromiseShift = Mathf.Clamp((armLowest + armHighest) * 0.5f, floor, _clearancePush);
+            return false;
         }
 
         /// <summary>Fills each hand's unshifted target: turned about the follow-start eye, placed at <paramref name="eye"/>; returns their centre.</summary>
@@ -584,20 +593,20 @@ namespace AlpineLib.Animation.Procedural {
             return count > 0 ? sum / count : eye;
         }
 
-        /// <summary>Turns each clavicle, within its limit, toward its hand's target at the clearance shift.</summary>
-        private void Shrug(PoseBones bones) {
+        /// <summary>Turns each clavicle, within its limit, toward its hand's target at view shift <paramref name="shift"/>.</summary>
+        private void Shrug(PoseBones bones, float shift) {
             if (clavicleMaxDegrees <= 0f) return;
 
             for (int arm = 0; arm < ArmCount; arm++) {
                 if (!IsMapped(arm) || _shoulders[arm] == null) continue;
 
-                ShrugArm(bones, arm);
+                ShrugArm(bones, arm, shift);
             }
         }
 
-        private void ShrugArm(PoseBones bones, int arm) {
+        private void ShrugArm(PoseBones bones, int arm, float shift) {
             Vector3 clavicle = _actorRoot.InverseTransformPoint(_shoulders[arm].position);
-            Vector3 target = _baseTarget[arm] + _view * _clearancePush;
+            Vector3 target = _baseTarget[arm] + _view * shift;
             float reach = reachLimit * (_upperLength[arm] + _lowerLength[arm]);
             float degrees = Mathf.Min(ArmReachSolver.ShrugDegrees(clavicle, _armPivot[arm], target, reach), clavicleMaxDegrees);
             Vector3 axis = Vector3.Cross(_armPivot[arm] - clavicle, target - clavicle);

@@ -41,6 +41,7 @@ namespace AlpineLib.Animation.Procedural {
         private const float MinimumLengthSquared = 1e-12f;
         private const float MinimumCosine = 0.05f;
         private const float GoldenSection = 0.618034f;
+        private const float PairTolerance = 1e-6f;
 
         /// <summary>
         /// Elbow for an arm of <paramref name="upperLength"/> and <paramref name="lowerLength"/> from
@@ -308,6 +309,57 @@ namespace AlpineLib.Animation.Procedural {
             float left = ReachEntry(leftTarget, leftShoulder, direction, leftReach);
             float right = ReachEntry(rightTarget, rightShoulder, direction, rightReach);
             return direction * Mathf.Max(left, right);
+        }
+
+        /// <summary>
+        /// Least move that brings <paramref name="target"/> within <paramref name="reach"/> of
+        /// <paramref name="shoulder"/>: straight toward it by the deficit; zero when already in reach.
+        /// </summary>
+        public static Vector3 IntoReach(Vector3 target, Vector3 shoulder, float reach) {
+            Vector3 toShoulder = shoulder - target;
+            float distance = toShoulder.magnitude;
+            if (distance <= reach || distance <= 0f) return Vector3.zero;
+
+            return toShoulder * (1f - reach / distance);
+        }
+
+        /// <summary>
+        /// Least shift <c>s</c> both hand targets take together so each comes within its arm's reach
+        /// (|target + s − shoulder| ≤ reach): the point of the two reach balls' overlap nearest zero, so it
+        /// never exceeds the larger single-arm deficit by more than the overlap forces and moves no more
+        /// than the shoulders do. When the balls miss each other, the point between them that leaves both
+        /// arms equally short. Zero when both already reach.
+        /// </summary>
+        public static Vector3 MinimalPairShift(Vector3 leftTarget, Vector3 leftShoulder, float leftReach, Vector3 rightTarget, Vector3 rightShoulder, float rightReach) {
+            Vector3 leftCentre = leftShoulder - leftTarget;
+            Vector3 rightCentre = rightShoulder - rightTarget;
+            Vector3 left = IntoReach(leftTarget, leftShoulder, leftReach);
+            if ((left - rightCentre).magnitude <= rightReach + PairTolerance) return left;
+
+            Vector3 right = IntoReach(rightTarget, rightShoulder, rightReach);
+            if ((right - leftCentre).magnitude <= leftReach + PairTolerance) return right;
+
+            return NearestOnReachCircle(leftCentre, leftReach, rightCentre, rightReach);
+        }
+
+        /// <summary>
+        /// Point nearest zero on the circle where two spheres meet; the point between them leaving both
+        /// equally short when they miss each other.
+        /// </summary>
+        private static Vector3 NearestOnReachCircle(Vector3 leftCentre, float leftReach, Vector3 rightCentre, float rightReach) {
+            Vector3 apart = rightCentre - leftCentre;
+            float distance = apart.magnitude;
+            if (distance <= 1e-6f) return leftCentre;
+
+            Vector3 axis = apart / distance;
+            if (distance >= leftReach + rightReach) return leftCentre + axis * (leftReach + (distance - leftReach - rightReach) * 0.5f);
+
+            float along = (leftReach * leftReach - rightReach * rightReach + distance * distance) / (2f * distance);
+            Vector3 centre = leftCentre + axis * along;
+            float radius = Mathf.Sqrt(Mathf.Max(0f, leftReach * leftReach - along * along));
+            Vector3 towardZero = Vector3.ProjectOnPlane(-centre, axis);
+            if (towardZero.sqrMagnitude <= MinimumLengthSquared) towardZero = AnyPerpendicular(axis);
+            return centre + towardZero.normalized * radius;
         }
 
         /// <summary>
