@@ -23,7 +23,7 @@ namespace AlpineLib.UI {
     /// work, but drag controls (Slider, Scrollbar, ScrollRect, text drag-select) do not. Overlay canvases
     /// outrank this raycaster, so any HUD graphic under the cursor must have raycastTarget off.
     /// </remarks>
-    public class MeshUVPointerRaycaster : BaseRaycaster {
+    public class MeshUVPointerRaycaster : BaseRaycaster, ICanvasPointRaycaster {
         [Tooltip("Surface whose canvas this raycaster hit-tests.")]
         [SerializeField] private RenderTextureUISurface surface;
 
@@ -74,15 +74,10 @@ namespace AlpineLib.UI {
         }
 
         public override void Raycast(PointerEventData eventData, List<RaycastResult> resultAppendList) {
-            if (!_canReadUv || !HasLiveSource()) return;
-
-            SyncMovedCollider();
-            Ray ray = _pointerCamera.ScreenPointToRay(eventData.position);
-            if (!_surfaceCollider.Raycast(ray, out RaycastHit hit, maxDistance)) return;
+            if (!TryHitCanvas(eventData.position, out RaycastHit hit, out Vector2 canvasPixel)) return;
 
             Canvas canvas = surface.Canvas;
             Camera canvasCamera = surface.CanvasCamera;
-            Vector2 canvasPixel = RenderTextureUISurface.UVToPixel(hit.textureCoord, canvasCamera.pixelRect.size);
             CollectGraphicHits(canvas, canvasCamera, canvasPixel, _hitGraphics);
 
             foreach (Graphic graphic in _hitGraphics) {
@@ -102,6 +97,25 @@ namespace AlpineLib.UI {
             }
 
             _hitGraphics.Clear();
+        }
+
+        /// <inheritdoc />
+        public bool TryGetCanvasPoint(Vector2 screenPoint, out Vector2 canvasPixel) {
+            return TryHitCanvas(screenPoint, out _, out canvasPixel);
+        }
+
+        /// <summary>Pointer ray onto the surface collider, and the canvas pixel its texture coordinate lands on.</summary>
+        private bool TryHitCanvas(Vector2 screenPoint, out RaycastHit hit, out Vector2 canvasPixel) {
+            hit = default;
+            canvasPixel = default;
+            if (!_canReadUv || !HasLiveSource()) return false;
+
+            SyncMovedCollider();
+            Ray ray = _pointerCamera.ScreenPointToRay(screenPoint);
+            if (!_surfaceCollider.Raycast(ray, out hit, maxDistance)) return false;
+
+            canvasPixel = RenderTextureUISurface.UVToPixel(hit.textureCoord, surface.CanvasCamera.pixelRect.size);
+            return true;
         }
 
         /// <summary>
