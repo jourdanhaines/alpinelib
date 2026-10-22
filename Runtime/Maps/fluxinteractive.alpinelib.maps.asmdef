@@ -1,0 +1,19 @@
+{
+  "name": "FluxInteractive.AlpineLib.Maps",
+  "rootNamespace": "AlpineLib.Maps",
+  "references": [
+    "FluxInteractive.AlpineLib.Procedural",
+    "FluxInteractive.AlpineLib.UGUI",
+    "FluxInteractive.AlpineLib.Rendering",
+    "UnityEngine.UI"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}
