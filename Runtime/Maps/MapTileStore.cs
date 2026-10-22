@@ -26,6 +26,9 @@ namespace AlpineLib.Maps {
         private readonly Texture2D[] _uploadTextures;
         private readonly Dictionary<CellCoord, bool>[] _savedCache;
         private readonly HashSet<CellCoord>[] _reportedMissing;
+        private readonly HashSet<CellCoord>[] _refused;
+        private readonly int[] _roomFrame;
+        private readonly int[] _room;
         private readonly HashSet<(int level, CellCoord cell)> _loadingKeys = new HashSet<(int level, CellCoord cell)>();
         private readonly List<(int level, CellCoord cell, Task<byte[]> task)> _loads = new List<(int level, CellCoord cell, Task<byte[]> task)>();
         private readonly List<(int level, CellCoord cell, AsyncGPUReadbackRequest request)> _readbacks = new List<(int level, CellCoord cell, AsyncGPUReadbackRequest request)>();
@@ -41,10 +44,15 @@ namespace AlpineLib.Maps {
             _uploadTextures = new Texture2D[levels];
             _savedCache = new Dictionary<CellCoord, bool>[levels];
             _reportedMissing = new HashSet<CellCoord>[levels];
+            _refused = new HashSet<CellCoord>[levels];
+            _roomFrame = new int[levels];
+            _room = new int[levels];
             for (int level = 0; level < levels; level++) {
                 _pools[level] = new MapTileSlotPool(_settings.Level(level).Budget);
                 _savedCache[level] = new Dictionary<CellCoord, bool>();
                 _reportedMissing[level] = new HashSet<CellCoord>();
+                _refused[level] = new HashSet<CellCoord>();
+                _roomFrame[level] = -1;
             }
         }
 
@@ -123,10 +131,12 @@ namespace AlpineLib.Maps {
             for (int level = 0; level < _pools.Length; level++) {
                 changed |= _pools[level].Release(cell);
                 _reportedMissing[level].Remove(cell);
+                _refused[level].Remove(cell);
                 _savedCache[level][cell] = false;
                 _storage?.Delete(level, cell);
             }
 
+            DropPending(cell);
             if (changed) ResidencyVersion++;
         }
 
@@ -154,7 +164,10 @@ namespace AlpineLib.Maps {
             for (int level = finestLevel; level < _pools.Length; level++) {
                 if (_pools[level].Touch(cell, _frame)) continue;
                 if (TryStartLoad(level, cell)) continue;
-                if (level != finestLevel || !_reportedMissing[level].Add(cell)) continue;
+                if (level != finestLevel) continue;
+
+                RetryRefused(level, cell);
+                if (!_reportedMissing[level].Add(cell)) continue;
 
                 TileMissing?.Invoke(cell, level);
             }
@@ -173,6 +186,8 @@ namespace AlpineLib.Maps {
             if (_loadingKeys.Contains((level, cell))) return true;
             if (!CaptureRender.CanRender || !IsSaved(level, cell)) return false;
             if (_loads.Count >= MaxLoadsInFlight) return true;
+            // Saved but no slice to load into: wait rather than load and drop it every frame.
+            if (!TryReserveRoom(level)) return true;
 
             _loadingKeys.Add((level, cell));
             _loads.Add((level, cell, _storage.LoadAsync(level, cell, _settings.Level(level).TileSize)));
@@ -218,7 +233,10 @@ namespace AlpineLib.Maps {
         private void AcceptLevel(CellCoord cell, RenderTexture capture, int level) {
             int captureMip = _settings.CaptureMipOf(level);
             if (captureMip + MapTileSettings.MipsPerLevel > capture.mipmapCount) return;
-            if (!AcquireSlot(level, cell, out int slot)) return;
+            if (!AcquireSlot(level, cell, out int slot)) {
+                _refused[level].Add(cell);
+                return;
+            }
 
             Texture2DArray array = EnsureArray(level);
             for (int mip = 0; mip < MapTileSettings.MipsPerLevel; mip++) {
@@ -235,8 +253,46 @@ namespace AlpineLib.Maps {
             if (!_pools[level].TryAcquire(cell, _frame, out slot, out _)) return false;
 
             _reportedMissing[level].Remove(cell);
+            _refused[level].Remove(cell);
             ResidencyVersion++;
             return true;
+        }
+
+        // A capture refused for want of a slice is reported missing again once a slice frees up.
+        private void RetryRefused(int level, CellCoord cell) {
+            if (!_refused[level].Contains(cell) || !TryReserveRoom(level)) return;
+
+            _refused[level].Remove(cell);
+            _reportedMissing[level].Remove(cell);
+        }
+
+        // Slices this frame can still hand out at a level, net of loads already headed for one.
+        private bool TryReserveRoom(int level) {
+            if (_roomFrame[level] != _frame) {
+                _roomFrame[level] = _frame;
+                _room[level] = _pools[level].AvailableCount(_frame) - LoadsInFlight(level);
+            }
+
+            if (_room[level] <= 0) return false;
+
+            _room[level]--;
+            return true;
+        }
+
+        private int LoadsInFlight(int level) {
+            int count = 0;
+            foreach ((int level, CellCoord cell, Task<byte[]> task) load in _loads) {
+                if (load.level == level) count++;
+            }
+
+            return count;
+        }
+
+        // Loads and saves still in flight for an invalidated cell would bring the stale tile back.
+        private void DropPending(CellCoord cell) {
+            _loads.RemoveAll((load) => load.cell == cell);
+            _loadingKeys.RemoveWhere((key) => key.cell == cell);
+            _readbacks.RemoveAll((readback) => readback.cell == cell);
         }
 
         private void PumpReadbacks() {

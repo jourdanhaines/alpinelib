@@ -80,6 +80,16 @@ namespace AlpineLib.Maps {
             return true;
         }
 
+        /// <summary>Slices a new cell could take in <paramref name="frame"/>: free ones plus those not pinned in it or the frame before.</summary>
+        public int AvailableCount(int frame) {
+            int available = 0;
+            for (int slot = 0; slot < Capacity; slot++) {
+                if (!_used[slot] || _lastFrame[slot] < frame - 1) available++;
+            }
+
+            return available;
+        }
+
         /// <summary>Frees <paramref name="cell"/>'s slice; false when it held none.</summary>
         public bool Release(CellCoord cell) {
             if (!_slotsByCell.TryGetValue(cell, out int slot)) return false;
