@@ -78,6 +78,8 @@ namespace AlpineLib.Maps {
 
         /// <summary>Limits the centre to <paramref name="bounds"/> (null removes the limit) and re-clamps it.</summary>
         public void SetPanBounds(MapRect? bounds) {
+            if (Nullable.Equals(bounds, _panBounds)) return;
+
             _panBounds = bounds;
             _centre = ClampCentre(_centre);
             Changed?.Invoke();
@@ -94,8 +96,7 @@ namespace AlpineLib.Maps {
 
         /// <summary>Moves the centre to <paramref name="centre"/> (clamped to the pan bounds).</summary>
         public void Recentre(MapPoint centre) {
-            _centre = ClampCentre(centre);
-            Changed?.Invoke();
+            MoveCentre(ClampCentre(centre));
         }
 
         /// <summary>Drags the map content by <paramref name="deltaViewportUnits"/>: the point under the pointer follows it.</summary>
@@ -103,8 +104,7 @@ namespace AlpineLib.Maps {
             if (deltaViewportUnits == Vector2.zero) return;
 
             MapPoint shift = ViewportDeltaToWorld(deltaViewportUnits.x, deltaViewportUnits.y);
-            _centre = ClampCentre(_centre - shift);
-            Changed?.Invoke();
+            MoveCentre(ClampCentre(_centre - shift));
         }
 
         /// <summary>
@@ -173,6 +173,14 @@ namespace AlpineLib.Maps {
             double deltaX = (viewportX * cosine + viewportY * sine) * metresPerUnit;
             double deltaZ = (-viewportX * sine + viewportY * cosine) * metresPerUnit;
             return new MapPoint(deltaX, deltaZ);
+        }
+
+        // Silent when the clamp leaves the centre where it was (a drag pushing against the bounds).
+        private void MoveCentre(MapPoint centre) {
+            if (centre == _centre) return;
+
+            _centre = centre;
+            Changed?.Invoke();
         }
 
         private double ClampZoom(double metresAcross) {
