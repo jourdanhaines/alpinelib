@@ -228,6 +228,44 @@ namespace AlpineLib.Server.Tests.Procedural {
         }
 
         [Fact]
+        public void EncodeChunkCapsCellsPerChunk() {
+            List<CellCoord> sorted = new GridRect(-50, -50, 100, 100).Cells().ToList();
+            byte[] buffer = new byte[960];
+            List<CellCoord> decoded = new List<CellCoord>();
+            int startIndex = 0;
+            int chunks = 0;
+
+            while (startIndex < sorted.Count) {
+                int written = CellRunCodec.EncodeChunk(sorted, startIndex, buffer, 4096, out int consumed);
+                Assert.InRange(consumed, 1, 4096);
+                AssertEndsOnRunBoundary(sorted, startIndex + consumed);
+                Assert.True(CellRunCodec.TryDecode(buffer.AsSpan(0, written), 4096, decoded));
+                startIndex += consumed;
+                chunks++;
+            }
+
+            Assert.Equal(3, chunks);
+            Assert.Equal(sorted, decoded);
+        }
+
+        [Fact]
+        public void EncodeChunkSplitsARunLongerThanTheCap() {
+            List<CellCoord> sorted = new GridRect(0, 0, 10000, 1).Cells().ToList();
+            byte[] buffer = new byte[960];
+            List<CellCoord> decoded = new List<CellCoord>();
+            int startIndex = 0;
+
+            while (startIndex < sorted.Count) {
+                int written = CellRunCodec.EncodeChunk(sorted, startIndex, buffer, 4096, out int consumed);
+                Assert.InRange(consumed, 1, 4096);
+                Assert.True(CellRunCodec.TryDecode(buffer.AsSpan(0, written), 4096, decoded));
+                startIndex += consumed;
+            }
+
+            Assert.Equal(sorted, decoded);
+        }
+
+        [Fact]
         public void EncodeChunkFillsOneChunkWhenEverythingFits() {
             List<CellCoord> sorted = new GridRect(0, 0, 17, 17).Cells().ToList();
             byte[] buffer = new byte[960];

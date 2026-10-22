@@ -55,13 +55,25 @@ namespace AlpineLib.Procedural.Grid {
         /// packed. Returns the bytes written, or −1 when not even one run fits.
         /// </summary>
         public static int EncodeChunk(List<CellCoord> sortedCells, int startIndex, Span<byte> destination, out int consumed) {
+            return EncodeChunk(sortedCells, startIndex, destination, int.MaxValue, out consumed);
+        }
+
+        /// <summary>
+        /// As <see cref="EncodeChunk(List{CellCoord}, int, Span{byte}, out int)"/>, also packing at most
+        /// <paramref name="maxCells"/> cells. Runs stay whole unless the first run alone is longer than
+        /// <paramref name="maxCells"/>, which is split so every call makes progress.
+        /// </summary>
+        public static int EncodeChunk(List<CellCoord> sortedCells, int startIndex, Span<byte> destination, int maxCells, out int consumed) {
+            if (maxCells <= 0) {
+                throw new ArgumentOutOfRangeException(nameof(maxCells));
+            }
             if (sortedCells == null) {
                 throw new ArgumentNullException(nameof(sortedCells));
             }
             if (startIndex < 0 || startIndex > sortedCells.Count) {
                 throw new ArgumentOutOfRangeException(nameof(startIndex));
             }
-            List<CellRun> runs = BuildRunsThatFit(sortedCells, startIndex, destination.Length, out consumed);
+            List<CellRun> runs = BuildRunsThatFit(sortedCells, startIndex, destination.Length, maxCells, out consumed);
             if (runs.Count == 0 && startIndex < sortedCells.Count) {
                 return -1;
             }
@@ -165,11 +177,14 @@ namespace AlpineLib.Procedural.Grid {
             return sorted;
         }
 
-        private static List<CellRun> BuildRuns(IReadOnlyList<CellCoord> sorted, int startIndex, int endIndex, int capacity = int.MaxValue) {
+        private static List<CellRun> BuildRuns(IReadOnlyList<CellCoord> sorted, int startIndex, int endIndex, int capacity = int.MaxValue, int maxCells = int.MaxValue) {
             // A chunk holds at most capacity / MinRunBytes runs; one extra lets the fit check see the overflow.
             int maxRuns = capacity / MinRunBytes + 1;
             List<CellRun> runs = new List<CellRun>();
             for (int index = startIndex; index < endIndex; index++) {
+                if (index - startIndex == maxCells) {
+                    break;
+                }
                 CellCoord cell = sorted[index];
                 if (index > startIndex && CompareRowMajor(sorted[index - 1], cell) >= 0) {
                     throw new ArgumentException("Cells must be sorted row-major and distinct.");
@@ -195,8 +210,9 @@ namespace AlpineLib.Procedural.Grid {
             return last.Y == cell.Y && (long)last.X + last.Length == cell.X;
         }
 
-        private static List<CellRun> BuildRunsThatFit(List<CellCoord> sorted, int startIndex, int capacity, out int consumed) {
-            List<CellRun> runs = BuildRuns(sorted, startIndex, sorted.Count, capacity);
+        private static List<CellRun> BuildRunsThatFit(List<CellCoord> sorted, int startIndex, int capacity, int maxCells, out int consumed) {
+            List<CellRun> runs = BuildRuns(sorted, startIndex, sorted.Count, capacity, maxCells);
+            DropRunCutByCellCap(sorted, startIndex, runs);
             int bodySize = 0;
             consumed = 0;
             for (int runIndex = 0; runIndex < runs.Count; runIndex++) {
@@ -208,6 +224,21 @@ namespace AlpineLib.Procedural.Grid {
                 consumed += runs[runIndex].Length;
             }
             return runs;
+        }
+
+        // The cell cap can end the build mid-run; that run waits for the next chunk unless it is the only one.
+        private static void DropRunCutByCellCap(List<CellCoord> sorted, int startIndex, List<CellRun> runs) {
+            if (runs.Count < 2) {
+                return;
+            }
+            int built = 0;
+            foreach (CellRun run in runs) {
+                built += run.Length;
+            }
+            int next = startIndex + built;
+            if (next < sorted.Count && ExtendsLastRun(runs, sorted[next])) {
+                runs.RemoveAt(runs.Count - 1);
+            }
         }
 
         private static int MeasureRuns(List<CellRun> runs, int runCount) {
