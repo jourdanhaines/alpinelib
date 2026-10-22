@@ -266,6 +266,26 @@ namespace AlpineLib.Server.Tests.Procedural {
         }
 
         [Fact]
+        public void EncodeChunkDefersALongRunBehindAShortOne() {
+            List<CellCoord> sorted = new List<CellCoord> { new CellCoord(5, -1) };
+            sorted.AddRange(new GridRect(0, 0, 10000, 1).Cells());
+            byte[] buffer = new byte[960];
+            List<CellCoord> decoded = new List<CellCoord>();
+            List<int> consumedPerChunk = new List<int>();
+            int startIndex = 0;
+
+            while (startIndex < sorted.Count) {
+                int written = CellRunCodec.EncodeChunk(sorted, startIndex, buffer, 4096, out int consumed);
+                Assert.True(CellRunCodec.TryDecode(buffer.AsSpan(0, written), 4096, decoded));
+                consumedPerChunk.Add(consumed);
+                startIndex += consumed;
+            }
+
+            Assert.Equal(new[] { 1, 4096, 4096, 1808 }, consumedPerChunk);
+            Assert.Equal(sorted, decoded);
+        }
+
+        [Fact]
         public void EncodeChunkFillsOneChunkWhenEverythingFits() {
             List<CellCoord> sorted = new GridRect(0, 0, 17, 17).Cells().ToList();
             byte[] buffer = new byte[960];
