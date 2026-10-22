@@ -25,6 +25,7 @@ namespace AlpineLib.Maps {
         private static readonly int CentreFracId = Shader.PropertyToID("_CentreFrac");
         private static readonly int CentreIdxId = Shader.PropertyToID("_CentreIdx");
         private static readonly int WindowSizeId = Shader.PropertyToID("_WindowSize");
+        private static readonly int WindowMinId = Shader.PropertyToID("_WindowMin");
         private static readonly int RotId = Shader.PropertyToID("_Rot");
         private static readonly int LevelId = Shader.PropertyToID("_Level");
         private static readonly int LevelLodId = Shader.PropertyToID("_LevelLod");
@@ -103,7 +104,7 @@ namespace AlpineLib.Maps {
 
         /// <summary>
         /// <paramref name="visible"/> trimmed about its centre to at most <paramref name="windowSize"/>
-        /// cells a side, so a viewport larger than the indirection window draws its middle rather than aliasing.
+        /// cells a side; the shader leaves cells outside the window transparent rather than aliasing them.
         /// </summary>
         public static GridRect ClampToWindow(GridRect visible, int windowSize) {
             int width = Mathf.Min(visible.Width, windowSize);
@@ -171,6 +172,8 @@ namespace AlpineLib.Maps {
             target.SetVector(CentreFracId, new Vector4((float)(_view.Centre.X / cellSize - cellX), (float)(_view.Centre.Z / cellSize - cellZ), 0f, 0f));
             target.SetVector(CentreIdxId, new Vector4(MapIndirection.IndexOf((int)cellX, window), MapIndirection.IndexOf((int)cellZ, window), 0f, 0f));
             target.SetFloat(WindowSizeId, window);
+            GridRect covered = Indirection.Window;
+            target.SetVector(WindowMinId, new Vector4((float)(covered.X - cellX), (float)(covered.Y - cellZ), 0f, 0f));
             target.SetVector(RotId, new Vector4((float)System.Math.Cos(radians), (float)System.Math.Sin(radians), 0f, 0f));
             target.SetFloat(LevelId, SelectedLevel);
             target.SetVector(LevelLodId, LevelLods(settings));

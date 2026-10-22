@@ -17,6 +17,7 @@ Shader "AlpineLib/UI/MapViewport" {
         _CentreFrac ("Centre Fraction In Cell", Vector) = (0, 0, 0, 0)
         _CentreIdx ("Centre Indirection Index", Vector) = (0, 0, 0, 0)
         _WindowSize ("Indirection Window Size", Float) = 32
+        _WindowMin ("Window Min Cell Offset From Centre Cell", Vector) = (-16, -16, 0, 0)
         _Rot ("Rotation (cos, sin)", Vector) = (1, 0, 0, 0)
         _Level ("Selected Level", Float) = 0
         _LevelLod ("Per-Level Lod", Vector) = (0, 0, 0, 0)
@@ -100,6 +101,7 @@ Shader "AlpineLib/UI/MapViewport" {
             float4 _CentreFrac;
             float4 _CentreIdx;
             float _WindowSize;
+            float4 _WindowMin;
             float4 _Rot;
             float _Level;
             float4 _LevelLod;
@@ -140,6 +142,10 @@ Shader "AlpineLib/UI/MapViewport" {
                 float2 cells = metres / _CellSize + _CentreFrac.xy;
                 float2 cellOffset = floor(cells);
                 float2 uv = cells - cellOffset;
+                // Cells outside the indirection window would alias onto another cell's texel.
+                float2 inWindow = cellOffset - _WindowMin.xy;
+                if (any(inWindow < 0) || any(inWindow >= _WindowSize)) return half4(0, 0, 0, 0);
+
                 float2 index = fmod(fmod(_CentreIdx.xy + cellOffset, _WindowSize) + _WindowSize, _WindowSize);
                 float4 entry = tex2Dlod(_Indirection, float4((index + 0.5) / _WindowSize, 0, 0));
 
