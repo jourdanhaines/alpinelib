@@ -68,7 +68,7 @@ namespace AlpineLib.Maps {
         }
 
         public void OnScroll(PointerEventData eventData) {
-            if (eventData.scrollDelta.y == 0f || !TryGetPoint(eventData, out Vector2 point)) return;
+            if (eventData.scrollDelta.y == 0f || !TryGetPoint(eventData, out Vector2 point, false)) return;
 
             View()?.ZoomAbout(point, ZoomFactor(eventData.scrollDelta.y, zoomStep, scrollPerNotch));
         }
@@ -91,9 +91,9 @@ namespace AlpineLib.Maps {
             InputLock?.EndMapGesture();
         }
 
-        private bool TryGetPoint(PointerEventData eventData, out Vector2 point) {
+        private bool TryGetPoint(PointerEventData eventData, out Vector2 point, bool fromPress = true) {
             RectTransform rect = viewport != null ? viewport.rectTransform : (RectTransform)transform;
-            return MapPointerResolver.TryGetViewportPoint(eventData, rect, out point);
+            return MapPointerResolver.TryGetViewportPoint(eventData, rect, out point, fromPress);
         }
 
         private MapView View() {

@@ -10,14 +10,18 @@ namespace AlpineLib.Maps {
     /// the screen position is used as is.
     /// </summary>
     public static class MapPointerResolver {
-        /// <summary>Viewport point under <paramref name="eventData"/>'s position; false when it misses the canvas.</summary>
-        public static bool TryGetViewportPoint(PointerEventData eventData, RectTransform rect, out Vector2 viewportPoint) {
+        /// <summary>
+        /// Viewport point under <paramref name="eventData"/>'s position; false when it misses the canvas.
+        /// <paramref name="fromPress"/> resolves through the raycaster that took the press (drags, clicks);
+        /// otherwise through the one under the pointer now (the wheel, which has no press of its own).
+        /// </summary>
+        public static bool TryGetViewportPoint(PointerEventData eventData, RectTransform rect, out Vector2 viewportPoint, bool fromPress = true) {
             viewportPoint = default;
             if (eventData == null || rect == null) return false;
 
             Canvas canvas = rect.GetComponentInParent<Canvas>();
             Camera canvasCamera = CanvasCamera(canvas);
-            BaseRaycaster module = eventData.pointerPressRaycast.module != null ? eventData.pointerPressRaycast.module : eventData.pointerCurrentRaycast.module;
+            BaseRaycaster module = ModuleOf(eventData, fromPress);
             if (module is ICanvasPointRaycaster raycaster) {
                 if (!raycaster.TryGetCanvasPoint(eventData.position, out Vector2 canvasPixel)) return false;
 
@@ -37,6 +41,13 @@ namespace AlpineLib.Maps {
 
             viewportPoint = local - rect.rect.center;
             return true;
+        }
+
+        // The press raycast outlives the press, so a wheel event would otherwise inherit a stale module.
+        private static BaseRaycaster ModuleOf(PointerEventData eventData, bool fromPress) {
+            BaseRaycaster first = fromPress ? eventData.pointerPressRaycast.module : eventData.pointerCurrentRaycast.module;
+            BaseRaycaster second = fromPress ? eventData.pointerCurrentRaycast.module : eventData.pointerPressRaycast.module;
+            return first != null ? first : second;
         }
 
         private static Camera CanvasCamera(Canvas canvas) {
