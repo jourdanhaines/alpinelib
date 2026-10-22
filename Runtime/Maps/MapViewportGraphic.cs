@@ -72,6 +72,8 @@ namespace AlpineLib.Maps {
         public void SetCircle(bool value) {
             circle = value;
             if (_instance != null) ApplyKeyword(_instance);
+            Material rendered = RenderedCopy();
+            if (rendered != null) ApplyKeyword(rendered);
         }
 
         /// <inheritdoc />
@@ -90,16 +92,24 @@ namespace AlpineLib.Maps {
             PixelsPerMetre = scale / _view.MetresPerUnit;
             SelectedLevel = MapTileLevels.Select(PixelsPerMetre, _store.Settings);
 
-            GridRect visible = ClampToWindow(_view.VisibleCells(_store.Settings.CellSize, cellMargin), Indirection.WindowSize);
-            _store.Request(visible, SelectedLevel, frame);
+            double cellSize = _store.Settings.CellSize;
+            int window = Indirection.WindowSize;
+            GridRect visible = ClampToWindow(_view.VisibleCells(cellSize, cellMargin), window);
+            GridRect inner = ClampToWindow(_view.VisibleCells(cellSize, 0), window);
+            // Margin cells prefetch one level coarser so they never crowd on-screen cells out of the finest level's slices.
+            _store.Request(visible, Mathf.Min(SelectedLevel + 1, _store.Settings.LevelCount - 1), frame);
+            _store.Request(inner, SelectedLevel, frame);
             Indirection.Update(visible, _store);
 
             Material target = EnsureInstance();
             if (target == null) return;
 
             ApplyProperties(target, size);
-            Material rendered = canvasRenderer.materialCount > 0 ? canvasRenderer.GetMaterial() : null;
-            if (rendered != null && rendered != target) ApplyProperties(rendered, size);
+            Material rendered = RenderedCopy();
+            if (rendered == null) return;
+
+            ApplyProperties(rendered, size);
+            ApplyKeyword(rendered);
         }
 
         /// <summary>
@@ -134,6 +144,12 @@ namespace AlpineLib.Maps {
             vertices.AddVert(new Vector3(rect.xMax, rect.yMin), tint, new Vector4(1f, 0f));
             vertices.AddTriangle(0, 1, 2);
             vertices.AddTriangle(2, 3, 0);
+        }
+
+        // The stencil copy a Mask makes of the instance; it keeps the keywords it was copied with.
+        private Material RenderedCopy() {
+            Material rendered = canvasRenderer.materialCount > 0 ? canvasRenderer.GetMaterial() : null;
+            return rendered != null && rendered != _instance ? rendered : null;
         }
 
         private Material EnsureInstance() {
