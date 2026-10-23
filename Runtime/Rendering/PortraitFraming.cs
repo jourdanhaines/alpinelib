@@ -4,11 +4,17 @@ namespace AlpineLib.Rendering {
     /// <summary>
     /// How a portrait camera frames a subject, in the subject's own space: a focus sphere, the view
     /// angle (yaw 180 looks at the subject's front), a vertical field of view, and how much of the
-    /// frame height the focus sphere fills.
+    /// frame height the focus sphere fills; an optional lens shift moves the image without turning the camera.
     /// </summary>
     public readonly struct PortraitFraming {
         /// <summary>Builds a framing.</summary>
-        public PortraitFraming(Vector3 focusCentre, float focusRadius, float pitchDegrees, float yawDegrees, float fieldOfView, float fill) {
+        public PortraitFraming(Vector3 focusCentre, float focusRadius, float pitchDegrees, float yawDegrees, float fieldOfView, float fill)
+            : this(focusCentre, focusRadius, pitchDegrees, yawDegrees, fieldOfView, fill, Vector2.zero) {
+        }
+
+        /// <summary>Builds a framing whose image is shifted by <paramref name="lensShift"/> (see <see cref="LensShift"/>).</summary>
+        public PortraitFraming(Vector3 focusCentre, float focusRadius, float pitchDegrees, float yawDegrees, float fieldOfView, float fill, Vector2 lensShift) {
+            LensShift = lensShift;
             FocusCentre = focusCentre;
             FocusRadius = focusRadius;
             PitchDegrees = pitchDegrees;
@@ -34,6 +40,23 @@ namespace AlpineLib.Rendering {
 
         /// <summary>Fraction of the frame height the focus sphere's diameter spans.</summary>
         public float Fill { get; }
+
+        /// <summary>
+        /// Off-axis shift in half-frames: the point that would project at this position (x right, y up, ±1 at
+        /// the edges) lands at the frame centre instead. Keeps a tilted view's perspective while recentring it.
+        /// </summary>
+        public Vector2 LensShift { get; }
+
+        /// <summary>Applies <paramref name="framing"/>'s lens shift to <paramref name="camera"/>'s projection, or resets it.</summary>
+        public static void ApplyLensShift(Camera camera, PortraitFraming framing) {
+            camera.ResetProjectionMatrix();
+            if (framing.LensShift == Vector2.zero) return;
+
+            Matrix4x4 projection = camera.projectionMatrix;
+            projection[0, 2] = framing.LensShift.x;
+            projection[1, 2] = framing.LensShift.y;
+            camera.projectionMatrix = projection;
+        }
 
         /// <summary>A framing around <paramref name="localBounds"/> (subject-local), sphere = the bounds' bounding sphere.</summary>
         public static PortraitFraming FromBounds(Bounds localBounds, float pitchDegrees, float yawDegrees, float fieldOfView, float fill) {

@@ -58,6 +58,7 @@ namespace AlpineLib.Rendering {
             _camera.aspect = 1f;
             _camera.nearClipPlane = Mathf.Max(0.01f, distance - framing.FocusRadius * 4f);
             _camera.farClipPlane = distance + framing.FocusRadius * 4f;
+            PortraitFraming.ApplyLensShift(_camera, framing);
 
             if (forceLayer) ForceLayer(subject, LowestLayer(cullingMask));
             try {
