@@ -116,13 +116,12 @@ namespace AlpineLib.Maps {
 
         /// <inheritdoc />
         public void Accept(CellCoord cell, RenderTexture capture) {
-            if (!CaptureRender.CanRender || capture == null) return;
+            AcceptLevels(cell, capture, false);
+        }
 
-            for (int level = 0; level < _pools.Length; level++) {
-                AcceptLevel(cell, capture, level);
-            }
-
-            TileAdded?.Invoke(cell);
+        /// <summary>Like <see cref="Accept"/>, but only into levels where <paramref name="cell"/> has no tile, resident or saved.</summary>
+        public void AcceptMissing(CellCoord cell, RenderTexture capture) {
+            AcceptLevels(cell, capture, true);
         }
 
         /// <summary>Drops <paramref name="cell"/>'s tiles from every level and from storage, so it reads as missing until captured again.</summary>
@@ -228,6 +227,20 @@ namespace AlpineLib.Maps {
             }
 
             return true;
+        }
+
+        private void AcceptLevels(CellCoord cell, RenderTexture capture, bool missingOnly) {
+            if (!CaptureRender.CanRender || capture == null) return;
+
+            bool accepted = false;
+            for (int level = 0; level < _pools.Length; level++) {
+                if (missingOnly && HasTile(cell, level)) continue;
+
+                AcceptLevel(cell, capture, level);
+                accepted = true;
+            }
+
+            if (accepted) TileAdded?.Invoke(cell);
         }
 
         private void AcceptLevel(CellCoord cell, RenderTexture capture, int level) {

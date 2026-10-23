@@ -19,9 +19,12 @@ namespace AlpineLib.Maps {
         private readonly List<(CellCoord cell, MapBakeCost cost)> _pending = new List<(CellCoord cell, MapBakeCost cost)>();
         private readonly List<IMapBakeJob> _active = new List<IMapBakeJob>();
         private readonly List<CellCoord> _scratch = new List<CellCoord>();
+        private readonly HashSet<CellCoord> _candidates = new HashSet<CellCoord>();
+        private readonly Comparison<(CellCoord cell, MapBakeCost cost)> _comparePending;
         private readonly Stopwatch _stopwatch = new Stopwatch();
         private KnownCellSet _known;
         private MapTileStore _store;
+        private MapTileFillSink _fillSink;
         private MapTileCapturer _capturer;
         private IMapCellBakeSource[] _sources = Array.Empty<IMapCellBakeSource>();
         private CellCoord _focus;
@@ -29,6 +32,10 @@ namespace AlpineLib.Maps {
         private long _sortedKnownVersion = -1;
         private float _lastSortTime = float.NegativeInfinity;
         private bool _dirty = true;
+
+        public MapBakeQueue() {
+            _comparePending = ComparePending;
+        }
 
         /// <summary>Raised after a cell's tile was captured.</summary>
         public event Action<CellCoord> CellBaked;
@@ -64,6 +71,7 @@ namespace AlpineLib.Maps {
         public void Configure(KnownCellSet known, MapTileStore store, MapTileCapturer capturer, params IMapCellBakeSource[] sources) {
             _known = known;
             _store = store;
+            _fillSink = new MapTileFillSink(store);
             _capturer = capturer;
             _sources = sources ?? Array.Empty<IMapCellBakeSource>();
             _dirty = true;
@@ -122,7 +130,7 @@ namespace AlpineLib.Maps {
 
         /// <summary>Disposes the jobs in progress.</summary>
         public void Dispose() {
-            foreach (IMapBakeJob job in _active) job.Dispose();
+            foreach (IMapBakeJob job in _active) DisposeJob(job);
             _active.Clear();
         }
 
@@ -139,13 +147,15 @@ namespace AlpineLib.Maps {
             _sortedKnownVersion = _known?.Version ?? -1;
             _scratch.Clear();
             _known?.CopyTo(_scratch);
-            var candidates = new HashSet<CellCoord>(_scratch);
-            candidates.UnionWith(_extra);
+            _candidates.Clear();
+            _candidates.UnionWith(_scratch);
+            _candidates.UnionWith(_extra);
 
             _pending.Clear();
             _pendingCursor = 0;
-            foreach (CellCoord cell in candidates) AddPending(cell);
-            _pending.Sort(ComparePending);
+            foreach (CellCoord cell in _candidates) AddPending(cell);
+            _candidates.Clear();
+            _pending.Sort(_comparePending);
         }
 
         private void AddPending(CellCoord cell) {
@@ -226,19 +236,47 @@ namespace AlpineLib.Maps {
                 if (remaining <= 0f) return;
 
                 IMapBakeJob job = _active[index];
-                MapBakeJobStatus status = job.Step(remaining);
+                MapBakeJobStatus status = StepJob(job, remaining);
                 if (status == MapBakeJobStatus.Working) continue;
                 if (status == MapBakeJobStatus.Ready && captures >= maxCaptures) continue;
 
                 if (status == MapBakeJobStatus.Ready) captures += CaptureJob(job, time) ? 1 : 0;
-                job.Dispose();
+                DisposeJob(job);
                 _active.RemoveAt(index);
                 index--;
             }
         }
 
+        // A job that throws fails: it is dropped and its cell retried later, never stepped again.
+        private static MapBakeJobStatus StepJob(IMapBakeJob job, float budget) {
+            try {
+                return job.Step(budget);
+            } catch (Exception exception) {
+                UnityEngine.Debug.LogException(exception);
+                return MapBakeJobStatus.Failed;
+            }
+        }
+
+        private bool TryCapture(IMapBakeJob job, float time) {
+            try {
+                IMapTileSink sink = job.KeepsExistingTiles ? _fillSink : (IMapTileSink)_store;
+                return _capturer.Capture(job.Cell, job.CaptureArea, sink, time);
+            } catch (Exception exception) {
+                UnityEngine.Debug.LogException(exception);
+                return false;
+            }
+        }
+
+        private static void DisposeJob(IMapBakeJob job) {
+            try {
+                job.Dispose();
+            } catch (Exception exception) {
+                UnityEngine.Debug.LogException(exception);
+            }
+        }
+
         private bool CaptureJob(IMapBakeJob job, float time) {
-            if (!_capturer.Capture(job.Cell, job.CaptureArea, _store, time)) return false;
+            if (!TryCapture(job, time)) return false;
 
             _baked.Add(job.Cell);
             _forced.Remove(job.Cell);

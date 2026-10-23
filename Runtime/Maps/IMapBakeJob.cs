@@ -14,6 +14,12 @@ namespace AlpineLib.Maps {
         /// <summary>World area the capture covers; valid once <see cref="Step"/> reports ready.</summary>
         TopDownCaptureArea CaptureArea { get; }
 
+        /// <summary>
+        /// True when the capture may only fill levels the cell has no tile at: a worse bake (e.g. an
+        /// off-screen build re-making a dropped fine level) must not overwrite a better saved tile.
+        /// </summary>
+        bool KeepsExistingTiles { get; }
+
         /// <summary>Advances the job within about <paramref name="budgetMilliseconds"/> of main-thread time.</summary>
         MapBakeJobStatus Step(float budgetMilliseconds);
     }
