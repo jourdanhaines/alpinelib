@@ -1,6 +1,7 @@
 using System;
 using AlpineLib.Procedural.Grid;
 using AlpineLib.Rendering;
+using Unity.Profiling;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 
@@ -14,6 +15,10 @@ namespace AlpineLib.Maps {
     public sealed class MapTileCapturer : IDisposable {
         /// <summary>Default seconds without a capture before the targets are released.</summary>
         public const float IdleReleaseSeconds = 5f;
+        private static readonly ProfilerMarker TargetsMarker = new ProfilerMarker("MapTileCapturer.Targets");
+        private static readonly ProfilerMarker RenderMarker = new ProfilerMarker("MapTileCapturer.Render");
+        private static readonly ProfilerMarker ResolveMarker = new ProfilerMarker("MapTileCapturer.Resolve");
+        private static readonly ProfilerMarker AcceptMarker = new ProfilerMarker("MapTileCapturer.Accept");
 
         private readonly int _size;
         private readonly int _msaaSamples;
@@ -54,15 +59,14 @@ namespace AlpineLib.Maps {
         public bool Capture(CellCoord cell, TopDownCaptureArea area, IMapTileSink sink, float time) {
             if (!CanCapture || sink == null) return false;
 
-            EnsureTargets();
-            CaptureCameraSetup.Configure(_camera, CullingMask, Clear);
-            if (!TopDownCapture.Render(_camera, area, _multisampled, Lighting)) return false;
+            using (TargetsMarker.Auto()) EnsureTargets();
+            using (RenderMarker.Auto()) {
+                CaptureCameraSetup.Configure(_camera, CullingMask, Clear);
+                if (!TopDownCapture.Render(_camera, area, _multisampled, Lighting)) return false;
+            }
 
-            RenderTexture active = RenderTexture.active;
-            Graphics.Blit(_multisampled, _resolved);
-            RenderTexture.active = active;
-            _resolved.GenerateMips();
-            sink.Accept(cell, _resolved);
+            using (ResolveMarker.Auto()) Resolve();
+            using (AcceptMarker.Auto()) sink.Accept(cell, _resolved);
             _lastCaptureTime = time;
             return true;
         }
@@ -79,6 +83,13 @@ namespace AlpineLib.Maps {
             ReleaseTargets();
             if (_camera != null) CaptureRender.Destroy(_camera.gameObject);
             _camera = null;
+        }
+
+        private void Resolve() {
+            RenderTexture active = RenderTexture.active;
+            Graphics.Blit(_multisampled, _resolved);
+            RenderTexture.active = active;
+            _resolved.GenerateMips();
         }
 
         private void EnsureTargets() {

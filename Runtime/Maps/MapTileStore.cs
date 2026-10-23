@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using AlpineLib.Procedural.Grid;
 using AlpineLib.Rendering;
+using Unity.Profiling;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
@@ -18,6 +19,7 @@ namespace AlpineLib.Maps {
     public sealed class MapTileStore : IMapTileSink, IDisposable {
         /// <summary>Saved tiles loading at once, at most.</summary>
         public const int MaxLoadsInFlight = 8;
+        private static readonly ProfilerMarker TickMarker = new ProfilerMarker("MapTileStore.Tick");
 
         private readonly MapTileSettings _settings;
         private readonly IMapTileStorage _storage;
@@ -141,8 +143,10 @@ namespace AlpineLib.Maps {
 
         /// <summary>Main-thread pump: uploads finished loads and saves finished readbacks.</summary>
         public void Tick() {
-            PumpLoads();
-            PumpReadbacks();
+            using (TickMarker.Auto()) {
+                PumpLoads();
+                PumpReadbacks();
+            }
         }
 
         /// <summary>Destroys the tile arrays; pending loads and saves are dropped.</summary>

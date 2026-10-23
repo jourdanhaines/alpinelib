@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using AlpineLib.Procedural.Grid;
 using AlpineLib.Procedural.Kits;
+using Unity.Profiling;
 using UnityEngine;
 
 namespace AlpineLib.Procedural.Streaming {
@@ -22,6 +23,9 @@ namespace AlpineLib.Procedural.Streaming {
     [DisallowMultipleComponent]
     public sealed class CellStreamer : MonoBehaviour {
         private const double OriginShiftToleranceMetres = 0.01;
+        private static readonly ProfilerMarker TickMarker = new ProfilerMarker("CellStreamer.Tick");
+        private static readonly ProfilerMarker InstantiateMarker = new ProfilerMarker("CellStreamer.Instantiate");
+        private static readonly ProfilerMarker CellLoadedMarker = new ProfilerMarker("CellStreamer.CellLoaded");
 
         [SerializeField, Tooltip("Edge length of one cell, metres.")]
         private double cellSize = 128.0;
@@ -113,7 +117,13 @@ namespace AlpineLib.Procedural.Streaming {
         public int LiveCount => CountInState(StreamedCellState.Live);
 
         /// <summary>True when every tracked cell is live or failed and no worker is still running.</summary>
-        public bool IsIdle => _instantiating == null && _abandoned.Count == 0 && CountPending() == 0;
+        public bool IsIdle => _instantiating == null && _abandoned.Count == 0 && !HasPendingCell();
+
+        /// <summary>
+        /// Consecutive <see cref="Tick"/>s that ended idle having built and released nothing; 0 after a busy
+        /// tick. Lets lower-priority main-thread work wait until streaming has settled.
+        /// </summary>
+        public int QuietTicks { get; private set; } = int.MaxValue;
 
         /// <summary>Sets the grid and radii; releases every cell first. The origin cell is kept.</summary>
         public void Configure(double newCellSize, int newRadius, int newUnloadMargin) {
@@ -202,11 +212,15 @@ namespace AlpineLib.Procedural.Streaming {
         public void Tick() {
             if (ResolveBuilder() == null) return;
 
-            RefreshInterest();
-            CollectAbandoned();
-            CollectPrepared();
-            StartPrepares();
-            RunInstantiation(ResolveBudget());
+            using (TickMarker.Auto()) {
+                bool released = RefreshInterest();
+                CollectAbandoned();
+                CollectPrepared();
+                StartPrepares();
+                bool built;
+                using (InstantiateMarker.Auto()) built = RunInstantiation(ResolveBudget());
+                NoteActivity(released || built || !IsIdle);
+            }
         }
 
         /// <summary>
@@ -281,7 +295,17 @@ namespace AlpineLib.Procedural.Streaming {
             _hasSpace = true;
         }
 
-        private void RefreshInterest() {
+        private void NoteActivity(bool busy) {
+            if (busy) {
+                QuietTicks = 0;
+                return;
+            }
+
+            if (QuietTicks < int.MaxValue) QuietTicks++;
+        }
+
+        // True when a cell left the interest set and was released.
+        private bool RefreshInterest() {
             if (_interest == null) _interest = new CellInterestSet(radius, unloadMargin);
 
             CollectObservers();
@@ -295,6 +319,8 @@ namespace AlpineLib.Procedural.Streaming {
             foreach (CellCoord coord in _added) {
                 _cells[coord] = new StreamedCell(coord);
             }
+
+            return _removed.Count > 0;
         }
 
         private void CollectObservers() {
@@ -433,14 +459,19 @@ namespace AlpineLib.Procedural.Streaming {
             }
         }
 
-        private void RunInstantiation(CellBuildBudget budget) {
+        // True when any instantiation step ran.
+        private bool RunInstantiation(CellBuildBudget budget) {
             budget.BeginFrame();
+            bool stepped = false;
 
             while (!budget.ShouldYield) {
-                if (_instantiating == null && !BeginNextInstantiation(budget)) return;
+                if (_instantiating == null && !BeginNextInstantiation(budget)) return stepped;
 
                 StepInstantiation(_instantiating);
+                stepped = true;
             }
+
+            return stepped;
         }
 
         private bool BeginNextInstantiation(CellBuildBudget budget) {
@@ -480,7 +511,7 @@ namespace AlpineLib.Procedural.Streaming {
 
             cell.State = StreamedCellState.Live;
             _instantiating = null;
-            CellLoaded?.Invoke(cell);
+            using (CellLoadedMarker.Auto()) CellLoaded?.Invoke(cell);
         }
 
         private void FailInstantiation(StreamedCell cell) {
@@ -611,9 +642,17 @@ namespace AlpineLib.Procedural.Streaming {
             return count;
         }
 
-        private int CountPending() {
-            return CountInState(StreamedCellState.Queued) + CountInState(StreamedCellState.Preparing)
-                + CountInState(StreamedCellState.Prepared) + CountInState(StreamedCellState.Instantiating);
+        private bool HasPendingCell() {
+            foreach (StreamedCell cell in _cells.Values) {
+                if (IsPending(cell.State)) return true;
+            }
+
+            return false;
+        }
+
+        private static bool IsPending(StreamedCellState state) {
+            return state == StreamedCellState.Queued || state == StreamedCellState.Preparing
+                || state == StreamedCellState.Prepared || state == StreamedCellState.Instantiating;
         }
 
         private static int ToWholeCells(double metres, double size, string parameterName) {

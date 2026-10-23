@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using AlpineLib.Procedural.Grid;
+using Unity.Profiling;
 
 namespace AlpineLib.Maps {
     /// <summary>
@@ -12,6 +13,11 @@ namespace AlpineLib.Maps {
     /// Inert on a null graphics device.
     /// </summary>
     public sealed class MapBakeQueue : IDisposable {
+        private static readonly ProfilerMarker TickMarker = new ProfilerMarker("MapBakeQueue.Tick");
+        private static readonly ProfilerMarker ResortMarker = new ProfilerMarker("MapBakeQueue.Resort");
+        private static readonly ProfilerMarker StepMarker = new ProfilerMarker("MapBakeQueue.StepJob");
+        private static readonly ProfilerMarker CaptureMarker = new ProfilerMarker("MapBakeQueue.Capture");
+
         private readonly HashSet<CellCoord> _extra = new HashSet<CellCoord>();
         private readonly HashSet<CellCoord> _baked = new HashSet<CellCoord>();
         private readonly List<CellCoord> _priority = new List<CellCoord>();
@@ -54,6 +60,15 @@ namespace AlpineLib.Maps {
 
         /// <summary>While hidden, only every this many frames does work.</summary>
         public int HiddenFrameInterval { get; set; } = 4;
+
+        /// <summary>
+        /// Asked first on every tick; while it returns true the queue does nothing at all (no job started,
+        /// stepped or captured), so higher-priority main-thread work such as cell streaming owns the frame.
+        /// </summary>
+        public Func<bool> ShouldYield { get; set; }
+
+        /// <summary>Ticks skipped because <see cref="ShouldYield"/> said so.</summary>
+        public int YieldedTicks { get; private set; }
 
         /// <summary>Seconds between re-sorts even when nothing announced a change (sources' costs drift).</summary>
         public float ResortSeconds { get; set; } = 1f;
@@ -114,6 +129,11 @@ namespace AlpineLib.Maps {
 
         /// <summary>One frame of work; <paramref name="visible"/> is whether the map is on screen.</summary>
         public void Tick(bool visible, int frame, float time) {
+            if (ShouldYield != null && ShouldYield()) {
+                YieldedTicks++;
+                return;
+            }
+
             if (_store == null || _capturer == null || !_capturer.CanCapture) return;
 
             _capturer.Tick(time);
@@ -121,11 +141,15 @@ namespace AlpineLib.Maps {
 
             float budget = visible ? VisibleBudgetMilliseconds : HiddenBudgetMilliseconds;
             int maxCaptures = visible ? VisibleCapturesPerTick : HiddenCapturesPerTick;
-            if (ShouldResort(time)) RebuildPending(time);
+            using (TickMarker.Auto()) {
+                if (ShouldResort(time)) {
+                    using (ResortMarker.Auto()) RebuildPending(time);
+                }
 
-            _stopwatch.Restart();
-            StartJobs(maxCaptures);
-            StepJobs(budget, maxCaptures, time);
+                _stopwatch.Restart();
+                StartJobs(maxCaptures);
+                StepJobs(budget, maxCaptures, time);
+            }
         }
 
         /// <summary>Disposes the jobs in progress.</summary>
@@ -236,15 +260,24 @@ namespace AlpineLib.Maps {
                 if (remaining <= 0f) return;
 
                 IMapBakeJob job = _active[index];
-                MapBakeJobStatus status = StepJob(job, remaining);
+                MapBakeJobStatus status;
+                using (StepMarker.Auto()) status = StepJob(job, remaining);
                 if (status == MapBakeJobStatus.Working) continue;
-                if (status == MapBakeJobStatus.Ready && captures >= maxCaptures) continue;
+                if (status == MapBakeJobStatus.Ready && !CanCaptureNow(captures, maxCaptures, budget)) continue;
 
-                if (status == MapBakeJobStatus.Ready) captures += CaptureJob(job, time) ? 1 : 0;
+                if (status == MapBakeJobStatus.Ready) {
+                    using (CaptureMarker.Auto()) captures += CaptureJob(job, time) ? 1 : 0;
+                }
+
                 DisposeJob(job);
                 _active.RemoveAt(index);
                 index--;
             }
+        }
+
+        // A ready job whose build used up this tick's budget is captured on a later tick rather than on top of it.
+        private bool CanCaptureNow(int captures, int maxCaptures, float budget) {
+            return captures < maxCaptures && _stopwatch.Elapsed.TotalMilliseconds < budget;
         }
 
         // A job that throws fails: it is dropped and its cell retried later, never stepped again.
