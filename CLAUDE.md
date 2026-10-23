@@ -19,6 +19,16 @@ Core reusable library for genre-agnostic Unity game development. Provides reusab
 - **Naming** — descriptive variables; expand lambda/LINQ params (`(t)` → `(task)`) and loop counters (`index` not `i`).
 - **Inline functions** — single-statement lambdas may be inlined; multi-statement handlers must be extracted to a named method.
 
+## Atlas Tracking
+
+- Atlas (MCP) is the task tracker, not Linear. Library work is tracked under the consuming game's project (currently **Project All Aboard!**, keys `PAA-n`, workspace **Flux Games**).
+- **Structure.** One task per feature under its area task. Add subtasks only where the feature splits into reviewable packages; an alpinelib package is one subtask of the game's feature task (for example `alpinelib map module`). A feedback round is a single subtask under the feature, never a new feature.
+- **Titles.** Plain and brief. Name the thing. No `WP-A` or `Round n` prefixes and no ticket ids.
+- **Descriptions.** High-level outcome only. State what the task delivers in one to three sentences, favouring concision over grammar. When closing, rewrite the description as the delivered outcome. Never include implementation detail.
+- **Comments.** Post only at logical stops: a review stop (media plus one short note), the close-out (final commits, user test list, residuals) and the sign-off. Put numbers in a short table or on one line.
+- **Media.** Attach to the task at the stop the user needs to review. Keep it few, relevant and unambiguously named. Use a GIF for a short show-off and an MP4 for a longer or detailed walkthrough. Attach nothing for packages with no visual output.
+- **Status.** In Progress when work starts. Done when gates pass and the description reads as an outcome. The parent task is Done only after the user signs off.
+
 ## Netcode Roadmap
 
 - **Server-side collision (exists)**: `Netcode/Collision/` carries a real, engine-free collision world — planes, boxes, spheres and capsules in a 2m XZ grid, plus translation-only movers whose pose is a pure function of the sim tick. Scenes are authored in Unity (`NetStaticGeometry`, `NetMover`), baked by `AlpineLib/Editor/Export Scene Geometry` into a `.geo` blob the dedicated server loads from `config/geometry/` and a `SceneGeometryAsset` the client resolves through a `SceneGeometryRegistry`. Both ends step the same `PawnMotor` against the same bytes, so the simulation owns Y: ramps, walls, step-ups and platform rides all resolve identically on server and predicting client.
