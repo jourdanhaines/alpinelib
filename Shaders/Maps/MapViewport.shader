@@ -1,6 +1,7 @@
 // Map viewport: draws baked cell tiles from three Texture2DArray levels through a toroidal
 // cell -> slice indirection texture. UI-Default skeleton (stencil, RectMask2D clip rect, alpha clip,
-// vertex colour); _MAP_CIRCLE clips to the inscribed circle for a round minimap.
+// vertex colour); _MAP_CIRCLE clips to the inscribed circle for a round minimap. Cells with no
+// resident tile at any level draw opaque black.
 Shader "AlpineLib/UI/MapViewport" {
     Properties {
         [PerRendererData] _MainTex ("Sprite Texture", 2D) = "white" {}
@@ -144,7 +145,7 @@ Shader "AlpineLib/UI/MapViewport" {
                 float2 uv = cells - cellOffset;
                 // Cells outside the indirection window would alias onto another cell's texel.
                 float2 inWindow = cellOffset - _WindowMin.xy;
-                if (any(inWindow < 0) || any(inWindow >= _WindowSize)) return half4(0, 0, 0, 0);
+                if (any(inWindow < 0) || any(inWindow >= _WindowSize)) return half4(0, 0, 0, 1);
 
                 float2 index = fmod(fmod(_CentreIdx.xy + cellOffset, _WindowSize) + _WindowSize, _WindowSize);
                 float4 entry = tex2Dlod(_Indirection, float4((index + 0.5) / _WindowSize, 0, 0));
@@ -156,7 +157,7 @@ Shader "AlpineLib/UI/MapViewport" {
                     if (slicePlusOne > 0.5) return SampleTile(level, slicePlusOne - 1, uv);
                 }
 
-                return half4(0, 0, 0, 0);
+                return half4(0, 0, 0, 1);
             }
 
             fixed4 Frag(Varyings input) : SV_Target {

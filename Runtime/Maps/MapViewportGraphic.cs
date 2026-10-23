@@ -9,7 +9,7 @@ namespace AlpineLib.Maps {
     /// rect, picks the tile level for the zoom, requests the visible cells from the <see cref="MapTileStore"/>,
     /// refreshes its <see cref="MapIndirection"/> and feeds the <c>AlpineLib/UI/MapViewport</c> shader.
     /// Uses its own copy of the base material, so several viewports (page map, minimap) can coexist.
-    /// Cells without a tile draw transparent, letting whatever is behind show through.
+    /// Cells without a tile at any level draw opaque black (the unexplored world).
     /// </summary>
     [RequireComponent(typeof(CanvasRenderer))]
     public class MapViewportGraphic : MaskableGraphic {
@@ -114,7 +114,7 @@ namespace AlpineLib.Maps {
 
         /// <summary>
         /// <paramref name="visible"/> trimmed about its centre to at most <paramref name="windowSize"/>
-        /// cells a side; the shader leaves cells outside the window transparent rather than aliasing them.
+        /// cells a side; the shader paints cells outside the window black rather than aliasing them.
         /// </summary>
         public static GridRect ClampToWindow(GridRect visible, int windowSize) {
             int width = Mathf.Min(visible.Width, windowSize);
