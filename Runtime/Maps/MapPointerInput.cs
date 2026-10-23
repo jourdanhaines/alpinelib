@@ -21,6 +21,7 @@ namespace AlpineLib.Maps {
 
         private Vector2 _lastPoint;
         private bool _dragging;
+        private bool _lastClickDragged;
 
         /// <summary>Raised on a double click, with the viewport point clicked.</summary>
         public event Action<Vector2> DoubleClicked;
@@ -73,8 +74,11 @@ namespace AlpineLib.Maps {
             View()?.ZoomAbout(point, ZoomFactor(eventData.scrollDelta.y, zoomStep, scrollPerNotch));
         }
 
+        // A drag's release still counts as a click, so a quick click after a drag would read as a double click.
         public void OnPointerClick(PointerEventData eventData) {
-            if (eventData.dragging || eventData.clickCount != 2) return;
+            bool afterDrag = _lastClickDragged;
+            _lastClickDragged = eventData.dragging;
+            if (eventData.dragging || afterDrag || eventData.clickCount != 2) return;
             if (!TryGetPoint(eventData, out Vector2 point)) return;
 
             DoubleClicked?.Invoke(point);
