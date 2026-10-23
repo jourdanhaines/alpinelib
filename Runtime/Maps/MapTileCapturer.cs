@@ -8,11 +8,11 @@ namespace AlpineLib.Maps {
     /// <summary>
     /// Renders a cell's <see cref="TopDownCaptureArea"/> into a square MSAA target under literal lighting,
     /// resolves it into a mipped sRGB texture and hands that to an <see cref="IMapTileSink"/>. The targets
-    /// (≈ 38 MiB at 1024² MSAA 4) are created on demand and released after <see cref="IdleReleaseSeconds"/>
-    /// without a capture. Does nothing on a null graphics device.
+    /// (≈ 38 MiB at 1024² MSAA 4) are created on demand and released after <see cref="IdleRelease"/>
+    /// seconds without a capture. Does nothing on a null graphics device.
     /// </summary>
     public sealed class MapTileCapturer : IDisposable {
-        /// <summary>Seconds without a capture before the targets are released.</summary>
+        /// <summary>Default seconds without a capture before the targets are released.</summary>
         public const float IdleReleaseSeconds = 5f;
 
         private readonly int _size;
@@ -28,6 +28,9 @@ namespace AlpineLib.Maps {
             _msaaSamples = Mathf.Max(1, msaaSamples);
             CullingMask = cullingMask;
         }
+
+        /// <summary>Seconds without a capture before the targets are released; re-creating them costs a frame hitch.</summary>
+        public float IdleRelease { get; set; } = IdleReleaseSeconds;
 
         /// <summary>Layers captured.</summary>
         public int CullingMask { get; set; }
@@ -64,9 +67,9 @@ namespace AlpineLib.Maps {
             return true;
         }
 
-        /// <summary>Releases the targets once idle for <see cref="IdleReleaseSeconds"/>.</summary>
+        /// <summary>Releases the targets once idle for <see cref="IdleRelease"/> seconds.</summary>
         public void Tick(float time) {
-            if (_resolved == null || time - _lastCaptureTime < IdleReleaseSeconds) return;
+            if (_resolved == null || time - _lastCaptureTime < IdleRelease) return;
 
             ReleaseTargets();
         }

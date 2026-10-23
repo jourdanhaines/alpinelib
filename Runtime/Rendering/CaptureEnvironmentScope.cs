@@ -7,7 +7,7 @@ using Object = UnityEngine.Object;
 namespace AlpineLib.Rendering {
     /// <summary>
     /// Swaps the global render environment for a capture and restores it on dispose: fog off, flat
-    /// ambient (colour and probe), the scene's directional lights off and an optional key light on.
+    /// ambient (colour and probe), every scene light off (point and spot lamps too) and an optional key light on.
     /// Captures run between frames, so the main view never sees the swap.
     /// </summary>
     public sealed class CaptureEnvironmentScope : IDisposable {
@@ -35,7 +35,7 @@ namespace AlpineLib.Rendering {
             probe.AddAmbientLight(lighting.Ambient.linear);
             RenderSettings.ambientProbe = probe;
 
-            DisableDirectionalLights();
+            DisableSceneLights();
             if (lighting.HasKey) _keyLight = CreateKeyLight(lighting, camera);
         }
 
@@ -56,9 +56,9 @@ namespace AlpineLib.Rendering {
             _keyLight = null;
         }
 
-        private void DisableDirectionalLights() {
+        private void DisableSceneLights() {
             foreach (Light light in Object.FindObjectsByType<Light>(FindObjectsSortMode.None)) {
-                if (!light.enabled || light.type != LightType.Directional) continue;
+                if (!light.enabled) continue;
 
                 light.enabled = false;
                 _disabledLights.Add(light);
