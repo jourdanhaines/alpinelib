@@ -42,6 +42,9 @@ namespace AlpineLib.Animation.Procedural {
         private Actor _actor;
         private Transform _actorRoot;
 
+        /// <summary>How far above the last bone of the chain the eye sits, in metres.</summary>
+        public float EyeAboveHead => eyeAboveHead;
+
         /// <inheritdoc />
         public override void Bind(Transform actorRoot, PoseBones bones) {
             _actor = GetComponent<Actor>();

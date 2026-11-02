@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using AlpineLib.Animation.Bones;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -8,7 +9,8 @@ namespace AlpineLib.Editor {
     /// <summary>
     /// Batch mode asset integrity check. Scans every prefab, ScriptableObject asset and build scene
     /// in the project and in the AlpineLib package for components whose script reference no longer
-    /// resolves, plus a table of hand picked serialized references that must never be left empty.
+    /// resolves, plus a table of hand picked serialized references that must never be left empty
+    /// and every <see cref="BoneMap"/> whose rows do not resolve.
     /// Intended to be driven from a build gate:
     /// <c>-batchmode -quit -executeMethod AlpineLib.Editor.AssetValidator.ValidateAll</c>.
     /// </summary>
@@ -136,8 +138,19 @@ namespace AlpineLib.Editor {
                 foreach (var component in gameObject.GetComponents<Component>()) {
                     if (component == null) continue;
 
-                    ValidateCriticalFields(component, $"{assetPath} ({GetHierarchyPath(childTransform)})", failures);
+                    var location = $"{assetPath} ({GetHierarchyPath(childTransform)})";
+                    ValidateCriticalFields(component, location, failures);
+                    if (component is BoneMap boneMap) ValidateBoneMap(boneMap, location, failures);
                 }
+            }
+        }
+
+        private static void ValidateBoneMap(BoneMap boneMap, string location, List<string> failures) {
+            var problems = new List<string>();
+            if (boneMap.Validate(problems)) return;
+
+            foreach (var problem in problems) {
+                failures.Add($"{location}: BoneMap {problem}");
             }
         }
 

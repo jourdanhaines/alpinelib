@@ -1,4 +1,5 @@
 using System;
+using AlpineLib.Animation.Bones;
 using UnityEngine;
 
 namespace AlpineLib.Perception {
@@ -7,10 +8,9 @@ namespace AlpineLib.Perception {
     /// animation events, so it works with any clip set without authoring per-clip events.
     /// </summary>
     /// <remarks>
-    /// Requires a humanoid avatar: the toe bones are resolved through
-    /// <c>Animator.GetBoneTransform</c>, so generic rigs need a different implementation. Ground
-    /// height is taken from this transform's Y each frame, which assumes the actor is standing on
-    /// roughly level ground beneath its own origin.
+    /// Toe bones come from the humanoid avatar or a <see cref="BoneMap"/>; a mapped generic rig without
+    /// toes falls back to its foot bones. Ground height is taken from this transform's Y each frame,
+    /// which assumes the actor is standing on roughly level ground beneath its own origin.
     /// </remarks>
     public class NoiseEmitterFootstep : MonoBehaviour {
         [SerializeField] private float groundThreshold = 0.1f;
@@ -39,8 +39,17 @@ namespace AlpineLib.Perception {
 
         private void Start() {
             _animator = GetComponentInChildren<Animator>();
-            _leftFoot = _animator.GetBoneTransform(HumanBodyBones.LeftToes);
-            _rightFoot = _animator.GetBoneTransform(HumanBodyBones.RightToes);
+            _leftFoot = FindFoot(HumanBodyBones.LeftToes, HumanBodyBones.LeftFoot);
+            _rightFoot = FindFoot(HumanBodyBones.RightToes, HumanBodyBones.RightFoot);
+        }
+
+        // Humanoid rigs keep toes-only detection; only a mapped generic rig falls back to the foot.
+        private Transform FindFoot(HumanBodyBones toes, HumanBodyBones foot) {
+            BoneMap map = BoneResolver.FindMap(_animator);
+            Transform found = BoneResolver.Find(_animator, map, toes);
+            if (found != null || map == null) return found;
+
+            return BoneResolver.Find(_animator, map, foot);
         }
 
         private void Update() {

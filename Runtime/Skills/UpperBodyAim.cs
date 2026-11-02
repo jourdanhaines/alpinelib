@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using AlpineLib.Animation.Bones;
 using UnityEngine;
 
 namespace AlpineLib.Skills {
@@ -64,11 +65,11 @@ namespace AlpineLib.Skills {
         }
 
         /// <summary>
-        /// Resolves the spine chain from the humanoid avatar. UpperChest is optional on many rigs, so
+        /// Resolves the spine chain from the humanoid avatar or bone map. UpperChest is optional on many rigs, so
         /// whatever subset exists shares the corrective twist between them.
         /// </summary>
         private void CacheSpineBones() {
-            if (_animator == null || !_animator.isHuman) return;
+            if (!BoneResolver.HasSkeleton(_animator)) return;
 
             AddBoneIfPresent(HumanBodyBones.Spine);
             AddBoneIfPresent(HumanBodyBones.Chest);
@@ -76,7 +77,7 @@ namespace AlpineLib.Skills {
         }
 
         private void AddBoneIfPresent(HumanBodyBones bone) {
-            Transform boneTransform = _animator.GetBoneTransform(bone);
+            Transform boneTransform = BoneResolver.Find(_animator, bone);
             if (boneTransform == null) return;
 
             _spineBones.Add(boneTransform);

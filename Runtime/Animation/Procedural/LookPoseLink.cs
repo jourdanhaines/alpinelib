@@ -7,7 +7,7 @@ namespace AlpineLib.Animation.Procedural {
     /// </summary>
     [Serializable]
     public struct LookPoseLink {
-        [Tooltip("Bone that bends. One the avatar does not map hands its share to the next link.")]
+        [Tooltip("Bone that bends (humanoid or mapped bone). One the body does not provide hands its share to the next link.")]
         public HumanBodyBones bone;
 
         [Tooltip("Fraction of a downward look this bone takes.")]

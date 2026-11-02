@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using AlpineLib.Animation.Bones;
 using Unity.Collections;
 using UnityEngine;
 
@@ -113,10 +114,12 @@ namespace AlpineLib.Equipment {
 
         private bool ResolveBones() {
             _boneTransforms.Clear();
-            if (!_animator.isHuman) return false;
+            if (!BoneResolver.HasSkeleton(_animator)) return false;
+
+            BoneMap map = BoneResolver.FindMap(_animator);
 
             foreach (HumanBodyBones bone in _bones) {
-                Transform transform = _animator.GetBoneTransform(bone);
+                Transform transform = BoneResolver.Find(_animator, map, bone);
                 if (transform != null) _boneTransforms.Add(transform);
             }
 

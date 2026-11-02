@@ -1,9 +1,11 @@
+using System;
 using System.Collections.Generic;
+using AlpineLib.Animation.Bones;
 using UnityEngine;
 
 namespace AlpineLib.Animation.Procedural {
     /// <summary>
-    /// The humanoid skeleton as pose modifiers see it: bones by name, and additive writes that stay
+    /// The skeleton as pose modifiers see it (humanoid avatar or <see cref="BoneMap"/>): bones by name, and additive writes that stay
     /// additive.
     /// </summary>
     /// <remarks>
@@ -15,6 +17,7 @@ namespace AlpineLib.Animation.Procedural {
     /// </remarks>
     public class PoseBones {
         private readonly Animator _animator;
+        private readonly BoneMap _map;
         private readonly Dictionary<HumanBodyBones, Transform> _bones = new Dictionary<HumanBodyBones, Transform>();
         private readonly List<Transform> _touched = new List<Transform>();
         private readonly Dictionary<Transform, Quaternion> _animated = new Dictionary<Transform, Quaternion>();
@@ -22,16 +25,21 @@ namespace AlpineLib.Animation.Procedural {
 
         public PoseBones(Animator animator) {
             _animator = animator;
+            _map = BoneResolver.FindMap(animator);
         }
 
-        /// <summary>True when the animator has a humanoid avatar to resolve bones against.</summary>
-        public bool IsHumanoid => _animator != null && _animator.isHuman;
+        /// <summary>True when bones can be resolved: a humanoid avatar or a bone map.</summary>
+        public bool HasSkeleton => _animator != null && (_animator.isHuman || _map != null);
 
-        /// <summary>The bone's transform, or null when the avatar does not map it.</summary>
+        /// <summary>Kept for existing callers; true for a mapped generic rig too.</summary>
+        [Obsolete("Use HasSkeleton; a mapped generic rig also resolves bones.")]
+        public bool IsHumanoid => HasSkeleton;
+
+        /// <summary>The bone's transform, or null when neither the map nor the avatar provides it.</summary>
         public Transform Find(HumanBodyBones bone) {
             if (_bones.TryGetValue(bone, out Transform cached)) return cached;
 
-            Transform found = IsHumanoid ? _animator.GetBoneTransform(bone) : null;
+            Transform found = BoneResolver.Find(_animator, _map, bone);
             _bones[bone] = found;
             return found;
         }

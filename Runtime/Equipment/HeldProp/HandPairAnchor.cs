@@ -1,8 +1,9 @@
+using AlpineLib.Animation.Bones;
 using UnityEngine;
 
 namespace AlpineLib.Equipment {
     /// <summary>
-    /// Poses a held prop between two humanoid hand bones by matching grip frames: a pinch frame on each
+    /// Poses a held prop between two hand bones (humanoid or bone-mapped) by matching grip frames: a pinch frame on each
     /// hand (hand-bone local) meets a grip frame on the prop (prop-root local).
     /// </summary>
     /// <remarks>
@@ -20,7 +21,7 @@ namespace AlpineLib.Equipment {
         private const float MinimumLengthSquared = 1e-8f;
         private const float AnimatorRetrySeconds = 1f;
 
-        [Tooltip("Humanoid animator the hands are read from; found in children when left empty.")]
+        [Tooltip("Animator the hands are read from (humanoid or bone-mapped); found in children when left empty.")]
         [SerializeField] private Animator animator;
 
         [SerializeField] private HumanBodyBones leftHandBone = HumanBodyBones.LeftHand;
@@ -57,10 +58,10 @@ namespace AlpineLib.Equipment {
         /// </summary>
         public float LastResidual { get; private set; }
 
-        /// <summary>The left hand bone, or null while no humanoid animator is available.</summary>
+        /// <summary>The left hand bone, or null while no animator with a skeleton is available.</summary>
         public Transform LeftHand => ResolveHands() ? _leftHand : null;
 
-        /// <summary>The right hand bone, or null while no humanoid animator is available.</summary>
+        /// <summary>The right hand bone, or null while no animator with a skeleton is available.</summary>
         public Transform RightHand => ResolveHands() ? _rightHand : null;
 
         /// <summary>Points the anchor at <paramref name="target"/>'s hands, e.g. after the body is rebuilt.</summary>
@@ -178,8 +179,9 @@ namespace AlpineLib.Equipment {
             if (_leftHand != null && _rightHand != null) return true;
             if (!ResolveAnimator()) return false;
 
-            _leftHand = animator.GetBoneTransform(leftHandBone);
-            _rightHand = animator.GetBoneTransform(rightHandBone);
+            BoneMap map = BoneResolver.FindMap(animator);
+            _leftHand = BoneResolver.Find(animator, map, leftHandBone);
+            _rightHand = BoneResolver.Find(animator, map, rightHandBone);
             return _leftHand != null && _rightHand != null;
         }
 
@@ -192,7 +194,7 @@ namespace AlpineLib.Equipment {
                 animator = GetComponentInChildren<Animator>();
             }
 
-            return animator != null && animator.isInitialized && animator.isHuman;
+            return animator != null && animator.isInitialized && BoneResolver.HasSkeleton(animator);
         }
     }
 }

@@ -8,7 +8,8 @@ namespace AlpineLib.Actors {
     /// the motor then syncs physics transforms, steps, reparents and writes the render pose — all
     /// before the camera rigs' <c>LateUpdate</c> and before the networking pawn drivers at 50 sample it.
     /// In <c>LateUpdate</c>, once the animator has posed the skeleton and the actor has written its
-    /// parameters, <see cref="PoseModifiers"/> lays procedural motion over the result.
+    /// parameters, <see cref="PoseModifiers"/> lays procedural motion over the result, and
+    /// <see cref="BlendShapeDrivers"/> then read the finished bones.
     /// </remarks>
     public static class ActorExecutionOrder {
         /// <summary>The actor's fixed-step motor: after every default-order brain, before carriers publish.</summary>
@@ -16,5 +17,8 @@ namespace AlpineLib.Actors {
 
         /// <summary>Procedural bone writes: after the actor's own <c>LateUpdate</c>, over the animated pose.</summary>
         public const int PoseModifiers = 20;
+
+        /// <summary>Corrective blendshapes read from final bone angles: after the pose modifiers.</summary>
+        public const int BlendShapeDrivers = 30;
     }
 }

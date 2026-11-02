@@ -35,7 +35,7 @@ namespace AlpineLib.Animation.Procedural {
         public void Apply(float deltaTime) {
             Bind();
 
-            if (!_isBound || !_bones.IsHumanoid) return;
+            if (!_isBound || !_bones.HasSkeleton) return;
 
             _bones.BeginFrame();
 
@@ -65,7 +65,7 @@ namespace AlpineLib.Animation.Procedural {
             _isBound = true;
             _bones = new PoseBones(animator);
 
-            if (!_bones.IsHumanoid) return;
+            if (!_bones.HasSkeleton) return;
 
             GetComponentsInChildren(true, _modifiers);
             _modifiers.Sort(CompareOrder);
