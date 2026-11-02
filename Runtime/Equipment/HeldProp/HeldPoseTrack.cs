@@ -19,6 +19,12 @@ namespace AlpineLib.Equipment {
         [Tooltip("View pitch, in degrees, the clips were authored for.")]
         [SerializeField] private float viewPitchDegrees;
 
+        [Tooltip("Vertical field of view, in degrees, a first-person camera zooms to while the prop is held; 0 for no zoom.")]
+        [SerializeField] private float viewFovDegrees;
+
+        [Tooltip("Rotation the carrier bone is steadied at while held, relative to the holder's root (the pose the clips were authored on); identity for none.")]
+        [SerializeField] private Quaternion carrierSteadyRotation = Quaternion.identity;
+
         [Tooltip("Bone the poses are relative to.")]
         [SerializeField] private HumanBodyBones carrierBone = HumanBodyBones.Spine;
 
@@ -26,6 +32,11 @@ namespace AlpineLib.Equipment {
 
         public float HeldScale => heldScale;
         public float ViewPitchDegrees => viewPitchDegrees;
+        public float ViewFovDegrees => viewFovDegrees;
+        public Quaternion CarrierSteadyRotation => carrierSteadyRotation;
+
+        /// <summary>True when the track names a steady pose for the carrier bone.</summary>
+        public bool HasCarrierSteady => carrierSteadyRotation != Quaternion.identity;
         public HumanBodyBones CarrierBone => carrierBone;
         public IReadOnlyList<HeldPoseTrackClip> Clips => clips ?? new HeldPoseTrackClip[0];
 
@@ -34,6 +45,17 @@ namespace AlpineLib.Equipment {
             heldScale = scale;
             viewPitchDegrees = pitchDegrees;
             carrierBone = bone;
+        }
+
+        /// <summary>As <see cref="Configure(float, float, HumanBodyBones)"/>, plus the held view's field of view (0 for no zoom).</summary>
+        public void Configure(float scale, float pitchDegrees, HumanBodyBones bone, float fovDegrees) {
+            Configure(scale, pitchDegrees, bone);
+            viewFovDegrees = Mathf.Max(fovDegrees, 0f);
+        }
+
+        /// <summary>Sets the carrier bone's steady rotation relative to the holder's root (identity for none), e.g. from a baker.</summary>
+        public void SetCarrierSteady(Quaternion rootRotation) {
+            carrierSteadyRotation = rootRotation.normalized;
         }
 
         /// <summary>Replaces every clip, e.g. from a baker.</summary>

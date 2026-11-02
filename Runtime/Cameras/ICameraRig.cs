@@ -71,6 +71,16 @@ namespace AlpineLib.Cameras {
         void CancelPitchNudge();
 
         /// <summary>
+        /// Turns the published camera (not <see cref="Pitch"/>) in pitch onto <paramref name="target"/> each frame,
+        /// easing in over <paramref name="blendSeconds"/>, e.g. keeping a held prop centred while the body bobs.
+        /// A rig with no such aim ignores it.
+        /// </summary>
+        void SetViewAim(Transform target, float blendSeconds);
+
+        /// <summary>Eases a view aim back out over <paramref name="blendSeconds"/>; nothing when none is set.</summary>
+        void ClearViewAim(float blendSeconds);
+
+        /// <summary>
         /// Queues a look delta in degrees — X yaws, positive Y looks up. Deltas accumulate across the
         /// frame and are consumed once in <c>LateUpdate</c>.
         /// </summary>

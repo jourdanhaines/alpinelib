@@ -30,6 +30,9 @@ namespace AlpineLib.Cameras {
     /// <see cref="AddLookInput"/> and accumulate until the next <c>LateUpdate</c> consumes them, and
     /// <see cref="PlanarForward"/>/<see cref="PlanarRight"/> stay yaw-only so movement never tilts into
     /// or out of the ground with the aim.
+    ///
+    /// A view aim (<see cref="SetViewAim"/>) adds a camera-only pitch onto a target point to the published
+    /// anchor; <see cref="Pitch"/>, the eye offset, nudges and the clamp all keep using the rig's own pitch.
     /// </remarks>
     public class FirstPersonCameraRig : MonoBehaviour, ICameraRig, IOriginShiftListener {
         [Header("Target")]
@@ -75,6 +78,23 @@ namespace AlpineLib.Cameras {
         private float _lookGain = 1f;
         private readonly PitchNudge _nudge = new PitchNudge();
         private float _nudgeApplied;
+        private readonly ViewAim _viewAim = new ViewAim();
+        private float _viewAimDegrees;
+
+        /// <summary>Camera-only pitch the view aim adds to the published anchor this frame, in degrees (positive down).</summary>
+        public float ViewAimDegrees => _viewAimDegrees;
+
+        /// <inheritdoc />
+        public void SetViewAim(Transform target, float blendSeconds) {
+            _viewAim.Set(target, blendSeconds);
+            if (blendSeconds <= 0f) StepViewAim(0f);
+        }
+
+        /// <inheritdoc />
+        public void ClearViewAim(float blendSeconds) {
+            _viewAim.Clear(blendSeconds);
+            if (blendSeconds <= 0f) StepViewAim(0f);
+        }
 
         /// <inheritdoc />
         public float PitchNudgeApplied => _nudgeApplied;
@@ -157,6 +177,7 @@ namespace AlpineLib.Cameras {
             if (_target == null) return;
 
             ApplyEyePose();
+            StepViewAim(0f);
             PositionAnchor();
         }
 
@@ -185,6 +206,7 @@ namespace AlpineLib.Cameras {
             if (_target == null) return;
 
             ApplyEyePose();
+            StepViewAim(Time.deltaTime);
             PositionAnchor();
         }
 
@@ -275,7 +297,21 @@ namespace AlpineLib.Cameras {
         private void PositionAnchor() {
             if (cameraAnchor == null) return;
 
-            cameraAnchor.SetPositionAndRotation(transform.position, transform.rotation);
+            cameraAnchor.SetPositionAndRotation(transform.position, Quaternion.Euler(_pitch + _viewAimDegrees, Yaw, 0f));
+        }
+
+        private void StepViewAim(float deltaTime) {
+            _viewAimDegrees = _viewAim.Step(deltaTime, DesiredViewAim());
+        }
+
+        /// <summary>Signed pitch from the rig's own view axis to the aim target, in the yaw plane (positive down).</summary>
+        private float DesiredViewAim() {
+            Transform target = _viewAim.Target;
+            if (target == null) return 0f;
+
+            Vector3 local = Quaternion.Inverse(Quaternion.Euler(0f, Yaw, 0f)) * (target.position - transform.position);
+            float targetPitch = Mathf.Atan2(-local.y, local.z) * Mathf.Rad2Deg;
+            return Mathf.DeltaAngle(_pitch, targetPitch);
         }
 
         private void ResolveCameraAnchor() {

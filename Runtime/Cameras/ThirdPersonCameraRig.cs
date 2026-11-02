@@ -158,6 +158,15 @@ namespace AlpineLib.Cameras {
         /// second parameter is optional would leave that default unreachable. Interface callers get the
         /// snapping default, and every existing call site keeps the signature it was written against.
         /// </remarks>
+        /// <inheritdoc />
+        /// <remarks>The orbit frames the target itself, so a camera-only aim has no meaning here.</remarks>
+        public void SetViewAim(Transform target, float blendSeconds) {
+        }
+
+        /// <inheritdoc />
+        public void ClearViewAim(float blendSeconds) {
+        }
+
         void ICameraRig.SetTarget(Transform target) {
             SetTarget(target);
         }
