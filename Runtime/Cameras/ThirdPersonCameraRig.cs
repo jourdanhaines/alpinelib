@@ -159,8 +159,9 @@ namespace AlpineLib.Cameras {
         /// snapping default, and every existing call site keeps the signature it was written against.
         /// </remarks>
         /// <inheritdoc />
-        /// <remarks>The orbit frames the target itself, so a camera-only aim has no meaning here.</remarks>
-        public void SetViewAim(Transform target, float blendSeconds) {
+        /// <remarks>The orbit frames the target itself, so a camera-only aim has no meaning here; always false.</remarks>
+        public bool SetViewAim(Transform target, float blendSeconds) {
+            return false;
         }
 
         /// <inheritdoc />

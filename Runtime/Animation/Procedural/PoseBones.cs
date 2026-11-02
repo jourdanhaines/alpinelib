@@ -9,11 +9,11 @@ namespace AlpineLib.Animation.Procedural {
     /// additive.
     /// </summary>
     /// <remarks>
-    /// Procedural rotation is applied on top of whatever the animator wrote this frame. An animator
-    /// that is culled writes nothing, and a layer that kept adding to its own output would wind a bone
-    /// round a little further every frame. Each touched bone therefore remembers the animated rotation
-    /// it started from and the rotation it was left with: a bone found exactly as it was left was not
-    /// re-animated, and is put back to its animated rotation before anything is added again.
+    /// Procedural rotation and position are applied on top of whatever the animator wrote this frame. An
+    /// animator that is culled writes nothing, and a layer that kept adding to its own output would wind a
+    /// bone round (or drift it) a little further every frame. Each touched bone therefore remembers the
+    /// animated local pose it started from and the pose it was left with: a bone found exactly as it was
+    /// left was not re-animated, and is put back to its animated pose before anything is added again.
     /// </remarks>
     public class PoseBones {
         private readonly Animator _animator;
@@ -22,6 +22,8 @@ namespace AlpineLib.Animation.Procedural {
         private readonly List<Transform> _touched = new List<Transform>();
         private readonly Dictionary<Transform, Quaternion> _animated = new Dictionary<Transform, Quaternion>();
         private readonly Dictionary<Transform, Quaternion> _written = new Dictionary<Transform, Quaternion>();
+        private readonly Dictionary<Transform, Vector3> _animatedPosition = new Dictionary<Transform, Vector3>();
+        private readonly Dictionary<Transform, Vector3> _writtenPosition = new Dictionary<Transform, Vector3>();
 
         public PoseBones(Animator animator) {
             _animator = animator;
@@ -69,10 +71,19 @@ namespace AlpineLib.Animation.Procedural {
             bone.rotation = worldRotation;
         }
 
+        /// <summary>Sets a bone's world position outright, replacing whatever earlier layers moved it by.</summary>
+        public void MoveWorldTo(Transform bone, Vector3 worldPosition) {
+            if (bone == null) return;
+
+            Track(bone);
+            bone.position = worldPosition;
+        }
+
         /// <summary>Closes the frame, remembering what each touched bone was left with.</summary>
         public void EndFrame() {
             foreach (Transform bone in _touched) {
                 _written[bone] = bone.localRotation;
+                _writtenPosition[bone] = bone.localPosition;
             }
         }
 
@@ -81,13 +92,20 @@ namespace AlpineLib.Animation.Procedural {
 
             _touched.Add(bone);
             _animated[bone] = bone.localRotation;
+            _animatedPosition[bone] = bone.localPosition;
         }
 
         private void RebaseBone(Transform bone) {
             if (bone == null) return;
 
-            // Exact comparison on purpose: Unity's == calls two rotations a hair apart equal, which
-            // would mistake a barely moving animated bone for one the animator skipped.
+            RebaseRotation(bone);
+            RebasePosition(bone);
+        }
+
+        // Exact comparisons on purpose: Unity's == calls two values a hair apart equal, which would
+        // mistake a barely moving animated bone for one the animator skipped. Rotation and position are
+        // judged apart, since a rig may animate one channel of a bone and leave the other alone.
+        private void RebaseRotation(Transform bone) {
             bool wasReanimated = !_written.TryGetValue(bone, out Quaternion written) || !bone.localRotation.Equals(written);
 
             if (wasReanimated) {
@@ -96,6 +114,17 @@ namespace AlpineLib.Animation.Procedural {
             }
 
             bone.localRotation = _animated[bone];
+        }
+
+        private void RebasePosition(Transform bone) {
+            bool wasReanimated = !_writtenPosition.TryGetValue(bone, out Vector3 written) || !bone.localPosition.Equals(written);
+
+            if (wasReanimated) {
+                _animatedPosition[bone] = bone.localPosition;
+                return;
+            }
+
+            bone.localPosition = _animatedPosition[bone];
         }
     }
 }

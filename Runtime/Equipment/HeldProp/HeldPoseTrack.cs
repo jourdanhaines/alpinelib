@@ -25,6 +25,12 @@ namespace AlpineLib.Equipment {
         [Tooltip("Rotation the carrier bone is steadied at while held, relative to the holder's root (the pose the clips were authored on); identity for none.")]
         [SerializeField] private Quaternion carrierSteadyRotation = Quaternion.identity;
 
+        [Tooltip("Position the carrier bone is steadied at while held, relative to the holder's root; used when Carrier Steady Has Position is on.")]
+        [SerializeField] private Vector3 carrierSteadyPosition;
+
+        [Tooltip("True when the steady pose pins the carrier's position as well as its rotation.")]
+        [SerializeField] private bool carrierSteadyHasPosition;
+
         [Tooltip("Bone the poses are relative to.")]
         [SerializeField] private HumanBodyBones carrierBone = HumanBodyBones.Spine;
 
@@ -34,6 +40,12 @@ namespace AlpineLib.Equipment {
         public float ViewPitchDegrees => viewPitchDegrees;
         public float ViewFovDegrees => viewFovDegrees;
         public Quaternion CarrierSteadyRotation => carrierSteadyRotation;
+
+        /// <summary>The carrier's steady position relative to the holder's root, when <see cref="HasCarrierSteadyPosition"/>.</summary>
+        public Vector3 CarrierSteadyPosition => carrierSteadyPosition;
+
+        /// <summary>True when the steady pose names a carrier position as well as a rotation.</summary>
+        public bool HasCarrierSteadyPosition => HasCarrierSteady && carrierSteadyHasPosition;
 
         /// <summary>True when the track names a steady pose for the carrier bone.</summary>
         public bool HasCarrierSteady => carrierSteadyRotation != Quaternion.identity;
@@ -56,6 +68,15 @@ namespace AlpineLib.Equipment {
         /// <summary>Sets the carrier bone's steady rotation relative to the holder's root (identity for none), e.g. from a baker.</summary>
         public void SetCarrierSteady(Quaternion rootRotation) {
             carrierSteadyRotation = rootRotation.normalized;
+            carrierSteadyPosition = Vector3.zero;
+            carrierSteadyHasPosition = false;
+        }
+
+        /// <summary>Sets the carrier bone's steady rotation and position relative to the holder's root, e.g. from a baker.</summary>
+        public void SetCarrierSteady(Quaternion rootRotation, Vector3 rootPosition) {
+            carrierSteadyRotation = rootRotation.normalized;
+            carrierSteadyPosition = rootPosition;
+            carrierSteadyHasPosition = true;
         }
 
         /// <summary>Replaces every clip, e.g. from a baker.</summary>

@@ -85,9 +85,10 @@ namespace AlpineLib.Cameras {
         public float ViewAimDegrees => _viewAimDegrees;
 
         /// <inheritdoc />
-        public void SetViewAim(Transform target, float blendSeconds) {
+        public bool SetViewAim(Transform target, float blendSeconds) {
             _viewAim.Set(target, blendSeconds);
             if (blendSeconds <= 0f) StepViewAim(0f);
+            return target != null;
         }
 
         /// <inheritdoc />

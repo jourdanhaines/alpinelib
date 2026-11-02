@@ -73,9 +73,10 @@ namespace AlpineLib.Cameras {
         /// <summary>
         /// Turns the published camera (not <see cref="Pitch"/>) in pitch onto <paramref name="target"/> each frame,
         /// easing in over <paramref name="blendSeconds"/>, e.g. keeping a held prop centred while the body bobs.
-        /// A rig with no such aim ignores it.
+        /// A rig with no such aim ignores it. Returns true when the rig steers toward the target, so a caller
+        /// can tune what the view reads (e.g. steady the prop only for a view that aims at it).
         /// </summary>
-        void SetViewAim(Transform target, float blendSeconds);
+        bool SetViewAim(Transform target, float blendSeconds);
 
         /// <summary>Eases a view aim back out over <paramref name="blendSeconds"/>; nothing when none is set.</summary>
         void ClearViewAim(float blendSeconds);
