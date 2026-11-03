@@ -19,6 +19,7 @@ namespace AlpineLib.Animation.Procedural {
         private readonly Animator _animator;
         private readonly BoneMap _map;
         private readonly Dictionary<HumanBodyBones, Transform> _bones = new Dictionary<HumanBodyBones, Transform>();
+        private readonly Dictionary<string, Transform> _named = new Dictionary<string, Transform>();
         private readonly List<Transform> _touched = new List<Transform>();
         private readonly Dictionary<Transform, Quaternion> _animated = new Dictionary<Transform, Quaternion>();
         private readonly Dictionary<Transform, Quaternion> _written = new Dictionary<Transform, Quaternion>();
@@ -43,6 +44,19 @@ namespace AlpineLib.Animation.Procedural {
 
             Transform found = BoneResolver.Find(_animator, _map, bone);
             _bones[bone] = found;
+            return found;
+        }
+
+        /// <summary>
+        /// The first transform named <paramref name="boneName"/> under the animator (itself included, depth first), for
+        /// bones neither an avatar nor a map names (a tail, a long nose); null when there is none.
+        /// </summary>
+        public Transform FindByName(string boneName) {
+            if (string.IsNullOrEmpty(boneName) || _animator == null) return null;
+            if (_named.TryGetValue(boneName, out Transform cached) && cached != null) return cached;
+
+            Transform found = FindDescendant(_animator.transform, boneName);
+            _named[boneName] = found;
             return found;
         }
 
@@ -85,6 +99,17 @@ namespace AlpineLib.Animation.Procedural {
                 _written[bone] = bone.localRotation;
                 _writtenPosition[bone] = bone.localPosition;
             }
+        }
+
+        private static Transform FindDescendant(Transform parent, string boneName) {
+            if (parent.name == boneName) return parent;
+
+            foreach (Transform child in parent) {
+                Transform found = FindDescendant(child, boneName);
+                if (found != null) return found;
+            }
+
+            return null;
         }
 
         private void Track(Transform bone) {
