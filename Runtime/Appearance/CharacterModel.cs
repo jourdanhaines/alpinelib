@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using AlpineLib.Netcode.Appearance;
 using UnityEngine;
 
 namespace AlpineLib.Appearance {
@@ -43,6 +44,17 @@ namespace AlpineLib.Appearance {
             if (slotIndex < 0 || slotIndex >= SlotCount) return null;
 
             return slots[slotIndex];
+        }
+
+        /// <summary>Bit <c>n</c> set when slot <c>n</c> is required (slots past the wire cap are ignored).</summary>
+        public ushort RequiredSlotMask() {
+            int mask = 0;
+            int count = Mathf.Min(SlotCount, AppearanceOutfit.MaxSlots);
+            for (int index = 0; index < count; index++) {
+                if (slots[index] != null && slots[index].Required) mask |= 1 << index;
+            }
+
+            return (ushort)mask;
         }
 
         /// <summary>Index of the slot keyed <paramref name="slotKey"/>, or -1.</summary>

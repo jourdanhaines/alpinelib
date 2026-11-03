@@ -6,8 +6,9 @@ namespace AlpineLib.Netcode.Appearance {
     /// server, so a request the server accepts is one every client can build.
     /// </summary>
     /// <remarks>
-    /// The model must exist and the outfit must carry exactly its slot count. An empty slot has variant 0;
-    /// a filled slot names a known item made for that slot, allowed on the model, at an existing variant.
+    /// The model must exist and the outfit must carry exactly its slot count. An empty slot has variant 0
+    /// and is not one the model requires; a filled slot names a known item made for that slot, allowed on
+    /// the model, at an existing variant.
     /// </remarks>
     public static class AppearanceRules {
         /// <summary>
@@ -19,7 +20,7 @@ namespace AlpineLib.Netcode.Appearance {
                 throw new ArgumentNullException(nameof(catalog));
             }
 
-            error = CheckModel(outfit, catalog) ?? CheckSlots(outfit, catalog);
+            error = CheckModel(outfit, catalog, out AppearanceModelInfo model) ?? CheckSlots(outfit, model, catalog);
             return error == null;
         }
 
@@ -36,30 +37,32 @@ namespace AlpineLib.Netcode.Appearance {
             return Validate(outfit, catalog, out error);
         }
 
-        private static string CheckModel(in AppearanceOutfit outfit, IAppearanceCatalog catalog) {
-            if (!catalog.TryGetModel(outfit.ModelId, out AppearanceModelInfo model)) return $"Unknown model {outfit.ModelId}.";
+        private static string CheckModel(in AppearanceOutfit outfit, IAppearanceCatalog catalog, out AppearanceModelInfo model) {
+            if (!catalog.TryGetModel(outfit.ModelId, out model)) return $"Unknown model {outfit.ModelId}.";
             if (outfit.SlotCount != model.SlotCount) return $"Outfit carries {outfit.SlotCount} slot(s); model {model.Id} has {model.SlotCount}.";
 
             return null;
         }
 
-        private static string CheckSlots(in AppearanceOutfit outfit, IAppearanceCatalog catalog) {
+        private static string CheckSlots(in AppearanceOutfit outfit, in AppearanceModelInfo model, IAppearanceCatalog catalog) {
             for (int index = 0; index < outfit.SlotCount; index++) {
-                string error = CheckSlot(index, outfit[index], outfit.ModelId, catalog);
+                string error = CheckSlot(index, outfit[index], model, catalog);
                 if (error != null) return error;
             }
 
             return null;
         }
 
-        private static string CheckSlot(int slotIndex, AppearanceSlotPick pick, ushort modelId, IAppearanceCatalog catalog) {
+        private static string CheckSlot(int slotIndex, AppearanceSlotPick pick, in AppearanceModelInfo model, IAppearanceCatalog catalog) {
             if (pick.IsEmpty) {
-                return pick.VariantIndex == 0 ? null : $"Slot {slotIndex} is empty but names variant {pick.VariantIndex}.";
+                if (pick.VariantIndex != 0) return $"Slot {slotIndex} is empty but names variant {pick.VariantIndex}.";
+
+                return model.IsSlotRequired(slotIndex) ? $"Slot {slotIndex} is required on model {model.Id} and may not be empty." : null;
             }
 
             if (!catalog.TryGetItem(pick.ItemId, out AppearanceItemInfo item)) return $"Slot {slotIndex} holds unknown item {pick.ItemId}.";
             if (item.SlotIndex != slotIndex) return $"Item {item.Id} belongs in slot {item.SlotIndex}, not slot {slotIndex}.";
-            if (!item.AllowsModel(modelId)) return $"Item {item.Id} is not made for model {modelId}.";
+            if (!item.AllowsModel(model.Id)) return $"Item {item.Id} is not made for model {model.Id}.";
             if (pick.VariantIndex >= item.VariantCount) return $"Item {item.Id} has {item.VariantCount} variant(s); variant {pick.VariantIndex} does not exist.";
 
             return null;

@@ -181,7 +181,7 @@ namespace AlpineLib.Appearance {
                 }
 
                 tableModels.Add(model);
-                infos.Add(new AppearanceModelInfo((ushort)(index + 1), (byte)model.SlotCount, pawnPrefabIdOf(model)));
+                infos.Add(new AppearanceModelInfo((ushort)(index + 1), (byte)model.SlotCount, pawnPrefabIdOf(model), model.RequiredSlotMask()));
             }
 
             return infos;

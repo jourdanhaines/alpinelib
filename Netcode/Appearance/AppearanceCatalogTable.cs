@@ -8,8 +8,9 @@ namespace AlpineLib.Netcode.Appearance {
     /// </summary>
     /// <remarks>
     /// The constructor refuses any table a valid outfit could not be checked against — zero or duplicate
-    /// ids, models with no slots or more than <see cref="AppearanceOutfit.MaxSlots"/>, items with no
-    /// variants or a slot no allowed model has, allowed models or a default model the table lacks.
+    /// ids, models with no slots or more than <see cref="AppearanceOutfit.MaxSlots"/>, a required slot past a
+    /// model's slot count, items with no variants or a slot no allowed model has, allowed models or a default
+    /// model the table lacks.
     /// </remarks>
     public sealed class AppearanceCatalogTable : IAppearanceCatalog {
         private readonly Dictionary<ushort, AppearanceModelInfo> modelsById = new Dictionary<ushort, AppearanceModelInfo>();
@@ -67,6 +68,10 @@ namespace AlpineLib.Netcode.Appearance {
 
             if (model.SlotCount == 0 || model.SlotCount > AppearanceOutfit.MaxSlots) {
                 throw new ArgumentException($"Model {model.Id} has {model.SlotCount} slots; 1 to {AppearanceOutfit.MaxSlots} are allowed.", "models");
+            }
+
+            if (model.RequiredSlotMask >> model.SlotCount != 0) {
+                throw new ArgumentException($"Model {model.Id} requires a slot beyond its {model.SlotCount}.", "models");
             }
 
             if (modelsById.ContainsKey(model.Id)) {

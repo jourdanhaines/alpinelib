@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using AlpineLib.Netcode.Appearance;
 
 namespace AlpineLib.Server.Configuration {
@@ -12,9 +13,13 @@ namespace AlpineLib.Server.Configuration {
         /// <summary>The pawn prefab a member choosing this model is spawned as.</summary>
         public ushort PawnPrefabId { get; set; }
 
+        /// <summary>Slot indices every outfit for this model must fill; absent means none.</summary>
+        public List<int> RequiredSlots { get; set; }
+
         /// <summary>Maps this row onto the engine-free model info.</summary>
+        /// <exception cref="System.ArgumentException">A required slot is outside the slot cap.</exception>
         public AppearanceModelInfo ToInfo() {
-            return new AppearanceModelInfo(Id, SlotCount, PawnPrefabId);
+            return new AppearanceModelInfo(Id, SlotCount, PawnPrefabId, AppearanceModelInfo.MaskOf(RequiredSlots));
         }
     }
 }

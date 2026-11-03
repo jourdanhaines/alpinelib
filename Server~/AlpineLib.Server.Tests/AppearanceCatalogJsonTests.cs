@@ -156,6 +156,7 @@ namespace AlpineLib.Server.Tests {
                 Assert.Equal(expected.Models[modelIndex].Id, actual.Models[modelIndex].Id);
                 Assert.Equal(expected.Models[modelIndex].SlotCount, actual.Models[modelIndex].SlotCount);
                 Assert.Equal(expected.Models[modelIndex].PawnPrefabId, actual.Models[modelIndex].PawnPrefabId);
+                Assert.Equal(expected.Models[modelIndex].RequiredSlotMask, actual.Models[modelIndex].RequiredSlotMask);
             }
 
             for (int itemIndex = 0; itemIndex < expected.Items.Count; itemIndex++) {

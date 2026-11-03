@@ -16,6 +16,7 @@ namespace AlpineLib.Editor {
         private const string NotAllowedSuffix = " (not allowed)";
         private const string NotInCatalogSuffix = " (not in catalog)";
         private const string FirstPersonHiddenSuffix = " (FP hidden)";
+        private const string RequiredSuffix = " (required)";
         private const string AssetSelectedHint = "Select a scene or prefab-mode instance to preview.";
 
         private readonly List<AppearanceItem> _allowedItems = new List<AppearanceItem>();
@@ -119,7 +120,7 @@ namespace AlpineLib.Editor {
             SerializedProperty element = _slots.GetArrayElementAtIndex(slotIndex);
             SerializedProperty itemProperty = element.FindPropertyRelative("item");
             SerializedProperty variantProperty = element.FindPropertyRelative("variant");
-            string label = slot.HiddenInFirstPerson ? slot.Key + FirstPersonHiddenSuffix : slot.Key;
+            string label = (slot.HiddenInFirstPerson ? slot.Key + FirstPersonHiddenSuffix : slot.Key) + (slot.Required ? RequiredSuffix : string.Empty);
 
             AppearanceItem currentItem = itemProperty.objectReferenceValue as AppearanceItem;
             AppearanceItem chosenItem = DrawItemPopup(catalog, model, slotIndex, label, currentItem);

@@ -101,6 +101,19 @@ namespace AlpineLib.Editor {
                 if (!string.IsNullOrWhiteSpace(model.Key) && !seenKeys.Add(model.Key)) errors.Add($"Model key '{model.Key}' is used by more than one model.");
 
                 ValidateModel(model, errors);
+                ValidateRequiredSlots(catalog, model, errors);
+            }
+        }
+
+        // A required slot nothing can fill would refuse every outfit for the model.
+        private static void ValidateRequiredSlots(AppearanceCatalog catalog, CharacterModel model, List<string> errors) {
+            var fillers = new List<AppearanceItem>();
+            for (int index = 0; index < model.SlotCount; index++) {
+                AppearanceSlotDefinition slot = model.SlotAt(index);
+                if (slot == null || !slot.Required) continue;
+
+                catalog.CollectItemsFor(model, index, fillers);
+                if (fillers.Count == 0) errors.Add($"Model '{model.name}' slot '{slot.Key}' is required, but no catalog item fills it.");
             }
         }
 
