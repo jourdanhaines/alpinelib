@@ -2,6 +2,7 @@
   "name": "FluxInteractive.AlpineLib.Appearance",
   "rootNamespace": "AlpineLib.Appearance",
   "references": [
+    "FluxInteractive.AlpineLib",
     "FluxInteractive.AlpineLib.Netcode"
   ],
   "includePlatforms": [],

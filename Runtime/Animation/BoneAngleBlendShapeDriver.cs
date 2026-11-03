@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using AlpineLib.Actors;
 using UnityEngine;
 
@@ -9,7 +10,8 @@ namespace AlpineLib.Animation {
     /// <remarks>
     /// Each source's angle is the twist of its rotation away from rest about its axis; the largest one,
     /// as a fraction of <c>maxDegrees</c>, sets the weight on every target renderer carrying the shape.
-    /// Runs after the pose modifiers so it reads the finished pose.
+    /// Runs after the pose modifiers so it reads the finished pose. Renderers that come and go at runtime,
+    /// such as worn clothing carrying the same shape, join through <see cref="SetExtraTargets"/>.
     /// </remarks>
     [DefaultExecutionOrder(ActorExecutionOrder.BlendShapeDrivers)]
     public class BoneAngleBlendShapeDriver : MonoBehaviour {
@@ -29,12 +31,20 @@ namespace AlpineLib.Animation {
         [SerializeField] private float maxDegrees = 26f;
 
         private int[] _shapeIndices;
+        private readonly List<SkinnedMeshRenderer> _extraTargets = new List<SkinnedMeshRenderer>();
+        private readonly List<int> _extraIndices = new List<int>();
 
         /// <summary>Weight written on the last evaluate, 0 to 100.</summary>
         public float Weight { get; private set; }
 
         /// <summary>Number of measured bones.</summary>
         public int SourceCount => sources != null ? sources.Length : 0;
+
+        /// <summary>Name of the driven blendshape.</summary>
+        public string BlendShapeName => blendShapeName;
+
+        /// <summary>Renderers driven at runtime besides the configured targets; never serialized.</summary>
+        public IReadOnlyList<SkinnedMeshRenderer> ExtraTargets => _extraTargets;
 
         /// <summary>Sets everything at once, e.g. from an assembler building the body prefab.</summary>
         public void Configure(SkinnedMeshRenderer[] shapeTargets, string shapeName, BoneAngleSource[] angleSources, float fullWeightDegrees) {
@@ -57,6 +67,20 @@ namespace AlpineLib.Animation {
 
             Quaternion delta = Quaternion.Inverse(source.restLocalRotation) * source.bone.localRotation;
             return TwistDegrees(delta, source.localAxis.normalized);
+        }
+
+        /// <summary>
+        /// Replaces the runtime renderers driven alongside the configured targets and writes the current weight
+        /// to them; renderers without the shape are skipped silently, since a worn piece may simply not carry it.
+        /// </summary>
+        public void SetExtraTargets(IEnumerable<SkinnedMeshRenderer> renderers) {
+            _extraTargets.Clear();
+            _extraIndices.Clear();
+            if (renderers != null) {
+                foreach (SkinnedMeshRenderer renderer in renderers) AddExtraTarget(renderer);
+            }
+
+            WriteExtraWeight();
         }
 
         /// <summary>Takes each source bone's current local rotation as its rest.</summary>
@@ -94,11 +118,29 @@ namespace AlpineLib.Animation {
         }
 
         private void WriteWeight() {
+            WriteExtraWeight();
             if (targets == null) return;
 
             EnsureIndices();
             for (int index = 0; index < targets.Length; index++) {
                 if (targets[index] != null && _shapeIndices[index] >= 0) targets[index].SetBlendShapeWeight(_shapeIndices[index], Weight);
+            }
+        }
+
+        private void AddExtraTarget(SkinnedMeshRenderer renderer) {
+            if (renderer == null || renderer.sharedMesh == null || string.IsNullOrEmpty(blendShapeName)) return;
+
+            int shapeIndex = renderer.sharedMesh.GetBlendShapeIndex(blendShapeName);
+            if (shapeIndex < 0 || _extraTargets.Contains(renderer)) return;
+
+            _extraTargets.Add(renderer);
+            _extraIndices.Add(shapeIndex);
+        }
+
+        // A destroyed piece leaves a null until the next SetExtraTargets.
+        private void WriteExtraWeight() {
+            for (int index = 0; index < _extraTargets.Count; index++) {
+                if (_extraTargets[index] != null) _extraTargets[index].SetBlendShapeWeight(_extraIndices[index], Weight);
             }
         }
 
