@@ -2,7 +2,7 @@ using System;
 
 namespace AlpineLib.Procedural.Sky {
     /// <summary>
-    /// Tunables of wind-rolled props (tumbleweeds): how long a roll runs, how it hops and wobbles, how long a prop rests
+    /// Tunables of wind-rolled props (tumbleweeds): how long a roll runs, when it jumps (obstacles, crests, seeded bumps) and how it wobbles, how long a prop rests
     /// at the end before it reappears at the start, how fast it rolls for the wind's drift, and how much props vary in
     /// size, speed, wobble and shape (small ones common and fast, big ones rare, slow and prone to stalling).
     /// </summary>
@@ -31,11 +31,40 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Power on the size draw: above 1 makes small props common and big ones rare.</summary>
         public double SizeBias { get; set; } = 2.0;
 
-        /// <summary>Hop spacing and height at size 1; both scale with the prop's size.</summary>
-        public double MinHopSpacing { get; set; } = 6.0;
-        public double MaxHopSpacing { get; set; } = 14.0;
-        public double MinHopHeight { get; set; } = 0.2;
-        public double MaxHopHeight { get; set; } = 0.6;
+        /// <summary>Range of the jump over an obstacle run of the support (a rail head) at size 1, metres; it scales with the prop's size.</summary>
+        public double MinObstacleJump { get; set; } = 0.2;
+        public double MaxObstacleJump { get; set; } = 0.5;
+
+        /// <summary>Range of the small pop over a crest run (an embankment's shoulder), metres.</summary>
+        public double MinCrestJump { get; set; } = 0.08;
+        public double MaxCrestJump { get; set; } = 0.2;
+
+        /// <summary>Range of the gap between seeded bump spots on the way, metres; each fires with the path's bump chance.</summary>
+        public double MinBumpSpacing { get; set; } = 12.0;
+        public double MaxBumpSpacing { get; set; } = 40.0;
+
+        /// <summary>Range of the chance a path's bump spots fire, drawn once per path.</summary>
+        public double MinBumpChance { get; set; } = 0.3;
+        public double MaxBumpChance { get; set; } = 0.6;
+
+        /// <summary>Range of a bump's jump, metres.</summary>
+        public double MinBumpJump { get; set; } = 0.1;
+        public double MaxBumpJump { get; set; } = 0.4;
+
+        /// <summary>Height of the one small bounce after a landing as a share of the jump's (0: none).</summary>
+        public double BounceShare { get; set; } = 0.3;
+
+        /// <summary>Wind speed the jumps' arcs are shaped for, metres per second: a jump of height h spans the flight time of h at this wind's rolling speed.</summary>
+        public double JumpWindSpeed { get; set; } = 3.0;
+
+        /// <summary>Metres before an obstacle or crest run a prop takes off, and least past it that it lands.</summary>
+        public double JumpLead { get; set; } = 0.1;
+
+        /// <summary>Steepest rise of a jump's arc over its length (rise per metre at the takeoff), so short hops stay readable.</summary>
+        public double MaxJumpSlope { get; set; } = 2.5;
+
+        /// <summary>Least clearance of a jump's arc over the prop's contact height at its middle, metres.</summary>
+        public double JumpClearance { get; set; } = 0.03;
 
         /// <summary>Most the roll strays sideways from its straight line, metres.</summary>
         public double WobbleAmplitude { get; set; } = 1.2;
@@ -107,8 +136,11 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Throws when a range is inverted or a length, step or share is not positive.</summary>
         public void Validate() {
             RequireRange(MinLength, MaxLength, nameof(MinLength));
-            RequireRange(MinHopSpacing, MaxHopSpacing, nameof(MinHopSpacing));
-            RequireRange(MinHopHeight, MaxHopHeight, nameof(MinHopHeight));
+            RequireRange(MinObstacleJump, MaxObstacleJump, nameof(MinObstacleJump));
+            RequireRange(MinCrestJump, MaxCrestJump, nameof(MinCrestJump));
+            RequireRange(MinBumpSpacing, MaxBumpSpacing, nameof(MinBumpSpacing));
+            RequireRange(MinBumpChance, MaxBumpChance, nameof(MinBumpChance));
+            RequireRange(MinBumpJump, MaxBumpJump, nameof(MinBumpJump));
             RequireRange(MinRestGap, MaxRestGap, nameof(MinRestGap));
             RequireRange(MinSize, MaxSize, nameof(MinSize));
             RequireRange(MinGroundSpeedShare, MaxGroundSpeedShare, nameof(MinGroundSpeedShare));
@@ -116,7 +148,9 @@ namespace AlpineLib.Procedural.Sky {
             RequirePositive(MinSize, nameof(MinSize));
             RequirePositive(SizeBias, nameof(SizeBias));
             RequirePositive(MinLength, nameof(MinLength));
-            RequirePositive(MinHopSpacing, nameof(MinHopSpacing));
+            RequirePositive(MinBumpSpacing, nameof(MinBumpSpacing));
+            RequirePositive(JumpWindSpeed, nameof(JumpWindSpeed));
+            RequirePositive(MaxJumpSlope, nameof(MaxJumpSlope));
             RequirePositive(ProfileStep, nameof(ProfileStep));
             RequirePositive(ClipStep, nameof(ClipStep));
             RequirePositive(MinGroundSpeedShare, nameof(MinGroundSpeedShare));
@@ -124,8 +158,10 @@ namespace AlpineLib.Procedural.Sky {
             RequirePositive(RockPeriod, nameof(RockPeriod));
             RequirePositive(WobblePeriod, nameof(WobblePeriod));
             if (ScaleDistance > MaxScaleDistance) throw new ArgumentException($"{nameof(ScaleDistance)} {ScaleDistance} must fit half the shortest rest and the shortest roll ({MaxScaleDistance}).");
-            if (WobbleAmplitude < 0.0 || MinHopHeight < 0.0 || UpwindReach < 0.0 || RockAngle < 0.0) throw new ArgumentException("Wobble, hop height, upwind reach and rock angle must not be negative.");
+            if (WobbleAmplitude < 0.0 || UpwindReach < 0.0 || RockAngle < 0.0) throw new ArgumentException("Wobble, upwind reach and rock angle must not be negative.");
+            if (MinObstacleJump < 0.0 || MinCrestJump < 0.0 || MinBumpJump < 0.0 || JumpLead < 0.0 || JumpClearance < 0.0) throw new ArgumentException("Jump heights, lead and clearance must not be negative.");
             if (!InUnit(SpeedJitter) || !InUnit(MinWobbleShare) || !InUnit(StallHeft) || !InUnit(StallChance)) throw new ArgumentException("Speed jitter, wobble share, stall heft and stall chance must be in [0, 1].");
+            if (!InUnit(MinBumpChance) || !InUnit(MaxBumpChance) || !InUnit(BounceShare)) throw new ArgumentException("Bump chances and the bounce share must be in [0, 1].");
             if (MinStall < 0.0 || MaxSquash < 0.0 || MaxSquash >= 1.0 || MaxTiltDegrees < 0.0 || MaxTiltDegrees > 90.0) throw new ArgumentException("Stalls must not be negative, squash must be in [0, 1) and tilt in [0, 90] degrees.");
             if (DirectionJitterDegrees < 0.0 || DirectionJitterDegrees > MaxOffWindDegrees) throw new ArgumentException($"{nameof(DirectionJitterDegrees)} must be in [0, {MaxOffWindDegrees}].");
         }

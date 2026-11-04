@@ -11,6 +11,7 @@ namespace AlpineLib.Server.Tests.Sky {
         private const double StressWind = 20.0;
         private const double JumpLimit = 0.1;
         private const double ClearSlack = 0.02;
+        private const double SteepestClimb = 4.0;
         private static readonly RollerPathSettings Settings = RollerPathSettings.Default;
 
         [Fact]
@@ -47,17 +48,16 @@ namespace AlpineLib.Server.Tests.Sky {
         }
 
         [Fact]
-        public void LengthsHopsAndWobbleStayInBounds() {
+        public void LengthsJumpsAndWobbleStayInBounds() {
             for (int slot = 0; slot < 300; slot++) {
                 RollerPathScene scene = RollerPathScene.Open(0.3 + slot % 4 * 0.1);
                 RollerPath path = scene.Build(StableHash.Mix(11UL, (ulong)slot), Prevailing(slot), (slot % 7 - 3) * 0.05);
                 Assert.NotNull(path);
                 Assert.InRange(path.Length, Settings.MinClippedLength, Settings.MaxLength + 1e-9);
-                Assert.InRange(path.HopHeight, Settings.MinHopHeight * path.Size - 1e-9, Settings.MaxHopHeight * path.Size + 1e-9);
                 Assert.InRange(path.RestGap, Settings.MinRestGap, Settings.MaxRestGap);
                 Assert.InRange(path.StartOffset, -Settings.UpwindReach - 1e-9, 0.0);
-                Assert.True(path.HopSpacing <= Settings.MaxHopSpacing * path.Size * 1.5 + 1e-9, $"hop spacing {path.HopSpacing}");
-                Assert.True(path.HopCount == 1 || path.HopSpacing >= Settings.MinHopSpacing * path.Size * 0.75 - 1e-9, $"hop spacing {path.HopSpacing}");
+                Assert.InRange(path.BumpChance, Settings.MinBumpChance, Settings.MaxBumpChance);
+                CheckJumps(path, $"slot {slot}");
                 CheckPoses(path, scene);
             }
         }
@@ -85,6 +85,7 @@ namespace AlpineLib.Server.Tests.Sky {
                         Assert.True(pop < JumpLimit * 0.5, $"slot {slot}: wrapped at visible scale {previous.Scale:0.000} -> {next.Scale:0.000} ({pop:0.000} m)");
                     } else {
                         CheckStep(path, previous, next, travel, slot);
+                        CheckSubSteps(path, prevailing, frame, travel, slot);
                     }
                     previous = next;
                 }
@@ -96,7 +97,7 @@ namespace AlpineLib.Server.Tests.Sky {
 
         [Fact]
         public void TheContactPointDoesNotSlip() {
-            var flat = new RollerPathSettings { WobbleAmplitude = 0.0, MinHopHeight = 0.0, MaxHopHeight = 0.0, StallChance = 0.0 };
+            var flat = new RollerPathSettings { WobbleAmplitude = 0.0, MinBumpChance = 0.0, MaxBumpChance = 0.0, StallChance = 0.0 };
             for (int slot = 0; slot < 20; slot++) {
                 ulong seed = StableHash.Mix(17UL, (ulong)slot);
                 double size = slot % 2 == 0 ? flat.MaxSize : RollerPath.SizeOf(seed, flat);
@@ -214,8 +215,8 @@ namespace AlpineLib.Server.Tests.Sky {
                     stalls++;
                     Assert.True(path.Heft >= Settings.StallHeft, $"slot {slot}: a light roll (heft {path.Heft:0.00}) stalls");
                     Assert.InRange(path.StallGap, Settings.MinStall, Settings.MaxStall);
-                    Assert.InRange(path.StallAt, path.HopSpacing - 1e-9, path.Length - path.HopSpacing + 1e-9);
-                    Assert.Equal(0.0, path.Hop(path.StallAt), 9);
+                    Assert.InRange(path.StallAt, path.Length * 0.25 - 1e-9, path.Length);
+                    Assert.False(path.TryGetJump(path.StallAt, out _), $"slot {slot}: stalls mid-jump");
                 }
                 if (path.Heft < 0.25) {
                     small++;
@@ -256,29 +257,61 @@ namespace AlpineLib.Server.Tests.Sky {
         private static void CheckPoses(RollerPath path, RollerPathScene scene) {
             for (double cycle = 0.0; cycle < path.Cycle; cycle += 0.1) {
                 RollerPose pose = RollerPose.At(path, cycle);
-                double lift = pose.Y - path.GroundHeight(pose.Distance) - path.Radius;
-                Assert.InRange(lift, -1e-9, Settings.MaxHopHeight * path.Size + 1e-9);
+                double contact = path.ContactHeight(pose.Distance, pose.RollAngle, pose.Scale);
+                if (pose.IsAirborne) Assert.True(pose.Y >= contact - 0.01, $"a jump dips {contact - pose.Y:0.000} m under the contact at {pose.Distance:0.00} m");
+                else Assert.Equal(contact, pose.Y, 9);
                 double side = path.Wobble(path.StartOffset + pose.Distance);
                 Assert.InRange(Math.Abs(side), 0.0, 2.0 * Settings.WobbleAmplitude + 1e-9);
                 Assert.InRange(pose.Scale, 0.0, 1.0);
                 double norm = pose.RotationX * pose.RotationX + pose.RotationY * pose.RotationY + pose.RotationZ * pose.RotationZ + pose.RotationW * pose.RotationW;
                 Assert.InRange(norm, 1.0 - 1e-9, 1.0 + 1e-9);
-                if (pose.IsResting) Assert.Equal(0.0, lift, 9);
+                if (pose.IsResting || pose.IsStalled) Assert.False(pose.IsAirborne);
             }
         }
 
-        // Between two frames the centre moves the roll's travel plus at most the jump limit, the visible size and the
-        // roll angle change smoothly, and a resting prop does not move.
+        // Jumps run in order inside the roll, never overlap, keep a little contact between them, each leaves and lands
+        // on its contact height, and a bounce follows the landing of the leap before it.
+        private static void CheckJumps(RollerPath path, string label) {
+            double previousLanding = double.NegativeInfinity;
+            foreach (RollerJump jump in path.Jumps) {
+                Assert.True(jump.Takeoff >= 0.0 && jump.Landing <= path.Length + 1e-9, $"{label}: jump {jump.Takeoff:0.00}..{jump.Landing:0.00} outside 0..{path.Length:0.00}");
+                Assert.True(jump.Length > 0.0 && jump.Height >= 0.0, $"{label}: empty jump");
+                if (jump.Kind == RollerJumpKind.Bounce) Assert.Equal(previousLanding, jump.Takeoff, 9);
+                else Assert.True(jump.Takeoff >= previousLanding + 0.1, $"{label}: jump at {jump.Takeoff:0.00} leaves {jump.Takeoff - previousLanding:0.000} m of contact");
+                Assert.Equal(path.ContactHeight(jump.Takeoff, path.AngleAt(jump.Takeoff)), jump.TakeoffY, 9);
+                Assert.Equal(path.ContactHeight(jump.Landing, path.AngleAt(jump.Landing)), jump.LandingY, 9);
+                Assert.Equal(jump.LandingY, jump.HeightAt(jump.Landing), 9);
+                previousLanding = jump.Landing;
+            }
+        }
+
+        // Twenty sub-steps inside a frame: no sub-step moves the centre more than a steep jump's climb allows, so a
+        // frame's move is never a teleport hidden inside the frame's travel.
+        private static void CheckSubSteps(RollerPath path, WindVector prevailing, int frame, double travel, int slot) {
+            const int steps = 20;
+            RollerPose previous = RollerPose.Of(path, WindAt(prevailing, (frame - 1) * Frame));
+            for (int step = 1; step <= steps; step++) {
+                RollerPose next = RollerPose.Of(path, WindAt(prevailing, (frame - 1 + step / (double)steps) * Frame));
+                if (next.Distance < previous.Distance - 1.0) return;
+
+                double dy = Math.Abs(next.Y - previous.Y);
+                Assert.True(dy <= travel / steps * SteepestClimb + JumpLimit * 0.2, $"slot {slot}: centre jumped {dy:0.000} m up or down in 1/{steps} of a frame");
+                previous = next;
+            }
+        }
+
+        // Between two frames the centre moves the roll's travel plus at most the jump limit across (and no more than a
+        // steep jump climbs up or down), the visible size and the roll angle change smoothly.
         private static void CheckStep(RollerPath path, RollerPose previous, RollerPose next, double travel, int slot) {
             double dx = next.X - previous.X;
-            double dy = next.Y - previous.Y;
             double dz = next.Z - previous.Z;
-            double moved = Math.Sqrt(dx * dx + dy * dy + dz * dz);
-            Assert.True(moved <= travel + JumpLimit, $"slot {slot}: centre jumped {moved:0.000} m in a frame (travel {travel:0.000})");
+            double moved = Math.Sqrt(dx * dx + dz * dz);
+            Assert.True(moved <= travel + JumpLimit, $"slot {slot}: centre jumped {moved:0.000} m across in a frame (travel {travel:0.000})");
+            Assert.True(Math.Abs(next.Y - previous.Y) <= travel * SteepestClimb + JumpLimit, $"slot {slot}: centre jumped {next.Y - previous.Y:0.000} m up or down in a frame");
             Assert.True(Math.Abs(next.Scale - previous.Scale) * path.Radius <= JumpLimit, $"slot {slot}: size jumped");
             double turned = Math.Abs(next.RollAngle - previous.RollAngle);
             double rockLimit = path.RockAngle * 2.0 * Math.PI * travel / path.RockPeriod;
-            Assert.True(turned <= travel / path.Radius + rockLimit + 1e-9, $"slot {slot}: roll angle jumped {turned:0.000} rad");
+            Assert.True(turned <= travel / path.RollRadius + rockLimit + 1e-9, $"slot {slot}: roll angle jumped {turned:0.000} rad");
         }
 
         private static WindVector WindAt(WindVector direction, double seconds) {
@@ -325,7 +358,8 @@ namespace AlpineLib.Server.Tests.Sky {
             text.Append(BitConverter.DoubleToInt64Bits(path.Length)).Append(' ').Append(BitConverter.DoubleToInt64Bits(path.Phase)).Append(' ')
                 .Append(BitConverter.DoubleToInt64Bits(path.Size)).Append(' ').Append(BitConverter.DoubleToInt64Bits(path.GroundSpeedShare)).Append(' ')
                 .Append(BitConverter.DoubleToInt64Bits(path.StallAt)).Append(' ').Append(BitConverter.DoubleToInt64Bits(path.Tilt)).Append(' ')
-                .Append(BitConverter.DoubleToInt64Bits(path.SquashX)).Append(' ');
+                .Append(BitConverter.DoubleToInt64Bits(path.SquashX)).Append(' ').Append(BitConverter.DoubleToInt64Bits(path.RollRadius)).Append(' ');
+            foreach (RollerJump jump in path.Jumps) text.Append(jump.Kind).Append(BitConverter.DoubleToInt64Bits(jump.Takeoff)).Append(',').Append(BitConverter.DoubleToInt64Bits(jump.Height)).Append(' ');
             for (double cycle = 0.0; cycle < path.Cycle; cycle += 3.7) {
                 RollerPose pose = RollerPose.At(path, cycle);
                 text.Append(BitConverter.DoubleToInt64Bits(pose.X)).Append(',').Append(BitConverter.DoubleToInt64Bits(pose.Y)).Append(',')

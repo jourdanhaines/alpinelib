@@ -3,9 +3,9 @@ using System;
 namespace AlpineLib.Procedural.Sky {
     /// <summary>
     /// Where a wind-rolled prop is and how it is turned at one point of its <see cref="RollerPath"/> cycle: the centre
-    /// riding the ground profile plus its radius and hop, rolled by distance / radius about the axis right of its
-    /// heading (which follows the wobble) after its seeded tilt and spin, teetering through a stall, and scaled in at
-    /// the start and out at the end of its rest.
+    /// in contact (its outline touching the support at its roll angle) or on a jump's arc, rolled by distance / roll
+    /// radius about the axis right of its heading (which follows the wobble) after its seeded tilt and spin, turning on
+    /// through the air, teetering through a stall, and scaled in at the start and out at the end of its rest.
     /// </summary>
     /// <remarks>
     /// The rotation is a unit quaternion (x, y, z, w) in the plane's own axes (y up, right-hand rule on the components),
@@ -13,7 +13,7 @@ namespace AlpineLib.Procedural.Sky {
     /// </remarks>
     public readonly struct RollerPose {
         private RollerPose(double x, double y, double z, double rotationX, double rotationY, double rotationZ, double rotationW,
-                double scale, double distance, double rollAngle, bool isResting, bool isStalled) {
+                double scale, double distance, double rollAngle, bool isResting, bool isStalled, bool isAirborne) {
             X = x;
             Y = y;
             Z = z;
@@ -26,6 +26,7 @@ namespace AlpineLib.Procedural.Sky {
             RollAngle = rollAngle;
             IsResting = isResting;
             IsStalled = isStalled;
+            IsAirborne = isAirborne;
         }
 
         /// <summary>Centre of the prop in the path's plane, y over the path's ground datum.</summary>
@@ -53,6 +54,9 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>True while sitting out the stall mid-roll.</summary>
         public bool IsStalled { get; }
 
+        /// <summary>True while on a jump's arc (off the ground).</summary>
+        public bool IsAirborne { get; }
+
         /// <summary>The pose of <paramref name="path"/> after the wind drifted <paramref name="displacement"/> metres since the session began.</summary>
         public static RollerPose Of(RollerPath path, WindVector displacement) {
             if (path == null) throw new ArgumentNullException(nameof(path));
@@ -71,14 +75,14 @@ namespace AlpineLib.Procedural.Sky {
             double distance = Math.Max(0.0, Math.Min(length, rolled));
             double lineOffset = path.StartOffset + distance;
             path.GroundPoint(distance, out double x, out double z);
-            double y = path.GroundHeight(distance) + path.Radius + path.Hop(distance);
-            double angle = distance / path.Radius;
+            double angle = path.AngleAt(distance);
             if (isResting) angle += path.RockAngle * Math.Sin(2.0 * Math.PI * (rolled - length) / path.RockPeriod);
             if (isStalled) angle += StallRock(path) * Math.Sin(Math.PI * (cycle - path.StallAt) / path.StallGap);
-
             double scale = Math.Min(SmoothStep(cycle / path.ScaleDistance), SmoothStep((path.Cycle - cycle) / path.ScaleDistance));
+            bool isAirborne = path.TryGetJump(distance, out RollerJump jump);
+            double y = isAirborne ? jump.HeightAt(distance) : path.ContactHeight(distance, angle, scale);
             Rotation(path, path.WobbleSlope(lineOffset), angle, out double rotationX, out double rotationY, out double rotationZ, out double rotationW);
-            return new RollerPose(x, y, z, rotationX, rotationY, rotationZ, rotationW, scale, distance, angle, isResting, isStalled);
+            return new RollerPose(x, y, z, rotationX, rotationY, rotationZ, rotationW, scale, distance, angle, isResting, isStalled, isAirborne);
         }
 
         /// <summary>Unit heading of the roll at <paramref name="path"/>'s line offset with wobble slope <paramref name="slope"/>.</summary>
@@ -95,10 +99,16 @@ namespace AlpineLib.Procedural.Sky {
             return path.RockAngle * Math.Min(1.0, 2.0 * path.StallGap / path.RockPeriod);
         }
 
-        // Roll about up × heading by `angle`, after the seeded tilt about the mesh's x and spin about up: roll ⊗ spin ⊗ tilt.
+        // Yaw to the heading, roll about the mesh's x by `angle`, after the seeded spin about up and tilt about x:
+        // yaw ⊗ roll ⊗ spin ⊗ tilt. The roll axis is up × heading, and the outline below the centre depends only on the
+        // roll angle (the heading's yaw turns it about up), so RollerProfile can tabulate it once per prop.
         private static void Rotation(RollerPath path, double slope, double angle, out double x, out double y, out double z, out double w) {
             Heading(path, slope, out double headingX, out double headingZ);
-            double sine = Math.Sin(angle * 0.5);
+            double yaw = Math.Atan2(headingX, headingZ);
+            double yawY = Math.Sin(yaw * 0.5);
+            double yawW = Math.Cos(yaw * 0.5);
+            double rollX = Math.Sin(angle * 0.5);
+            double rollW = Math.Cos(angle * 0.5);
             double spinY = Math.Sin(path.Spin * 0.5);
             double spinW = Math.Cos(path.Spin * 0.5);
             double tiltX = Math.Sin(path.Tilt * 0.5);
@@ -109,7 +119,8 @@ namespace AlpineLib.Procedural.Sky {
             double turnY = spinY * tiltW;
             double turnZ = -spinY * tiltX;
             double turnW = spinW * tiltW;
-            Multiply(headingZ * sine, 0.0, -headingX * sine, Math.Cos(angle * 0.5), turnX, turnY, turnZ, turnW, out x, out y, out z, out w);
+            Multiply(rollX, 0.0, 0.0, rollW, turnX, turnY, turnZ, turnW, out double rolledX, out double rolledY, out double rolledZ, out double rolledW);
+            Multiply(0.0, yawY, 0.0, yawW, rolledX, rolledY, rolledZ, rolledW, out x, out y, out z, out w);
         }
 
         // Hamilton product a ⊗ b.
