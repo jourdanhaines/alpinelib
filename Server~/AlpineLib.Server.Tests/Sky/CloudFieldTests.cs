@@ -114,7 +114,8 @@ namespace AlpineLib.Server.Tests.Sky {
                 previous = presence;
             }
             Assert.InRange(scatter.Presence(0.5 * (Settings.FullRadius + Settings.WindowRadius)), 0.3, 0.7);
-            Assert.True(Settings.FullRadius > 400.0 / 0.35 * 0.75);
+            // The shipped consumer fogs radially to 400 m at cloud fog scale 0.48: fully fogged before any shrink.
+            Assert.True(Settings.FullRadius >= 400.0 / 0.48);
         }
 
         [Fact]
@@ -165,6 +166,37 @@ namespace AlpineLib.Server.Tests.Sky {
             Assert.Throws<ArgumentOutOfRangeException>(() => new CloudFieldScatter(1UL, new CloudFieldSettings { DissolveShare = 0.0 }));
             Assert.Throws<ArgumentException>(() => new CloudFieldScatter(1UL, new CloudFieldSettings { Classes = new CloudClassSettings[2] }));
             Assert.Throws<ArgumentOutOfRangeException>(() => CloudFieldFrame.Locate(0.0, 0.0, WindVector.Zero, 0.0));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new CloudFieldScatter(1UL, new CloudFieldSettings { CellSize = 64.0, MinSpacing = 30.0, WanderAmplitude = 18.0 }));
+            new CloudFieldSettings { CellSize = 64.0, MinSpacing = 16.0, WanderAmplitude = 12.0 }.Validate();
+        }
+
+        // Far enough for a cloud anywhere in the window, dissolving ones included, but within the shipped 1100 m clip.
+        [Fact]
+        public void FarClipCoversTheWholeWindow() {
+            double slant = Math.Sqrt(Settings.WindowRadius * Settings.WindowRadius + 220.0 * 220.0) + 30.0;
+            Assert.True(Settings.RequiredFarClip > slant);
+            Assert.InRange(Settings.RequiredFarClip, 1090.0, 1100.0);
+        }
+
+        // Every ray out of a point deep inside a puff crosses the heap's surface: no face was dropped where no puff covers it.
+        [Fact]
+        public void HeapsAreWatertightWherePuffsMeet() {
+            Vector3[] directions = RayDirections();
+            for (ulong seed = 1; seed <= 4; seed++) {
+                for (int meshIndex = 0; meshIndex < CloudFieldSettings.MeshCount; meshIndex++) CheckWatertight(seed, meshIndex, directions);
+            }
+        }
+
+        [Fact]
+        public void InnerShareBoundsTheFacetedSurface() {
+            var puff = new BlobPuff(new Vector3(0f, 5f, 0f), new Vector3(4f, 4.4f, 4f));
+            foreach (int level in new[] { 0, 1 }) {
+                var spec = new BlobSpec { Subdivisions = level, Radii = puff.Radii, NoiseAmplitude = 0.05f, NoiseFrequency = 1.3f, FacetJitter = 0.02f, Squash = 0.45f };
+                FacetMesh blob = new FacetMesh();
+                BlobMesh.AppendTo(blob, spec, 7UL, puff.Centre);
+                double share = CloudHeap.InnerShare(blob, puff);
+                Assert.InRange(share, level == 0 ? 0.6 : 0.8, level == 0 ? 0.85 : 0.97);
+            }
         }
 
         [Fact]
@@ -205,6 +237,66 @@ namespace AlpineLib.Server.Tests.Sky {
                 Assert.Equal(puff.Radii.X, puff.Radii.Z);
                 Assert.InRange(puff.Radii.Y / puff.Radii.X, 0.9f, 1.2f);
             }
+        }
+
+        private static void CheckWatertight(ulong seed, int meshIndex, Vector3[] directions) {
+            CloudClass cloudClass = CloudFieldSettings.ClassOfMesh(meshIndex);
+            int variant = meshIndex % CloudFieldSettings.VariantsPerClass;
+            CloudClassSettings settings = Settings.ClassOf(cloudClass);
+            double diameter = CloudHeap.TargetDiameter(settings, Settings, variant);
+            FacetMesh mesh = CloudHeap.Build(settings, diameter, CloudHeap.VariantSeed(seed, cloudClass, variant), Palette, out BlobPuff[] puffs);
+            foreach (BlobPuff puff in puffs) {
+                foreach (Vector3 toward in directions) {
+                    Vector3 start = puff.Centre + toward * puff.Radii * 0.5f;
+                    if (start.Y < 0.05f) continue;
+
+                    foreach (Vector3 direction in directions) {
+                        Assert.True(HitsAnyFace(mesh, start, direction), $"seed {seed} mesh {meshIndex}: a ray from {start} along {direction} escapes");
+                    }
+                }
+            }
+        }
+
+        // The 26 directions to a cube's faces, edges and corners.
+        private static Vector3[] RayDirections() {
+            var directions = new List<Vector3>();
+            for (int stepX = -1; stepX <= 1; stepX++) {
+                for (int stepY = -1; stepY <= 1; stepY++) {
+                    for (int stepZ = -1; stepZ <= 1; stepZ++) {
+                        if (stepX == 0 && stepY == 0 && stepZ == 0) continue;
+
+                        directions.Add(Vector3.Normalize(new Vector3(stepX + 0.013f, stepY + 0.007f, stepZ - 0.011f)));
+                    }
+                }
+            }
+            return directions.ToArray();
+        }
+
+        // Möller–Trumbore against every face, in double.
+        private static bool HitsAnyFace(FacetMesh mesh, Vector3 origin, Vector3 direction) {
+            List<Vector3> corners = mesh.Positions;
+            for (int face = 0; face < mesh.FaceCount; face++) {
+                if (Hits(origin, direction, corners[face * 3], corners[face * 3 + 1], corners[face * 3 + 2])) return true;
+            }
+            return false;
+        }
+
+        private static bool Hits(Vector3 origin, Vector3 direction, Vector3 a, Vector3 b, Vector3 c) {
+            Vector3 edgeAb = b - a;
+            Vector3 edgeAc = c - a;
+            Vector3 cross = Vector3.Cross(direction, edgeAc);
+            double determinant = Vector3.Dot(edgeAb, cross);
+            if (Math.Abs(determinant) < 1e-9) return false;
+
+            Vector3 toOrigin = origin - a;
+            double along = Vector3.Dot(toOrigin, cross) / determinant;
+            if (along < -1e-6 || along > 1.0 + 1e-6) return false;
+
+            Vector3 lift = Vector3.Cross(toOrigin, edgeAb);
+            double across = Vector3.Dot(direction, lift) / determinant;
+            if (across < -1e-6 || along + across > 1.0 + 1e-6) return false;
+
+            return Vector3.Dot(edgeAc, lift) / determinant > 0.0;
         }
 
         private static void CheckCloud(CloudInstance cloud, int[] classes) {

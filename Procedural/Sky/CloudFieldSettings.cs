@@ -67,7 +67,10 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Margin kept between an anchor and its cell's edges, metres.</summary>
         public double AnchorInset => WanderAmplitude;
 
-        /// <summary>Far clip a camera needs to see every full-size cloud whole.</summary>
+        /// <summary>
+        /// Far clip a camera needs to see every drawn cloud whole, dissolving ones too: a cloud stands anywhere inside
+        /// <see cref="WindowRadius"/> and reaches at most one full diameter above its altitude and half one across.
+        /// </summary>
         public double RequiredFarClip {
             get {
                 double altitude = 0.0;
@@ -77,7 +80,8 @@ namespace AlpineLib.Procedural.Sky {
                     diameter = Math.Max(diameter, cloudClass.MaxDiameter);
                 }
 
-                return Math.Sqrt(FullRadius * FullRadius + altitude * altitude) + diameter * 0.5;
+                double top = altitude + diameter;
+                return Math.Sqrt(WindowRadius * WindowRadius + top * top) + diameter * 0.5;
             }
         }
 
@@ -97,6 +101,7 @@ namespace AlpineLib.Procedural.Sky {
             if (WindowCells < 1) throw new ArgumentOutOfRangeException(nameof(WindowCells), WindowCells, "Must be at least 1.");
             if (CandidatesPerCell < 0) throw new ArgumentOutOfRangeException(nameof(CandidatesPerCell), CandidatesPerCell, "Must not be negative.");
             if (!(MinSpacing >= 0.0)) throw new ArgumentOutOfRangeException(nameof(MinSpacing), MinSpacing, "Must not be negative.");
+            if (!(AnchorSpacing <= CellSize)) throw new ArgumentOutOfRangeException(nameof(MinSpacing), MinSpacing, "Spacing plus both wanders must fit in one cell (the scatter only looks one cell over).");
             if (!(WanderAmplitude >= 0.0 && 2.0 * AnchorInset < CellSize)) throw new ArgumentOutOfRangeException(nameof(WanderAmplitude), WanderAmplitude, "Must be non-negative and under half the cell.");
             if (!(WanderPeriodSeconds > 0.0)) throw new ArgumentOutOfRangeException(nameof(WanderPeriodSeconds), WanderPeriodSeconds, "Must be positive.");
             if (!(DissolveShare > 0.0 && DissolveShare < 1.0)) throw new ArgumentOutOfRangeException(nameof(DissolveShare), DissolveShare, "Must be in (0, 1).");

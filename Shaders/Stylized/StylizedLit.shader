@@ -25,6 +25,7 @@ Shader "AlpineLib/Stylized/Lit"
         [ToggleOff(_RECEIVE_SHADOWS_OFF)] _ReceiveShadows("Receive Shadows", Float) = 1.0
         [Toggle(_NO_LIGHT_COOKIE)] _NoLightCookie("Ignore Light Cookie", Float) = 0.0
         [Toggle(_FOG_SCALE_BLEND)] _FogScaleBlend("Blend Fog Scale By Vertex Alpha", Float) = 0.0
+        [Toggle(_FOG_RADIAL)] _FogRadial("Fog By Radial Distance", Float) = 0.0
     }
 
     SubShader
@@ -59,6 +60,7 @@ Shader "AlpineLib/Stylized/Lit"
             #pragma shader_feature_local _RECEIVE_SHADOWS_OFF
             #pragma shader_feature_local_fragment _NO_LIGHT_COOKIE
             #pragma shader_feature_local _FOG_SCALE_BLEND
+            #pragma shader_feature_local_fragment _FOG_RADIAL
 
             // Universal Pipeline keywords (URP Simple Lit's set minus SSAO, decals, screen-space irradiance and
             // probe-volume SH: this shader does not read them)

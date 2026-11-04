@@ -10,8 +10,9 @@ namespace AlpineLib.Procedural.Sky {
     /// uniformly, so its puffs stay round) and painted from a <see cref="CloudPalette"/> by height.
     /// </summary>
     /// <remarks>
-    /// Every puff starts as a round level-1 blob; faces buried inside another puff (and collapsed ones) are dropped,
-    /// and only if the mesh is still over its class's budget are the smallest puffs coarsened, one at a time. The
+    /// Every puff starts as a round level-1 blob; faces buried inside another puff's real faceted solid (and collapsed
+    /// ones) are dropped, so no hole opens where puffs meet, and only if the mesh is still over its class's budget are
+    /// the smallest puffs coarsened, one at a time. The
     /// upper <see cref="TopShare"/> of its height is painted from the top strip, the belly from the light end of the
     /// underside strip, so it reads soft from below. The base lies at y 0, centred on x and z.
     /// </remarks>
@@ -22,8 +23,11 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>How far down the underside strip (from its light end) the base reaches.</summary>
         public const double UndersideReach = 0.15;
 
-        /// <summary>Share of a puff's radius inside which another puff's faces count as buried (under its least noisy radius).</summary>
-        public const double BuriedShare = 0.9;
+        /// <summary>
+        /// Margin under a puff's inner share (the radius share its faceted, noisy surface never dips below) inside which
+        /// another puff's faces count as buried.
+        /// </summary>
+        public const double BuriedMargin = 0.98;
 
         private const int FineLevel = 1;
         private const int CoarseLevel = 0;
@@ -49,8 +53,8 @@ namespace AlpineLib.Procedural.Sky {
 
             double low = cloudClass.MinDiameter / field.MinScale;
             double high = cloudClass.MaxDiameter / field.MaxScale;
-            double t = CloudFieldSettings.VariantsPerClass > 1 ? variant / (double)(CloudFieldSettings.VariantsPerClass - 1) : 0.5;
-            return low + (high - low) * t;
+            double share = CloudFieldSettings.VariantsPerClass > 1 ? variant / (double)(CloudFieldSettings.VariantsPerClass - 1) : 0.5;
+            return low + (high - low) * share;
         }
 
         /// <summary>
@@ -105,7 +109,10 @@ namespace AlpineLib.Procedural.Sky {
 
         // Centred and scaled as a whole (never per axis, so puffs stay round) until the wider footprint span is the diameter.
         private static List<BlobPuff> FitFootprint(List<BlobPuff> puffs, double diameter) {
-            double minX = double.MaxValue, maxX = double.MinValue, minZ = double.MaxValue, maxZ = double.MinValue;
+            double minX = double.MaxValue;
+            double maxX = double.MinValue;
+            double minZ = double.MaxValue;
+            double maxZ = double.MinValue;
             foreach (BlobPuff puff in puffs) {
                 minX = Math.Min(minX, puff.Centre.X - puff.Radii.X);
                 maxX = Math.Max(maxX, puff.Centre.X + puff.Radii.X);
@@ -127,10 +134,10 @@ namespace AlpineLib.Procedural.Sky {
             double rise = 0.95 + 0.2 * random.NextDouble();
             double angle = spin + index * GoldenAngle;
             double distance = reach * Math.Max(0.0, footprint - radius);
-            double x = Math.Cos(angle) * distance;
-            double z = Math.Sin(angle) * distance * oval;
+            double centreX = Math.Cos(angle) * distance;
+            double centreZ = Math.Sin(angle) * distance * oval;
             var radii = new Vector3((float)radius, (float)(radius * rise), (float)radius);
-            return new BlobPuff(new Vector3((float)x, (float)(radius * 0.15), (float)z), radii);
+            return new BlobPuff(new Vector3((float)centreX, (float)(radius * 0.15), (float)centreZ), radii);
         }
 
         // Round puffs heaped on the middle of the base, sunk a third into it, so the cloud domes up.
@@ -138,20 +145,20 @@ namespace AlpineLib.Procedural.Sky {
             double radius = largest * (0.55 + 0.25 * random.NextDouble());
             double angle = random.NextDouble() * 2.0 * Math.PI;
             double distance = footprint * 0.3 * Math.Sqrt(random.NextDouble());
-            double x = Math.Cos(angle) * distance;
-            double z = Math.Sin(angle) * distance;
+            double centreX = Math.Cos(angle) * distance;
+            double centreZ = Math.Sin(angle) * distance;
             double rise = 1.0 + 0.15 * random.NextDouble();
-            double top = TopAt(puffs, baseCount, x, z);
+            double top = TopAt(puffs, baseCount, centreX, centreZ);
             var radii = new Vector3((float)radius, (float)(radius * rise), (float)radius);
-            return new BlobPuff(new Vector3((float)x, (float)(top - radii.Y * 0.35), (float)z), radii);
+            return new BlobPuff(new Vector3((float)centreX, (float)(top - radii.Y * 0.35), (float)centreZ), radii);
         }
 
-        private static double TopAt(List<BlobPuff> puffs, int baseCount, double x, double z) {
+        private static double TopAt(List<BlobPuff> puffs, int baseCount, double pointX, double pointZ) {
             double top = 0.0;
             for (int index = 0; index < baseCount; index++) {
                 BlobPuff puff = puffs[index];
-                double acrossX = (x - puff.Centre.X) / puff.Radii.X;
-                double acrossZ = (z - puff.Centre.Z) / puff.Radii.Z;
+                double acrossX = (pointX - puff.Centre.X) / puff.Radii.X;
+                double acrossZ = (pointZ - puff.Centre.Z) / puff.Radii.Z;
                 double across = acrossX * acrossX + acrossZ * acrossZ;
                 if (across >= 1.0) continue;
 
@@ -161,51 +168,89 @@ namespace AlpineLib.Procedural.Sky {
             return top;
         }
 
-        // Every puff at its level, keeping only faces not collapsed and not buried inside another puff.
+        // Every puff at its level, keeping only faces not collapsed and not buried inside another puff's real solid.
         private static FacetMesh BuildVisible(List<BlobPuff> puffs, int[] levels, ulong variantSeed) {
-            var mesh = new FacetMesh();
-            var blob = new FacetMesh(Icosphere.FaceCount(FineLevel));
+            var blobs = new FacetMesh[puffs.Count];
+            var shares = new double[puffs.Count];
             for (int index = 0; index < puffs.Count; index++) {
-                blob.Clear();
                 BlobPuff puff = puffs[index];
-                BlobMesh.AppendTo(blob, PuffSpec(levels[index], puff), StableHash.Mix(StableHash.Mix(variantSeed, PuffSalt), (ulong)index), puff.Centre);
-                AppendVisible(mesh, blob, puffs, index);
+                blobs[index] = new FacetMesh(Icosphere.FaceCount(levels[index]));
+                BlobMesh.AppendTo(blobs[index], PuffSpec(levels[index], puff), StableHash.Mix(StableHash.Mix(variantSeed, PuffSalt), (ulong)index), puff.Centre);
+                shares[index] = InnerShare(blobs[index], puff) * BuriedMargin;
             }
 
+            var mesh = new FacetMesh();
+            for (int index = 0; index < puffs.Count; index++) AppendVisible(mesh, blobs[index], puffs, shares, index);
             return mesh;
         }
 
-        private static void AppendVisible(FacetMesh mesh, FacetMesh blob, List<BlobPuff> puffs, int owner) {
+        /// <summary>
+        /// The share of <paramref name="puff"/>'s radii (squashed below its centre like its blob) its faceted surface
+        /// <paramref name="blob"/> never dips below: the least distance from the centre to any face plane, in the
+        /// puff's unit space. Faces lying on the flat base are skipped (points under the base never count as buried).
+        /// </summary>
+        public static double InnerShare(FacetMesh blob, BlobPuff puff) {
+            if (blob == null) throw new ArgumentNullException(nameof(blob));
+
+            List<Vector3> corners = blob.Positions;
+            double least = double.MaxValue;
+            for (int face = 0; face < blob.FaceCount; face++) {
+                if (IsOnBase(corners, face)) continue;
+
+                Vector3 a = ToUnit(corners[face * 3], puff);
+                Vector3 b = ToUnit(corners[face * 3 + 1], puff);
+                Vector3 c = ToUnit(corners[face * 3 + 2], puff);
+
+                Vector3 normal = Vector3.Cross(b - a, c - a);
+                float length = normal.Length();
+                if (length < 1e-12f) continue;
+
+                least = Math.Min(least, Math.Abs(Vector3.Dot(normal / length, a)));
+            }
+
+            return least == double.MaxValue ? 0.0 : least;
+        }
+
+        private static bool IsOnBase(List<Vector3> corners, int face) {
+            return corners[face * 3].Y <= BaseEpsilon && corners[face * 3 + 1].Y <= BaseEpsilon && corners[face * 3 + 2].Y <= BaseEpsilon;
+        }
+
+        // A point in the puff's unit space: centred, divided by its radii, the squashed half below stretched back.
+        private static Vector3 ToUnit(Vector3 point, BlobPuff puff) {
+            double below = point.Y < puff.Centre.Y ? 1.0 - SquashBelow : 1.0;
+            return new Vector3(
+                (point.X - puff.Centre.X) / puff.Radii.X,
+                (float)((point.Y - puff.Centre.Y) / (puff.Radii.Y * below)),
+                (point.Z - puff.Centre.Z) / puff.Radii.Z);
+        }
+
+        private static void AppendVisible(FacetMesh mesh, FacetMesh blob, List<BlobPuff> puffs, double[] shares, int owner) {
             List<Vector3> corners = blob.Positions;
             for (int face = 0; face < blob.FaceCount; face++) {
                 Vector3 a = corners[face * 3];
                 Vector3 b = corners[face * 3 + 1];
                 Vector3 c = corners[face * 3 + 2];
                 if (Vector3.Cross(b - a, c - a).LengthSquared() < 1e-10f) continue;
-                if (IsBuried(a, b, c, puffs, owner)) continue;
+                if (IsBuried(a, b, c, puffs, shares, owner)) continue;
 
                 mesh.AddFace(a, b, c);
             }
         }
 
-        // All three corners strictly inside one other puff's least-noisy solid (a convex shell), never on the base.
-        private static bool IsBuried(Vector3 a, Vector3 b, Vector3 c, List<BlobPuff> puffs, int owner) {
+        // All three corners strictly inside one other puff's inner ball (inside its real solid), never on the base.
+        private static bool IsBuried(Vector3 a, Vector3 b, Vector3 c, List<BlobPuff> puffs, double[] shares, int owner) {
             for (int index = 0; index < puffs.Count; index++) {
                 if (index == owner) continue;
-                if (IsInside(a, puffs[index]) && IsInside(b, puffs[index]) && IsInside(c, puffs[index])) return true;
+                if (IsInside(a, puffs[index], shares[index]) && IsInside(b, puffs[index], shares[index]) && IsInside(c, puffs[index], shares[index])) return true;
             }
 
             return false;
         }
 
-        private static bool IsInside(Vector3 point, BlobPuff puff) {
+        private static bool IsInside(Vector3 point, BlobPuff puff, double share) {
             if (point.Y <= BaseEpsilon) return false;
 
-            double below = point.Y < puff.Centre.Y ? 1.0 - SquashBelow : 1.0;
-            double x = (point.X - puff.Centre.X) / puff.Radii.X;
-            double y = (point.Y - puff.Centre.Y) / (puff.Radii.Y * below);
-            double z = (point.Z - puff.Centre.Z) / puff.Radii.Z;
-            return x * x + y * y + z * z < BuriedShare * BuriedShare;
+            return ToUnit(point, puff).LengthSquared() < share * share;
         }
 
         // Puff indices, largest first, ties by index: an insertion sort, so every runtime orders them alike.
@@ -242,8 +287,8 @@ namespace AlpineLib.Procedural.Sky {
             };
         }
 
-        private static Vector2 CloudUv(CloudPalette palette, double t) {
-            double height = 1.0 - t;
+        private static Vector2 CloudUv(CloudPalette palette, double heightShare) {
+            double height = 1.0 - heightShare;
             double split = 1.0 - TopShare;
             if (height >= split) return palette.Top.At((1.0 - height) / TopShare);
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using AlpineLib.Procedural.Meshing;
 using AlpineLib.Procedural.Sky;
 using AlpineLib.Rendering;
 using UnityEngine;
@@ -19,9 +20,10 @@ namespace AlpineLib.Sky {
     /// </para>
     /// <para>
     /// While the wind is not ready (a cold join replaying) the last drift is held; when the first ready drift lands
-    /// more than <see cref="JumpMetres"/> from it, or after drawing nothing while waiting, the clouds condense in over
-    /// <see cref="FadeSeconds"/> instead of popping. Per-cell clouds are pure data, built on demand and released once
-    /// no camera's window holds the cell.
+    /// more than <see cref="JumpMetres"/> from it the clouds glide from the held drift to the live one over
+    /// <see cref="FadeSeconds"/>, and after drawing nothing while waiting they condense in over it instead of popping
+    /// (steps clamped to <see cref="MaxStepSeconds"/>, so a hitch cannot skip either). Per-cell clouds are pure data,
+    /// built on demand into pooled lists and released once no camera's window holds the cell.
     /// </para>
     /// <para>
     /// Instanced through <c>Graphics.RenderMeshInstanced</c> per camera from <c>beginCameraRendering</c>, on one layer,
@@ -32,17 +34,20 @@ namespace AlpineLib.Sky {
     /// </remarks>
     [ExecuteAlways, DisallowMultipleComponent]
     public sealed class CloudField : MonoBehaviour {
-        /// <summary>Most the drift may jump when the wind turns ready before clouds condense in rather than pop.</summary>
+        /// <summary>Most the drift may jump when the wind turns ready before clouds glide to it rather than snap.</summary>
         public const double JumpMetres = 1.0;
 
-        /// <summary>Seconds clouds take to condense in after a jump.</summary>
+        /// <summary>Seconds clouds take to glide to the live drift after a jump, or to condense in after a cold join.</summary>
         public const float FadeSeconds = 0.5f;
+
+        /// <summary>Longest step one update advances a glide or fade by, seconds.</summary>
+        public const float MaxStepSeconds = 0.1f;
 
         private const int StaleBatchFrames = 120;
 
         private readonly Dictionary<int, CloudBatch> _batches = new Dictionary<int, CloudBatch>();
-        private readonly Dictionary<(long X, long Z), CloudInstance[]> _cells = new Dictionary<(long X, long Z), CloudInstance[]>();
-        private readonly List<CloudInstance> _scratch = new List<CloudInstance>();
+        private readonly Dictionary<(long X, long Z), List<CloudInstance>> _cells = new Dictionary<(long X, long Z), List<CloudInstance>>();
+        private readonly Stack<List<CloudInstance>> _cellPool = new Stack<List<CloudInstance>>();
         private readonly List<(long X, long Z)> _releasable = new List<(long X, long Z)>();
         private readonly List<int> _staleCameras = new List<int>();
         private readonly HashSet<int> _warnedFarClip = new HashSet<int>();
@@ -58,12 +63,15 @@ namespace AlpineLib.Sky {
         private float _reach;
         private bool _isSubscribed;
         private WindVector _displacement;
+        private WindVector _glide;
         private double _time;
+        private double _lastStep;
         private bool _hasDisplacement;
         private bool _wasReady;
         private bool _hasWaited;
         private float _fade = 1f;
-        private int _fadeFrame = -1;
+        private float _glideShare = 1f;
+        private int _lastSweepFrame;
 
         /// <summary>The scatter the field draws, or null before <see cref="Configure"/>.</summary>
         public CloudFieldScatter Scatter => _scatter;
@@ -83,8 +91,11 @@ namespace AlpineLib.Sky {
         /// <summary>World y of the ground clouds float over.</summary>
         public float GroundY => _frame != null ? _frame.GroundY : 0f;
 
-        /// <summary>The drift the clouds are placed with (held while the wind is not ready).</summary>
+        /// <summary>The drift the clouds are placed with (held while the wind is not ready, gliding after a jump).</summary>
         public WindVector Displacement => _displacement;
+
+        /// <summary>True while the clouds glide from a held drift to the live one.</summary>
+        public bool IsGliding => _glideShare < 1f;
 
         /// <summary>
         /// Draws <paramref name="scatter"/> with the cloud meshes of <paramref name="meshes"/> (not owned) through
@@ -111,13 +122,24 @@ namespace AlpineLib.Sky {
             Invalidate();
         }
 
-        /// <summary>True when <paramref name="material"/> is instanced and carries <c>_FLAT_SHADING</c>, <c>_NO_LIGHT_COOKIE</c> and <c>_RECEIVE_SHADOWS_OFF</c>.</summary>
+        /// <summary>
+        /// True when <paramref name="material"/> is instanced and carries <c>_FLAT_SHADING</c>, <c>_NO_LIGHT_COOKIE</c>,
+        /// <c>_RECEIVE_SHADOWS_OFF</c> and <c>_FOG_RADIAL</c> (so a cloud is as fogged at the screen's edge as dead ahead).
+        /// </summary>
         public static bool HasCloudKeywords(Material material) {
             if (material == null || !material.enableInstancing) return false;
 
             return material.IsKeywordEnabled(StylizedLitShader.FlatShadingKeyword)
                 && material.IsKeywordEnabled(StylizedLitShader.NoLightCookieKeyword)
-                && material.IsKeywordEnabled(StylizedLitShader.ReceiveShadowsOffKeyword);
+                && material.IsKeywordEnabled(StylizedLitShader.ReceiveShadowsOffKeyword)
+                && material.IsKeywordEnabled(StylizedLitShader.FogRadialKeyword);
+        }
+
+        /// <summary>Sets the fog distance scale the clouds draw with (reviews), through a clone unless the asset already matches.</summary>
+        public void SetFogScale(float fogScale) {
+            _fogScale = fogScale;
+            DestroyClone();
+            EnsureMaterial();
         }
 
         /// <summary>
@@ -149,7 +171,9 @@ namespace AlpineLib.Sky {
             UpdateWind();
             if (!_hasDisplacement) return null;
 
-            return BatchFor(camera);
+            CloudBatch batch = BatchFor(camera);
+            SweepStaleBatches();
+            return batch;
         }
 
         /// <summary>
@@ -169,7 +193,7 @@ namespace AlpineLib.Sky {
             }
         }
 
-        private static void AppendFootprints(List<Matrix4x4> matrices, IReadOnlyList<AlpineLib.Procedural.Meshing.BlobPuff> puffs, List<CloudFootprint> footprints) {
+        private static void AppendFootprints(List<Matrix4x4> matrices, IReadOnlyList<BlobPuff> puffs, List<CloudFootprint> footprints) {
             foreach (Matrix4x4 matrix in matrices) {
                 float scale = new Vector3(matrix.m00, matrix.m10, matrix.m20).magnitude;
                 for (int index = 0; index < puffs.Count; index++) {
@@ -182,6 +206,7 @@ namespace AlpineLib.Sky {
 
         /// <summary>Drops every cached cell and camera batch, so the next draw rebuilds.</summary>
         public void Invalidate() {
+            foreach (List<CloudInstance> clouds in _cells.Values) RecycleCell(clouds);
             _cells.Clear();
             _batches.Clear();
             _revision++;
@@ -210,6 +235,7 @@ namespace AlpineLib.Sky {
             _template = null;
             _batches.Clear();
             _cells.Clear();
+            _cellPool.Clear();
         }
 
         private void HandleBeginCamera(ScriptableRenderContext context, Camera camera) {
@@ -218,15 +244,16 @@ namespace AlpineLib.Sky {
 
         private void ResetWind() {
             _displacement = WindVector.Zero;
+            _glide = WindVector.Zero;
             _time = 0.0;
             _hasDisplacement = false;
             _wasReady = false;
             _hasWaited = false;
             _fade = 1f;
-            _fadeFrame = -1;
+            _glideShare = 1f;
         }
 
-        // Holds the last drift while the wind replays; the first ready drift after a wait or a jump condenses the clouds in.
+        // Holds the last drift while the wind replays; the first ready drift after a wait or a jump glides or condenses the clouds in.
         private void UpdateWind() {
             if (_wind == null) {
                 _hasDisplacement = true;
@@ -241,29 +268,43 @@ namespace AlpineLib.Sky {
                 return;
             }
 
-            WindVector next = _wind.Displacement;
-            if (!_wasReady && IsJump(next)) {
-                _fade = 0f;
-                _fadeFrame = Time.frameCount;
+            WindVector target = _wind.Displacement;
+            if (!_wasReady) BeginTransition(target);
+            _wasReady = true;
+            AdvanceTransition();
+            _displacement = target + _glide * (1.0 - SmoothShare(_glideShare));
+            _hasDisplacement = true;
+        }
+
+        // A cold join that drew nothing condenses in; a drawn sky further than the jump limit away glides from where it is.
+        private void BeginTransition(WindVector target) {
+            _lastStep = Time.realtimeSinceStartupAsDouble;
+            if (!_hasDisplacement) {
+                if (_hasWaited) _fade = 0f;
+                return;
             }
 
-            _displacement = next;
-            _hasDisplacement = true;
-            _wasReady = true;
-            AdvanceFade();
+            WindVector jump = _displacement - target;
+            if (jump.Length <= JumpMetres) return;
+
+            _glide = jump;
+            _glideShare = 0f;
         }
 
-        private bool IsJump(WindVector next) {
-            if (!_hasDisplacement) return _hasWaited;
+        // Several cameras in one frame step by the time between them (about nothing), so neither runs ahead.
+        private void AdvanceTransition() {
+            double now = Time.realtimeSinceStartupAsDouble;
+            float step = (float)Math.Min(MaxStepSeconds, Math.Max(0.0, now - _lastStep));
+            _lastStep = now;
+            if (_fade < 1f) _fade = Mathf.Min(1f, _fade + step / FadeSeconds);
+            if (_glideShare >= 1f) return;
 
-            return (next - _displacement).Length > JumpMetres;
+            _glideShare = Mathf.Min(1f, _glideShare + step / FadeSeconds);
+            if (_glideShare >= 1f) _glide = WindVector.Zero;
         }
 
-        private void AdvanceFade() {
-            if (_fade >= 1f || _fadeFrame == Time.frameCount) return;
-
-            _fadeFrame = Time.frameCount;
-            _fade = Mathf.Min(1f, _fade + Time.unscaledDeltaTime / FadeSeconds);
+        private static double SmoothShare(float share) {
+            return share * share * (3.0 - 2.0 * share);
         }
 
         private CloudBatch BatchFor(Camera camera) {
@@ -326,14 +367,15 @@ namespace AlpineLib.Sky {
         }
 
         private void AddCell(CloudBatch batch, CloudFieldFrame frame, long cellX, long cellZ, Vector3 world, float groundY) {
-            CloudInstance[] clouds = CellOf(cellX, cellZ);
+            List<CloudInstance> clouds = CellOf(cellX, cellZ);
             double reach = _scatter.Settings.WindowRadius + _scatter.Settings.WanderAmplitude;
-            for (int index = 0; index < clouds.Length; index++) {
-                double offsetX = frame.OffsetX(cellX, clouds[index].AnchorX);
-                double offsetZ = frame.OffsetZ(cellZ, clouds[index].AnchorZ);
+            for (int index = 0; index < clouds.Count; index++) {
+                CloudInstance cloud = clouds[index];
+                double offsetX = frame.OffsetX(cellX, cloud.AnchorX);
+                double offsetZ = frame.OffsetZ(cellZ, cloud.AnchorZ);
                 if (offsetX * offsetX + offsetZ * offsetZ >= reach * reach) continue;
 
-                AddCloud(batch, clouds[index], offsetX, offsetZ, world, groundY);
+                AddCloud(batch, cloud, offsetX, offsetZ, world, groundY);
             }
         }
 
@@ -351,14 +393,26 @@ namespace AlpineLib.Sky {
             batch.Add(cloud.MeshIndex, Matrix4x4.TRS(position, yaw, new Vector3(scale, scale, scale)));
         }
 
-        private CloudInstance[] CellOf(long cellX, long cellZ) {
-            if (_cells.TryGetValue((cellX, cellZ), out CloudInstance[] clouds)) return clouds;
+        private List<CloudInstance> CellOf(long cellX, long cellZ) {
+            if (_cells.TryGetValue((cellX, cellZ), out List<CloudInstance> clouds)) return clouds;
 
-            _scratch.Clear();
-            _scatter.AppendCell(cellX, cellZ, _scratch);
-            clouds = _scratch.ToArray();
+            clouds = _cellPool.Count > 0 ? _cellPool.Pop() : new List<CloudInstance>(_scatter.Settings.CandidatesPerCell);
+            _scatter.AppendCell(cellX, cellZ, clouds);
             _cells.Add((cellX, cellZ), clouds);
             return clouds;
+        }
+
+        private void RecycleCell(List<CloudInstance> clouds) {
+            clouds.Clear();
+            _cellPool.Push(clouds);
+        }
+
+        // Cameras that stopped drawing (destroyed, disabled) let go of their cells on a timer too, not only when one moves.
+        private void SweepStaleBatches() {
+            if (Time.frameCount - _lastSweepFrame <= StaleBatchFrames) return;
+
+            _lastSweepFrame = Time.frameCount;
+            ReleaseCells();
         }
 
         // Drops stale camera batches, then every cell no live batch's window holds.
@@ -368,7 +422,10 @@ namespace AlpineLib.Sky {
             foreach ((long X, long Z) cell in _cells.Keys) {
                 if (!IsHeld(cell)) _releasable.Add(cell);
             }
-            foreach ((long X, long Z) cell in _releasable) _cells.Remove(cell);
+            foreach ((long X, long Z) cell in _releasable) {
+                RecycleCell(_cells[cell]);
+                _cells.Remove(cell);
+            }
         }
 
         private bool IsHeld((long X, long Z) cell) {

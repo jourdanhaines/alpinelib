@@ -33,6 +33,12 @@ namespace AlpineLib.Procedural.Sky {
         private readonly FbmSettings _wanderNoise;
         private readonly double _totalWeight;
 
+        // Per-thread candidate scratch, so building a cell allocates nothing once it has grown.
+        [ThreadStatic] private static double[] _candidateX;
+        [ThreadStatic] private static double[] _candidateZ;
+        [ThreadStatic] private static ulong[] _candidatePriority;
+        [ThreadStatic] private static bool[] _candidateCovered;
+
         /// <summary>A scatter of <paramref name="seed"/> shaped by <paramref name="settings"/> (validated).</summary>
         public CloudFieldScatter(ulong seed, CloudFieldSettings settings) {
             if (settings == null) throw new ArgumentNullException(nameof(settings));
@@ -67,26 +73,33 @@ namespace AlpineLib.Procedural.Sky {
             if (clouds == null) throw new ArgumentNullException(nameof(clouds));
 
             int perCell = Settings.CandidatesPerCell;
-            var x = new double[Neighbourhood * perCell];
-            var z = new double[x.Length];
-            var priority = new ulong[x.Length];
-            var isCovered = new bool[x.Length];
+            int candidates = Neighbourhood * perCell;
+            EnsureScratch(candidates);
             for (int neighbour = 0; neighbour < Neighbourhood; neighbour++) {
                 long otherX = cellX + neighbour % 3 - 1;
                 long otherZ = cellZ + neighbour / 3 - 1;
                 for (int slot = 0; slot < perCell; slot++) {
                     int index = neighbour * perCell + slot;
-                    DrawPlace(otherX, otherZ, slot, out double localX, out double localZ, out priority[index], out double keepRoll);
-                    x[index] = (neighbour % 3 - 1) * Settings.CellSize + localX;
-                    z[index] = (neighbour / 3 - 1) * Settings.CellSize + localZ;
-                    isCovered[index] = keepRoll < Coverage(otherX, otherZ, localX, localZ);
+                    DrawPlace(otherX, otherZ, slot, out double localX, out double localZ, out _candidatePriority[index], out double keepRoll);
+                    _candidateX[index] = (neighbour % 3 - 1) * Settings.CellSize + localX;
+                    _candidateZ[index] = (neighbour / 3 - 1) * Settings.CellSize + localZ;
+                    _candidateCovered[index] = keepRoll < Coverage(otherX, otherZ, localX, localZ);
                 }
             }
 
             int own = 4 * perCell;
             for (int slot = 0; slot < perCell; slot++) {
-                if (IsKept(own + slot, x, z, priority, isCovered)) clouds.Add(CreateCloud(cellX, cellZ, slot));
+                if (IsKept(own + slot, candidates)) clouds.Add(CreateCloud(cellX, cellZ, slot));
             }
+        }
+
+        private static void EnsureScratch(int candidates) {
+            if (_candidateX != null && _candidateX.Length >= candidates) return;
+
+            _candidateX = new double[candidates];
+            _candidateZ = new double[candidates];
+            _candidatePriority = new ulong[candidates];
+            _candidateCovered = new bool[candidates];
         }
 
         /// <summary>
@@ -105,13 +118,13 @@ namespace AlpineLib.Procedural.Sky {
         /// The bounded wander of <paramref name="cloud"/> about its anchor at session <paramref name="time"/>, metres:
         /// two 1D fBm over time, held to <see cref="CloudFieldSettings.WanderAmplitude"/> in length.
         /// </summary>
-        public void Wander(in CloudInstance cloud, double time, out double x, out double z) {
+        public void Wander(in CloudInstance cloud, double time, out double wanderX, out double wanderZ) {
             double noiseX = Fbm.Sample1(StableHash.Mix(cloud.WanderSeed, WanderXSalt), time, _wanderNoise);
             double noiseZ = Fbm.Sample1(StableHash.Mix(cloud.WanderSeed, WanderZSalt), time, _wanderNoise);
             double length = Math.Sqrt(noiseX * noiseX + noiseZ * noiseZ);
             double scale = length > 1.0 ? Settings.WanderAmplitude / length : Settings.WanderAmplitude;
-            x = noiseX * scale;
-            z = noiseZ * scale;
+            wanderX = noiseX * scale;
+            wanderZ = noiseZ * scale;
         }
 
         /// <summary>
@@ -122,28 +135,28 @@ namespace AlpineLib.Procedural.Sky {
             double full = Settings.FullRadius;
             if (distance <= full) return 1.0;
 
-            double t = Math.Min(1.0, (distance - full) / (Settings.WindowRadius - full));
-            return 1.0 - t * t * (3.0 - 2.0 * t);
+            double share = Math.Min(1.0, (distance - full) / (Settings.WindowRadius - full));
+            return 1.0 - share * share * (3.0 - 2.0 * share);
         }
 
         // Kept unless out of coverage or crowded by a covered candidate of higher priority (ties broken by index).
-        private bool IsKept(int index, double[] x, double[] z, ulong[] priority, bool[] isCovered) {
-            if (!isCovered[index]) return false;
+        private bool IsKept(int index, int candidates) {
+            if (!_candidateCovered[index]) return false;
 
             double spacing = Settings.AnchorSpacing * Settings.AnchorSpacing;
-            for (int other = 0; other < x.Length; other++) {
-                if (other == index || !isCovered[other] || !Outranks(other, index, priority)) continue;
+            for (int other = 0; other < candidates; other++) {
+                if (other == index || !_candidateCovered[other] || !Outranks(other, index)) continue;
 
-                double deltaX = x[other] - x[index];
-                double deltaZ = z[other] - z[index];
+                double deltaX = _candidateX[other] - _candidateX[index];
+                double deltaZ = _candidateZ[other] - _candidateZ[index];
                 if (deltaX * deltaX + deltaZ * deltaZ < spacing) return false;
             }
 
             return true;
         }
 
-        private static bool Outranks(int other, int index, ulong[] priority) {
-            return priority[other] > priority[index] || (priority[other] == priority[index] && other < index);
+        private static bool Outranks(int other, int index) {
+            return _candidatePriority[other] > _candidatePriority[index] || (_candidatePriority[other] == _candidatePriority[index] && other < index);
         }
 
         // The first four draws of a slot: where it sits, its priority and its coverage roll.
@@ -185,8 +198,8 @@ namespace AlpineLib.Procedural.Sky {
             return (CloudClass)(CloudFieldSettings.ClassCount - 1);
         }
 
-        private static double Lerp(double low, double high, double t) {
-            return low + (high - low) * t;
+        private static double Lerp(double low, double high, double share) {
+            return low + (high - low) * share;
         }
     }
 }

@@ -42,7 +42,8 @@ struct Varyings
 };
 
 // Distance fog with the view depth scaled by _FogScale, so a material can sit further into (or out of) the fog;
-// with _FOG_SCALE_BLEND the scale runs to _FogScaleAlpha by the vertex alpha.
+// with _FOG_SCALE_BLEND the scale runs to _FogScaleAlpha by the vertex alpha. _FOG_RADIAL fogs by the distance to
+// the camera instead, so sky objects fog alike across the screen and while the camera turns.
 half StylizedFogFactor(float3 positionWS, half fogBlend)
 {
     bool anyFogEnabled = false;
@@ -57,7 +58,11 @@ half StylizedFogFactor(float3 positionWS, half fogBlend)
 #endif
     if (!anyFogEnabled) return 0.0h;
 
+#if defined(_FOG_RADIAL)
+    float viewZ = distance(positionWS, GetCameraPositionWS());
+#else
     float viewZ = -(mul(UNITY_MATRIX_V, float4(positionWS, 1.0)).z);
+#endif
     float nearToFarZ = max(viewZ - _ProjectionParams.y, 0.0);
     half fogScale = lerp(_FogScale, _FogScaleAlpha, fogBlend);
     return ComputeFogFactorZ0ToFar(nearToFarZ * fogScale);

@@ -18,9 +18,12 @@ namespace AlpineLib.Rendering {
         /// <summary>Fog distance scale runs from <see cref="FogScale"/> to <see cref="FogScaleAlpha"/> by vertex alpha.</summary>
         public const string FogScaleBlendKeyword = "_FOG_SCALE_BLEND";
 
+        /// <summary>Fog by the distance to the camera, not the view depth (sky objects, so they fog alike across the screen).</summary>
+        public const string FogRadialKeyword = "_FOG_RADIAL";
+
         /// <summary>Every material keyword the shader declares.</summary>
         public static readonly string[] MaterialKeywords = {
-            VertexColorKeyword, FlatShadingKeyword, EmissionKeyword, AlphaTestKeyword, ReceiveShadowsOffKeyword, NoLightCookieKeyword, FogScaleBlendKeyword
+            VertexColorKeyword, FlatShadingKeyword, EmissionKeyword, AlphaTestKeyword, ReceiveShadowsOffKeyword, NoLightCookieKeyword, FogScaleBlendKeyword, FogRadialKeyword
         };
 
         public static readonly int BaseMap = Shader.PropertyToID("_BaseMap");
@@ -44,6 +47,7 @@ namespace AlpineLib.Rendering {
         public static readonly int ReceiveShadowsToggle = Shader.PropertyToID("_ReceiveShadows");
         public static readonly int NoLightCookieToggle = Shader.PropertyToID("_NoLightCookie");
         public static readonly int FogScaleBlendToggle = Shader.PropertyToID("_FogScaleBlend");
+        public static readonly int FogRadialToggle = Shader.PropertyToID("_FogRadial");
 
         public static readonly int ShadowTintGlobal = Shader.PropertyToID("_AlpineShadowTint");
         public static readonly int RimColorGlobal = Shader.PropertyToID("_AlpineRimColor");
@@ -83,6 +87,7 @@ namespace AlpineLib.Rendering {
                 case ReceiveShadowsOffKeyword: return ReceiveShadowsToggle;
                 case NoLightCookieKeyword: return NoLightCookieToggle;
                 case FogScaleBlendKeyword: return FogScaleBlendToggle;
+                case FogRadialKeyword: return FogRadialToggle;
                 default: return 0;
             }
         }
