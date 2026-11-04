@@ -1,12 +1,16 @@
 using System.Collections.Generic;
 
 namespace AlpineLib.Procedural.Sky {
-    /// <summary>A cold replay of a <see cref="WindField"/>'s drift: the ordered sum of its first steps and the checkpoints on the way.</summary>
+    /// <summary>
+    /// A replay of a <see cref="WindField"/>'s drift: the ordered sum of its first <see cref="Steps"/> steps and the
+    /// checkpoints passed on the way, from <see cref="FirstCheckpoint"/> on.
+    /// </summary>
     public sealed class WindReplay {
-        public WindReplay(WindField field, long steps, WindVector sum, IReadOnlyList<WindVector> checkpoints) {
+        public WindReplay(WindField field, long steps, WindVector sum, int firstCheckpoint, IReadOnlyList<WindVector> checkpoints) {
             Field = field;
             Steps = steps;
             Sum = sum;
+            FirstCheckpoint = firstCheckpoint;
             Checkpoints = checkpoints;
         }
 
@@ -19,7 +23,10 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>The ordered sum of the first <see cref="Steps"/> steps.</summary>
         public WindVector Sum { get; }
 
-        /// <summary>The sum at every multiple of <see cref="WindField.CheckpointSteps"/> up to <see cref="Steps"/>, from 0.</summary>
+        /// <summary>Checkpoint index (in <see cref="WindField.CheckpointSteps"/>) of <see cref="Checkpoints"/>[0].</summary>
+        public int FirstCheckpoint { get; }
+
+        /// <summary>The sum at consecutive multiples of <see cref="WindField.CheckpointSteps"/>, from <see cref="FirstCheckpoint"/>.</summary>
         public IReadOnlyList<WindVector> Checkpoints { get; }
     }
 }

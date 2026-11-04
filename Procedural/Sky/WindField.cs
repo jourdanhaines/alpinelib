@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using AlpineLib.Procedural.Noise;
 
 namespace AlpineLib.Procedural.Sky {
@@ -23,8 +24,9 @@ namespace AlpineLib.Procedural.Sky {
     /// The running sum is cached (with a checkpoint every <see cref="CheckpointSteps"/> steps and the previous
     /// step's sum), so frame-by-frame queries cost one step at most, a clock easing back by under a step costs
     /// nothing, and an hour-long cold join is 3600 steps. A longer cold join (time counts from server start) is
-    /// replayed off the main thread with <see cref="Replay"/> and taken in with <see cref="Adopt"/>. Not thread
-    /// safe, except <see cref="Replay"/> and the pure functions, which never touch the cache.
+    /// replayed off the main thread from <see cref="ResumePoint"/> with <see cref="ReplayFrom"/> and taken in with
+    /// <see cref="Adopt"/>. Not thread safe, except <see cref="Replay"/>, <see cref="ReplayFrom"/> and the pure
+    /// functions, which never touch the cache.
     /// </para>
     /// <para>
     /// The drift is unbounded in double: consumers reduce it modulo their own tile in double before any float cast.
@@ -182,16 +184,51 @@ namespace AlpineLib.Procedural.Sky {
         /// touching the cache, so it may run on a worker thread; hand the result to <see cref="Adopt"/>.
         /// </summary>
         public WindReplay Replay(long steps) {
+            return ReplayFrom(0, WindVector.Zero, steps, CancellationToken.None);
+        }
+
+        /// <summary>
+        /// The furthest point at or before <paramref name="steps"/> the cache already knows the sum of: its running
+        /// position or the nearest checkpoint. Main thread; <see cref="ReplayFrom"/> on a worker continues it bit-exactly.
+        /// </summary>
+        public void ResumePoint(long steps, out long fromSteps, out WindVector fromSum) {
             if (steps < 0) throw new ArgumentOutOfRangeException(nameof(steps), steps, "Must not be negative.");
 
-            var checkpoints = new List<WindVector>((int)(steps / CheckpointSteps) + 1) { WindVector.Zero };
-            WindVector sum = WindVector.Zero;
-            for (long step = 0; step < steps; step++) {
-                sum += StepVelocity(step) * StepSeconds;
-                if ((step + 1) % CheckpointSteps == 0) checkpoints.Add(sum);
+            long checkpoint = NearestCheckpoint(steps);
+            fromSteps = checkpoint * CheckpointSteps;
+            fromSum = _checkpoints[(int)checkpoint];
+            if (_cachedSteps <= fromSteps || _cachedSteps > steps) return;
+
+            fromSteps = _cachedSteps;
+            fromSum = _cachedSum;
+        }
+
+        /// <summary>
+        /// The ordered sum of the first <paramref name="steps"/> steps, continuing <paramref name="fromSum"/> (the sum
+        /// of the first <paramref name="fromSteps"/>, see <see cref="ResumePoint"/>) without touching the cache, so it may
+        /// run on a worker; stops with <see cref="OperationCanceledException"/> once <paramref name="token"/> is cancelled.
+        /// </summary>
+        public WindReplay ReplayFrom(long fromSteps, WindVector fromSum, long steps, CancellationToken token) {
+            if (fromSteps < 0) throw new ArgumentOutOfRangeException(nameof(fromSteps), fromSteps, "Must not be negative.");
+            if (steps < fromSteps) throw new ArgumentOutOfRangeException(nameof(steps), steps, "Must not be before the start.");
+
+            int firstCheckpoint = (int)(fromSteps / CheckpointSteps) + 1;
+            var checkpoints = new List<WindVector>((int)(steps / CheckpointSteps - fromSteps / CheckpointSteps) + 1);
+            if (fromSteps % CheckpointSteps == 0) {
+                firstCheckpoint--;
+                checkpoints.Add(fromSum);
             }
 
-            return new WindReplay(this, steps, sum, checkpoints);
+            WindVector sum = fromSum;
+            for (long step = fromSteps; step < steps; step++) {
+                sum += StepVelocity(step) * StepSeconds;
+                if ((step + 1) % CheckpointSteps != 0) continue;
+
+                checkpoints.Add(sum);
+                token.ThrowIfCancellationRequested();
+            }
+
+            return new WindReplay(this, steps, sum, firstCheckpoint, checkpoints);
         }
 
         /// <summary>Takes in a <see cref="Replay"/> of this field: the cache jumps ahead to it and keeps its checkpoints. Main thread.</summary>
@@ -199,12 +236,20 @@ namespace AlpineLib.Procedural.Sky {
             if (replay == null) throw new ArgumentNullException(nameof(replay));
             if (!ReferenceEquals(replay.Field, this)) throw new ArgumentException("The replay is of another field.", nameof(replay));
 
-            for (int index = _checkpoints.Count; index < replay.Checkpoints.Count; index++) _checkpoints.Add(replay.Checkpoints[index]);
+            AppendCheckpoints(replay);
             if (replay.Steps <= _cachedSteps) return;
 
             _cachedSteps = replay.Steps;
             _cachedSum = replay.Sum;
             _hasPrevious = false;
+        }
+
+        // Only checkpoints that continue the known ones without a gap.
+        private void AppendCheckpoints(WindReplay replay) {
+            int skip = _checkpoints.Count - replay.FirstCheckpoint;
+            if (skip < 0) return;
+
+            for (int index = skip; index < replay.Checkpoints.Count; index++) _checkpoints.Add(replay.Checkpoints[index]);
         }
 
         // One step back is the kept previous sum; further back resumes from the nearest checkpoint.

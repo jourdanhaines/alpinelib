@@ -1,3 +1,4 @@
+using System.Threading;
 using System.Threading.Tasks;
 using AlpineLib.DI;
 using AlpineLib.Procedural.Sky;
@@ -10,8 +11,9 @@ namespace AlpineLib.Sky {
     /// </summary>
     /// <remarks>
     /// Sampling is lazy, so it works in edit mode and needs no update ordering against its readers. A cold join
-    /// further than <see cref="WindField.ReplayBudgetSteps"/> from the cache replays on a worker: <see cref="IsReady"/>
-    /// is false and the drift holds its last value until the replay is taken in.
+    /// further than <see cref="WindField.ReplayBudgetSteps"/> from the cache replays on a worker, resuming from the
+    /// cache: <see cref="IsReady"/> is false and the drift holds its last value until the replay is taken in. A replay
+    /// no longer needed (the time came back within budget, a new field, destroy) is cancelled and its fault observed.
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class WindService : MonoBehaviour, IWindService {
@@ -23,6 +25,7 @@ namespace AlpineLib.Sky {
         private Vector3 _velocity;
         private WindVector _displacement;
         private Task<WindReplay> _replay;
+        private CancellationTokenSource _replayCancel;
         private bool _isReady = true;
         private bool _isRegistered;
         private bool _isReplayBroken;
@@ -75,7 +78,7 @@ namespace AlpineLib.Sky {
         public void Configure(WindField field, ISessionClock clock) {
             _field = field;
             _clock = clock ?? new LocalSessionClock();
-            _replay = null;
+            DropReplay();
             _isReplayBroken = false;
             _displacement = WindVector.Zero;
             Invalidate();
@@ -110,6 +113,7 @@ namespace AlpineLib.Sky {
         }
 
         private void OnDestroy() {
+            DropReplay();
             UnregisterFromInjector();
         }
 
@@ -135,6 +139,8 @@ namespace AlpineLib.Sky {
         }
 
         private void SampleDisplacement(double seconds) {
+            bool isWithinBudget = _field.StepsToReach(seconds) <= WindField.ReplayBudgetSteps;
+            if (_replay != null && isWithinBudget) DropReplay();
             if (_replay != null && !TryAdoptReplay()) {
                 _isReady = false;
                 return;
@@ -149,9 +155,13 @@ namespace AlpineLib.Sky {
             _isReady = true;
         }
 
+        // Resumes from what the cache already knows, so a replay after a long pause sums only the gap.
         private void StartReplay(long steps) {
             WindField field = _field;
-            _replay = Task.Run(() => field.Replay(steps));
+            field.ResumePoint(steps, out long fromSteps, out WindVector fromSum);
+            _replayCancel = new CancellationTokenSource();
+            CancellationToken token = _replayCancel.Token;
+            _replay = Task.Run(() => field.ReplayFrom(fromSteps, fromSum, steps, token), token);
         }
 
         // False while the replay still runs; a faulted one is logged and later samples sum in place.
@@ -159,14 +169,33 @@ namespace AlpineLib.Sky {
             if (!_replay.IsCompleted) return false;
 
             Task<WindReplay> replay = _replay;
-            _replay = null;
+            ClearReplay();
             if (replay.IsFaulted) {
                 Debug.LogException(replay.Exception, this);
                 _isReplayBroken = true;
                 return true;
             }
-            if (ReferenceEquals(replay.Result.Field, _field)) _field.Adopt(replay.Result);
+            if (!replay.IsCanceled) _field.Adopt(replay.Result);
             return true;
+        }
+
+        // Cancels a pending replay; a fault it ends in later is observed, never left to the finaliser.
+        private void DropReplay() {
+            if (_replay == null) return;
+
+            _replayCancel?.Cancel();
+            _replay.ContinueWith(ObserveFault, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+            ClearReplay();
+        }
+
+        private void ClearReplay() {
+            _replayCancel?.Dispose();
+            _replayCancel = null;
+            _replay = null;
+        }
+
+        private static void ObserveFault(Task<WindReplay> replay) {
+            Debug.LogWarning($"WindService::DropReplay->a dropped replay faulted: {replay.Exception?.GetBaseException().Message}");
         }
 
         private void Invalidate() {

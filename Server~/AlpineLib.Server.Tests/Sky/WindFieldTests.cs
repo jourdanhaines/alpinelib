@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using AlpineLib.Procedural.Sky;
 using Xunit;
 
@@ -164,6 +165,37 @@ namespace AlpineLib.Server.Tests.Sky {
             Assert.Equal(5000L, field.CachedSteps);
             Assert.Throws<ArgumentException>(() => field.Adopt(new WindField(9UL, Settings).Replay(10)));
             Assert.True(new WindField(9UL, Settings).StepsToReach(WindField.ReplayBudgetSteps + 10.0) > WindField.ReplayBudgetSteps);
+        }
+
+        // A replay resumed from what the cache knows sums only the gap, to the same bits as a cold one.
+        [Fact]
+        public void ResumedReplayEqualsTheColdSumBitForBit() {
+            const long target = 20000;
+            var field = new WindField(21UL, Settings);
+            field.Displacement(5000.3);
+            field.ResumePoint(target, out long fromSteps, out WindVector fromSum);
+            Assert.Equal(5000L, fromSteps);
+
+            WindReplay resumed = field.ReplayFrom(fromSteps, fromSum, target, CancellationToken.None);
+            WindReplay cold = new WindField(21UL, Settings).Replay(target);
+            Assert.Equal(cold.Sum, resumed.Sum);
+            field.Adopt(resumed);
+            Assert.Equal(target, field.CachedSteps);
+            Assert.Equal(new WindField(21UL, Settings).Displacement(19000.5), field.Displacement(19000.5));
+
+            field.Displacement(100.0);
+            field.ResumePoint(target, out fromSteps, out _);
+            Assert.Equal(target / WindField.CheckpointSteps * WindField.CheckpointSteps, fromSteps);
+        }
+
+        [Fact]
+        public void CancelledReplayStops() {
+            var field = new WindField(22UL, Settings);
+            using (var cancel = new CancellationTokenSource()) {
+                cancel.Cancel();
+                Assert.Throws<OperationCanceledException>(() => field.ReplayFrom(0, WindVector.Zero, 100000, cancel.Token));
+            }
+            Assert.Equal(0L, field.CachedSteps);
         }
 
         [Fact]
