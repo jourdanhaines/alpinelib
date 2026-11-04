@@ -68,7 +68,8 @@ namespace AlpineLib.Rendering {
             material.SetFloat(toggle, enabled != isInverted ? 1f : 0f);
         }
 
-        private static int ToggleFor(string keyword) {
+        /// <summary>The inspector toggle property mirroring <paramref name="keyword"/>, or 0 for none.</summary>
+        public static int ToggleFor(string keyword) {
             switch (keyword) {
                 case VertexColorKeyword: return VertexColorToggle;
                 case FlatShadingKeyword: return FlatShadingToggle;
