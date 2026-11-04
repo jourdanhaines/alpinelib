@@ -4,7 +4,9 @@
     "FluxInteractive.AlpineLib",
     "FluxInteractive.AlpineLib.Netcode",
     "FluxInteractive.AlpineLib.Appearance",
-    "UnityEngine.UI"
+    "UnityEngine.UI",
+    "FluxInteractive.AlpineLib.Rendering",
+    "Unity.RenderPipelines.Core.Runtime"
   ],
   "includePlatforms": [
     "Editor"
