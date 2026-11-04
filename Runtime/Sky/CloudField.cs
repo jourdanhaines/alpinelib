@@ -80,6 +80,9 @@ namespace AlpineLib.Sky {
         /// <summary>Condensing share applied to every cloud: below 1 while the clouds fade in after a wind jump.</summary>
         public float Fade => _fade;
 
+        /// <summary>World y of the ground clouds float over.</summary>
+        public float GroundY => _frame != null ? _frame.GroundY : 0f;
+
         /// <summary>The drift the clouds are placed with (held while the wind is not ready).</summary>
         public WindVector Displacement => _displacement;
 
@@ -147,6 +150,34 @@ namespace AlpineLib.Sky {
             if (!_hasDisplacement) return null;
 
             return BatchFor(camera);
+        }
+
+        /// <summary>
+        /// Fills <paramref name="footprints"/> (cleared first, no allocation once it has grown) with one footprint per
+        /// puff of every cloud <paramref name="camera"/> draws now: world centre and horizontal radius, scaled with the
+        /// cloud. Empty when the camera is filtered out.
+        /// </summary>
+        public void CopyFootprints(Camera camera, List<CloudFootprint> footprints) {
+            if (footprints == null) throw new ArgumentNullException(nameof(footprints));
+
+            footprints.Clear();
+            CloudBatch batch = Peek(camera);
+            if (batch == null) return;
+
+            for (int meshIndex = 0; meshIndex < CloudFieldSettings.MeshCount; meshIndex++) {
+                AppendFootprints(batch.MatricesOf(meshIndex), _meshes.CloudPuffs(meshIndex), footprints);
+            }
+        }
+
+        private static void AppendFootprints(List<Matrix4x4> matrices, IReadOnlyList<AlpineLib.Procedural.Meshing.BlobPuff> puffs, List<CloudFootprint> footprints) {
+            foreach (Matrix4x4 matrix in matrices) {
+                float scale = new Vector3(matrix.m00, matrix.m10, matrix.m20).magnitude;
+                for (int index = 0; index < puffs.Count; index++) {
+                    System.Numerics.Vector3 centre = puffs[index].Centre;
+                    Vector3 world = matrix.MultiplyPoint3x4(new Vector3(centre.X, centre.Y, centre.Z));
+                    footprints.Add(new CloudFootprint(world, puffs[index].Radii.X * scale));
+                }
+            }
         }
 
         /// <summary>Drops every cached cell and camera batch, so the next draw rebuilds.</summary>
