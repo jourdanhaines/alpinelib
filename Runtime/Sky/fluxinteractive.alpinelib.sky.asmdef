@@ -1,0 +1,21 @@
+{
+  "name": "FluxInteractive.AlpineLib.Sky",
+  "rootNamespace": "AlpineLib.Sky",
+  "references": [
+    "FluxInteractive.AlpineLib",
+    "FluxInteractive.AlpineLib.Procedural",
+    "FluxInteractive.AlpineLib.Procedural.Kits",
+    "FluxInteractive.AlpineLib.Rendering",
+    "Unity.RenderPipelines.Core.Runtime",
+    "Unity.RenderPipelines.Universal.Runtime"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}
