@@ -81,9 +81,10 @@ Shader "AlpineLib/Stylized/Lit"
             // Unity defined keywords
             #pragma multi_compile _ LOD_FADE_CROSSFADE
 
-            // GPU instancing
+            // GPU instancing. SH from UnityPerDraw, not per-instance arrays: Graphics.RenderMeshInstanced never fills
+            // those, so instanced props lost their ambient (zeros on Vulkan, stale values on OpenGL).
             #pragma multi_compile_instancing
-            #pragma instancing_options renderinglayer
+            #pragma instancing_options renderinglayer nolightprobe
 
             #include "StylizedLitInput.hlsl"
             #include "StylizedLitForwardPass.hlsl"
