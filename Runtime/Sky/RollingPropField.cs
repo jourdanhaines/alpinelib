@@ -12,8 +12,8 @@ namespace AlpineLib.Sky {
     /// <remarks>
     /// <para>
     /// Stateless and client-side: a prop's pose is a pure function of its path and the drift, so every client with the
-    /// same session time draws the same roll, and a floating-origin shift moves the props with their cell roots. Nothing
-    /// collides or replicates.
+    /// same session time draws the same roll, and a floating-origin shift moves the props with their cell roots. Each
+    /// mesh is drawn at its prop's scale times the path's seeded squash. Nothing collides or replicates.
     /// </para>
     /// <para>
     /// While the wind is not ready (a cold join replaying) the last drift is held and nothing is drawn before the first
@@ -360,7 +360,9 @@ namespace AlpineLib.Sky {
                 if ((world - camera).sqrMagnitude > reachSquared) continue;
 
                 var rotation = new Quaternion((float)pose.RotationX, (float)pose.RotationY, (float)pose.RotationZ, (float)pose.RotationW);
-                var local = Matrix4x4.TRS(new Vector3((float)pose.X, (float)pose.Y, (float)pose.Z), rotation, new Vector3(scale, scale, scale));
+                RollerPath path = prop.Path;
+                var size = new Vector3(scale * (float)path.SquashX, scale * (float)path.SquashY, scale * (float)path.SquashZ);
+                var local = Matrix4x4.TRS(new Vector3((float)pose.X, (float)pose.Y, (float)pose.Z), rotation, size);
                 _batch.Add(prop.Kind, toWorld * local);
             }
         }

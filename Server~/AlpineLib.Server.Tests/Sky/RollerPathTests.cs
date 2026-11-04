@@ -39,7 +39,7 @@ namespace AlpineLib.Server.Tests.Sky {
                 built++;
                 for (double distance = 0.0; distance <= path.Length; distance += 0.05) {
                     path.GroundPoint(distance, out double x, out double z);
-                    double penetration = scene.Penetration(x, z);
+                    double penetration = scene.Penetration(x, z, path.Radius);
                     Assert.True(penetration <= ClearSlack, $"slot {slot} at {distance:0.00} m: {penetration:0.000} m into a footprint or past the cell");
                 }
             }
@@ -53,22 +53,26 @@ namespace AlpineLib.Server.Tests.Sky {
                 RollerPath path = scene.Build(StableHash.Mix(11UL, (ulong)slot), Prevailing(slot), (slot % 7 - 3) * 0.05);
                 Assert.NotNull(path);
                 Assert.InRange(path.Length, Settings.MinClippedLength, Settings.MaxLength + 1e-9);
-                Assert.InRange(path.HopHeight, Settings.MinHopHeight, Settings.MaxHopHeight);
+                Assert.InRange(path.HopHeight, Settings.MinHopHeight * path.Size - 1e-9, Settings.MaxHopHeight * path.Size + 1e-9);
                 Assert.InRange(path.RestGap, Settings.MinRestGap, Settings.MaxRestGap);
                 Assert.InRange(path.StartOffset, -Settings.UpwindReach - 1e-9, 0.0);
-                Assert.True(path.HopSpacing <= Settings.MaxHopSpacing * 1.5 + 1e-9, $"hop spacing {path.HopSpacing}");
-                Assert.True(path.HopCount == 1 || path.HopSpacing >= Settings.MinHopSpacing * 0.75 - 1e-9, $"hop spacing {path.HopSpacing}");
+                Assert.True(path.HopSpacing <= Settings.MaxHopSpacing * path.Size * 1.5 + 1e-9, $"hop spacing {path.HopSpacing}");
+                Assert.True(path.HopCount == 1 || path.HopSpacing >= Settings.MinHopSpacing * path.Size * 0.75 - 1e-9, $"hop spacing {path.HopSpacing}");
                 CheckPoses(path, scene);
             }
         }
 
         [Fact]
         public void LoopsWithoutVisibleJumpsAtTwentyMetresPerSecond() {
+            double fastest = 0.0;
+            int stalls = 0;
             for (int slot = 0; slot < 60; slot++) {
                 RollerPathScene scene = RollerPathScene.Open(0.45);
                 WindVector prevailing = Prevailing(slot);
                 RollerPath path = scene.Build(StableHash.Mix(13UL, (ulong)slot), prevailing);
-                double travel = StressWind * Settings.GroundSpeedShare * Frame;
+                fastest = Math.Max(fastest, path.GroundSpeedShare);
+                stalls += path.HasStall ? 1 : 0;
+                double travel = StressWind * path.GroundSpeedShare * Frame;
                 int frames = (int)Math.Ceiling(path.Cycle * 1.2 / travel);
                 int wraps = 0;
                 RollerPose previous = RollerPose.Of(path, WindAt(prevailing, 0.0));
@@ -76,7 +80,9 @@ namespace AlpineLib.Server.Tests.Sky {
                     RollerPose next = RollerPose.Of(path, WindAt(prevailing, frame * Frame));
                     if (next.Distance < previous.Distance - 1.0) {
                         wraps++;
-                        Assert.True(previous.Scale < 0.05 && next.Scale < 0.05, $"slot {slot}: wrapped at visible scale {previous.Scale:0.000} -> {next.Scale:0.000}");
+                        // A wrap pops at most half the jump limit of ball radius: at the fastest share a frame covers ~1/6 of the scale-out.
+                        double pop = Math.Max(previous.Scale, next.Scale) * path.Radius;
+                        Assert.True(pop < JumpLimit * 0.5, $"slot {slot}: wrapped at visible scale {previous.Scale:0.000} -> {next.Scale:0.000} ({pop:0.000} m)");
                     } else {
                         CheckStep(path, previous, next, travel, slot);
                     }
@@ -84,13 +90,18 @@ namespace AlpineLib.Server.Tests.Sky {
                 }
                 Assert.True(wraps >= 1, $"slot {slot} never looped");
             }
+            Assert.True(fastest > Settings.MaxGroundSpeedShare - 0.15, $"the fastest of 60 rolls only reaches share {fastest:0.000}");
+            Assert.True(stalls >= 1, "no roll of 60 stalls, so the stall was never looped through");
         }
 
         [Fact]
         public void TheContactPointDoesNotSlip() {
-            var flat = new RollerPathSettings { WobbleAmplitude = 0.0, MinHopHeight = 0.0, MaxHopHeight = 0.0 };
+            var flat = new RollerPathSettings { WobbleAmplitude = 0.0, MinHopHeight = 0.0, MaxHopHeight = 0.0, StallChance = 0.0 };
             for (int slot = 0; slot < 20; slot++) {
-                RollerPath path = RollerPath.Build(StableHash.Mix(17UL, (ulong)slot), 0.0, -30.0, 0.45, Prevailing(slot), flat, (x, z) => true, (x, z) => 0.0);
+                ulong seed = StableHash.Mix(17UL, (ulong)slot);
+                double size = slot % 2 == 0 ? flat.MaxSize : RollerPath.SizeOf(seed, flat);
+                RollerPath path = RollerPath.Build(seed, 0.0, -30.0, 0.45 * size, size, Prevailing(slot), flat, (x, z) => true, (x, z) => 0.0);
+                Assert.Equal(0.45 * size, path.Radius, 12);
                 const double step = 0.01;
                 RollerPose before = RollerPose.At(path, 10.0);
                 RollerPose after = RollerPose.At(path, 10.0 + step);
@@ -114,7 +125,8 @@ namespace AlpineLib.Server.Tests.Sky {
             Assert.InRange(cycle, 0.0, path.Cycle);
             double step = later - cycle;
             if (step < 0.0) step += path.Cycle;
-            Assert.InRange(step, 0.06 - 1e-6, 0.06 + 1e-6);
+            double expected = 0.1 * path.GroundSpeedShare;
+            Assert.InRange(step, expected - 1e-6, expected + 1e-6);
         }
 
         [Fact]
@@ -176,6 +188,65 @@ namespace AlpineLib.Server.Tests.Sky {
         }
 
         [Fact]
+        public void SizeSpeedAndShapeVaryWithinBounds() {
+            var prevailing = new WindVector(0.6, 0.8);
+            double smallShare = 0.0, bigShare = 0.0, minWobble = double.MaxValue, maxWobble = 0.0;
+            int small = 0, big = 0, belowMiddle = 0, stalls = 0, built = 0;
+            for (int slot = 0; slot < 400; slot++) {
+                ulong seed = StableHash.Mix(31UL, (ulong)slot);
+                double size = RollerPath.SizeOf(seed, Settings);
+                Assert.InRange(size, Settings.MinSize, Settings.MaxSize);
+                Assert.Equal(size, RollerPath.SizeOf(seed, Settings));
+                belowMiddle += size < (Settings.MinSize + Settings.MaxSize) * 0.5 ? 1 : 0;
+                RollerPath path = RollerPathScene.Open(0.45).Build(seed, prevailing);
+                built++;
+                Assert.Equal(size, path.Size);
+                Assert.Equal(0.45 * size, path.Radius, 12);
+                Assert.InRange(path.GroundSpeedShare, Settings.MinGroundSpeedShare, Settings.MaxGroundSpeedShare);
+                Assert.InRange(path.WobbleAmplitude, Settings.WobbleAmplitude * Settings.MinWobbleShare - 1e-9, Settings.WobbleAmplitude + 1e-9);
+                minWobble = Math.Min(minWobble, path.WobbleAmplitude);
+                maxWobble = Math.Max(maxWobble, path.WobbleAmplitude);
+                double[] squash = { path.SquashX, path.SquashY, path.SquashZ };
+                foreach (double axis in squash) Assert.InRange(axis, 1.0 - Settings.MaxSquash - 1e-9, 1.0 + 1e-12);
+                Assert.Equal(1.0, Math.Max(squash[0], Math.Max(squash[1], squash[2])), 12);
+                Assert.InRange(Math.Abs(path.Tilt), 0.0, Settings.MaxTiltDegrees * Math.PI / 180.0 + 1e-12);
+                if (path.HasStall) {
+                    stalls++;
+                    Assert.True(path.Heft >= Settings.StallHeft, $"slot {slot}: a light roll (heft {path.Heft:0.00}) stalls");
+                    Assert.InRange(path.StallGap, Settings.MinStall, Settings.MaxStall);
+                    Assert.InRange(path.StallAt, path.HopSpacing - 1e-9, path.Length - path.HopSpacing + 1e-9);
+                    Assert.Equal(0.0, path.Hop(path.StallAt), 9);
+                }
+                if (path.Heft < 0.25) {
+                    small++;
+                    smallShare += path.GroundSpeedShare;
+                } else if (path.Heft > 0.75) {
+                    big++;
+                    bigShare += path.GroundSpeedShare;
+                }
+            }
+            Assert.True(belowMiddle > built * 0.6, $"only {belowMiddle} of {built} sizes are below the middle of the range (small ones should be common)");
+            Assert.True(small > 0 && big > 0 && smallShare / small > bigShare / big + 0.15, $"small rolls ({small}) are not clearly faster than big ones ({big})");
+            Assert.True(stalls > 0, "no heavy roll stalls");
+            Assert.True(maxWobble - minWobble > Settings.WobbleAmplitude * 0.4, $"wobble only varies {minWobble:0.00}..{maxWobble:0.00} m");
+        }
+
+        [Fact]
+        public void AStallHoldsTheRollThenCarriesOn() {
+            RollerPath path = null;
+            for (ulong slot = 0; path == null || !path.HasStall; slot++) path = RollerPathScene.Open(0.45).Build(StableHash.Mix(37UL, slot), new WindVector(1.0, 0.0));
+            RollerPose before = RollerPose.At(path, path.StallAt - 1e-6);
+            RollerPose during = RollerPose.At(path, path.StallAt + path.StallGap * 0.5);
+            RollerPose after = RollerPose.At(path, path.StallAt + path.StallGap + 1.0);
+            Assert.True(during.IsStalled && !during.IsResting);
+            Assert.Equal(path.StallAt, during.Distance, 9);
+            Assert.Equal(before.X, during.X, 4);
+            Assert.Equal(before.Z, during.Z, 4);
+            Assert.Equal(path.StallAt + 1.0, after.Distance, 9);
+            Assert.True(RollerPose.At(path, path.Length + path.StallGap + 0.5).IsResting);
+        }
+
+        [Fact]
         public void PrevailingForMatchesTheField() {
             for (ulong seed = 1; seed < 20; seed++) {
                 Assert.Equal(new WindField(seed, WindSettings.Default).Prevailing, WindField.PrevailingFor(seed));
@@ -186,7 +257,7 @@ namespace AlpineLib.Server.Tests.Sky {
             for (double cycle = 0.0; cycle < path.Cycle; cycle += 0.1) {
                 RollerPose pose = RollerPose.At(path, cycle);
                 double lift = pose.Y - path.GroundHeight(pose.Distance) - path.Radius;
-                Assert.InRange(lift, -1e-9, Settings.MaxHopHeight + 1e-9);
+                Assert.InRange(lift, -1e-9, Settings.MaxHopHeight * path.Size + 1e-9);
                 double side = path.Wobble(path.StartOffset + pose.Distance);
                 Assert.InRange(Math.Abs(side), 0.0, 2.0 * Settings.WobbleAmplitude + 1e-9);
                 Assert.InRange(pose.Scale, 0.0, 1.0);
@@ -251,7 +322,10 @@ namespace AlpineLib.Server.Tests.Sky {
             if (path == null) return "none";
 
             var text = new StringBuilder();
-            text.Append(BitConverter.DoubleToInt64Bits(path.Length)).Append(' ').Append(BitConverter.DoubleToInt64Bits(path.Phase)).Append(' ');
+            text.Append(BitConverter.DoubleToInt64Bits(path.Length)).Append(' ').Append(BitConverter.DoubleToInt64Bits(path.Phase)).Append(' ')
+                .Append(BitConverter.DoubleToInt64Bits(path.Size)).Append(' ').Append(BitConverter.DoubleToInt64Bits(path.GroundSpeedShare)).Append(' ')
+                .Append(BitConverter.DoubleToInt64Bits(path.StallAt)).Append(' ').Append(BitConverter.DoubleToInt64Bits(path.Tilt)).Append(' ')
+                .Append(BitConverter.DoubleToInt64Bits(path.SquashX)).Append(' ');
             for (double cycle = 0.0; cycle < path.Cycle; cycle += 3.7) {
                 RollerPose pose = RollerPose.At(path, cycle);
                 text.Append(BitConverter.DoubleToInt64Bits(pose.X)).Append(',').Append(BitConverter.DoubleToInt64Bits(pose.Y)).Append(',')

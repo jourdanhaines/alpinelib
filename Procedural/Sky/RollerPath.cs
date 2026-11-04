@@ -9,15 +9,19 @@ namespace AlpineLib.Procedural.Sky {
     /// </summary>
     /// <remarks>
     /// Coordinates are the caller's plane (x, z), metres, with the wind's x East and z North. A roll cycles forever:
-    /// <see cref="Length"/> metres of rolling, then <see cref="RestGap"/> cycle metres settled at the end, then it scales
-    /// in again at the start. The cycle position is the wind's drift along the path × the ground speed share plus a
-    /// seeded phase, reduced modulo the cycle in double (<see cref="CycleOf"/>), so every client agrees without sync.
+    /// <see cref="Length"/> metres of rolling (a heavy prop may sit <see cref="StallGap"/> cycle metres at one landing on
+    /// the way), then <see cref="RestGap"/> cycle metres settled at the end, then it scales in again at the start. The
+    /// cycle position is the wind's drift along the path × the prop's own ground speed share plus a seeded phase, reduced
+    /// modulo the cycle in double (<see cref="CycleOf"/>), so every client agrees without sync. Size, speed, wobble, stall,
+    /// squash and tilt are drawn from their own seeded stream (<see cref="SizeOf"/>), so they never move the roll's line.
     /// </remarks>
     public sealed class RollerPath {
         private const double DegreesToRadians = Math.PI / 180.0;
         private const double SlopeStep = 0.25;
         private const double HopFloor = 0.65;
         private const int WobbleOctaves = 2;
+        private const ulong SizeStream = 0x53495A45UL;
+        private const ulong TraitStream = 0x54524149UL;
 
         private readonly ulong _wobbleSeed;
         private readonly ulong _hopSeed;
@@ -26,19 +30,20 @@ namespace AlpineLib.Procedural.Sky {
         private readonly double _wobbleOrigin;
         private double[] _heights;
 
-        private RollerPath(ulong seed, double slotX, double slotZ, double directionX, double directionZ, double radius, RollerPathSettings settings) {
+        private RollerPath(ulong seed, double slotX, double slotZ, double directionX, double directionZ, double radius, double wobbleAmplitude,
+                double groundSpeedShare, RollerPathSettings settings) {
             Seed = seed;
             SlotX = slotX;
             SlotZ = slotZ;
             DirectionX = directionX;
             DirectionZ = directionZ;
             Radius = radius;
-            GroundSpeedShare = settings.GroundSpeedShare;
+            GroundSpeedShare = groundSpeedShare;
             ScaleDistance = settings.ScaleDistance;
             RockAngle = settings.RockAngle;
             RockPeriod = settings.RockPeriod;
             ProfileStep = settings.ProfileStep;
-            _wobbleAmplitude = settings.WobbleAmplitude;
+            _wobbleAmplitude = wobbleAmplitude;
             _wobbleSeed = StableHash.Mix(seed, 0x574F42UL);
             _hopSeed = StableHash.Mix(seed, 0x484F50UL);
             _wobbleNoise = new FbmSettings(WobbleOctaves, 1.0 / settings.WobblePeriod);
@@ -56,8 +61,31 @@ namespace AlpineLib.Procedural.Sky {
         public double DirectionX { get; }
         public double DirectionZ { get; }
 
-        /// <summary>Ball radius, metres: the centre rides this high over the ground.</summary>
+        /// <summary>Ball radius, metres: the centre rides this high over the ground (the caller's radius, already sized).</summary>
         public double Radius { get; }
+
+        /// <summary>The prop's size over its kind's mesh (the mesh scale; <see cref="Radius"/> includes it).</summary>
+        public double Size { get; private set; } = 1.0;
+
+        /// <summary>Where the size sits in the settings' range, 0 smallest .. 1 biggest; heavier props roll slower.</summary>
+        public double Heft { get; private set; }
+
+        /// <summary>Rolled metres from the start where the prop stalls (a landing), or -1 when it never does.</summary>
+        public double StallAt { get; private set; } = -1.0;
+
+        /// <summary>Cycle metres the stall lasts (0 without one).</summary>
+        public double StallGap { get; private set; }
+
+        /// <summary>Mesh scale per local axis, each in [1 - max squash, 1] with the widest at 1.</summary>
+        public double SquashX { get; private set; } = 1.0;
+        public double SquashY { get; private set; } = 1.0;
+        public double SquashZ { get; private set; } = 1.0;
+
+        /// <summary>Seeded tip of the mesh about its local x before the spin, radians.</summary>
+        public double Tilt { get; private set; }
+
+        /// <summary>True when the prop stalls once mid-roll.</summary>
+        public bool HasStall => StallAt >= 0.0;
 
         /// <summary>Where the roll starts along the line from the slot, metres (≤ 0: upwind of it).</summary>
         public double StartOffset { get; private set; }
@@ -92,21 +120,42 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Most the wobble swings either side of its mean, metres; the roll strays up to twice this from its line.</summary>
         public double WobbleAmplitude => _wobbleAmplitude;
 
-        /// <summary>Length of one roll-and-rest cycle, metres.</summary>
-        public double Cycle => Length + RestGap;
+        /// <summary>Length of one roll, stall and rest cycle, metres.</summary>
+        public double Cycle => Length + StallGap + RestGap;
+
+        /// <summary>
+        /// Size of the prop seeded <paramref name="seed"/>: lerp(min, max, u^bias) from its own stream, so a caller can size
+        /// the ball (radius = mesh radius × size) before <see cref="Build"/> clips its roll for that radius.
+        /// </summary>
+        public static double SizeOf(ulong seed, RollerPathSettings settings) {
+            if (settings == null) throw new ArgumentNullException(nameof(settings));
+
+            double share = new SplitMix64(StableHash.Mix(seed, SizeStream)).NextDouble();
+            return Lerp(settings.MinSize, settings.MaxSize, Math.Pow(share, settings.SizeBias));
+        }
+
+        /// <summary>
+        /// <see cref="Build(ulong, double, double, double, double, WindVector, RollerPathSettings, Func{double, double, bool}, Func{double, double, double})"/>
+        /// for a prop of size 1 (the caller's radius as it is).
+        /// </summary>
+        public static RollerPath Build(ulong seed, double slotX, double slotZ, double radius, WindVector prevailing, RollerPathSettings settings,
+                Func<double, double, bool> isClear, Func<double, double, double> groundHeight) {
+            return Build(seed, slotX, slotZ, radius, 1.0, prevailing, settings, isClear, groundHeight);
+        }
 
         /// <summary>
         /// The roll of the prop seeded <paramref name="seed"/> at slot (<paramref name="slotX"/>, <paramref name="slotZ"/>) of
-        /// <paramref name="radius"/>, heading along <paramref name="prevailing"/> (unit) bent by up to the settings' jitter,
+        /// <paramref name="radius"/> (sized: the mesh radius × <paramref name="size"/>, see <see cref="SizeOf"/>), heading along <paramref name="prevailing"/> (unit) bent by up to the settings' jitter,
         /// clipped where <paramref name="isClear"/> says the centre may not go and riding <paramref name="groundHeight"/>;
         /// null when the slot is blocked or the clear roll is shorter than <see cref="RollerPathSettings.MinClippedLength"/>.
         /// </summary>
-        public static RollerPath Build(ulong seed, double slotX, double slotZ, double radius, WindVector prevailing, RollerPathSettings settings,
+        public static RollerPath Build(ulong seed, double slotX, double slotZ, double radius, double size, WindVector prevailing, RollerPathSettings settings,
                 Func<double, double, bool> isClear, Func<double, double, double> groundHeight) {
             if (settings == null) throw new ArgumentNullException(nameof(settings));
             if (isClear == null) throw new ArgumentNullException(nameof(isClear));
             if (groundHeight == null) throw new ArgumentNullException(nameof(groundHeight));
             if (!(radius > 0.0)) throw new ArgumentOutOfRangeException(nameof(radius), radius, "Must be positive.");
+            if (!(size > 0.0)) throw new ArgumentOutOfRangeException(nameof(size), size, "Must be positive.");
             if (!(prevailing.Length > 0.0)) throw new ArgumentException("The prevailing direction must not be zero.", nameof(prevailing));
             settings.Validate();
 
@@ -117,11 +166,16 @@ namespace AlpineLib.Procedural.Sky {
             double x = baseX + baseZ * bend;
             double z = baseZ - baseX * bend;
             double norm = Math.Sqrt(x * x + z * z);
-            var shape = new RollerPath(seed, slotX, slotZ, x / norm, z / norm, radius, settings);
+            var traits = new SplitMix64(StableHash.Mix(seed, TraitStream));
+            double heft = HeftOf(size, settings);
+            double speedShare = Clamp01(heft * (1.0 - settings.SpeedJitter) + traits.NextDouble() * settings.SpeedJitter);
+            double groundSpeedShare = Lerp(settings.MaxGroundSpeedShare, settings.MinGroundSpeedShare, speedShare);
+            double wobble = settings.WobbleAmplitude * Lerp(settings.MinWobbleShare, 1.0, traits.NextDouble());
+            var shape = new RollerPath(seed, slotX, slotZ, x / norm, z / norm, radius, wobble, groundSpeedShare, settings);
 
             double target = Lerp(settings.MinLength, settings.MaxLength, random.NextDouble());
-            double spacing = Lerp(settings.MinHopSpacing, settings.MaxHopSpacing, random.NextDouble());
-            double hopHeight = Lerp(settings.MinHopHeight, settings.MaxHopHeight, random.NextDouble());
+            double spacing = Lerp(settings.MinHopSpacing, settings.MaxHopSpacing, random.NextDouble()) * size;
+            double hopHeight = Lerp(settings.MinHopHeight, settings.MaxHopHeight, random.NextDouble()) * size;
             double restGap = Lerp(settings.MinRestGap, settings.MaxRestGap, random.NextDouble());
             double phaseShare = random.NextDouble();
             double spin = random.NextDouble() * 2.0 * Math.PI;
@@ -138,10 +192,23 @@ namespace AlpineLib.Procedural.Sky {
             shape.HopCount = Math.Max(1, (int)Math.Round(length / spacing));
             shape.HopHeight = hopHeight;
             shape.RestGap = restGap;
-            shape.Phase = phaseShare * (length + restGap);
+            shape.Size = size;
+            shape.Heft = heft;
             shape.Spin = spin;
+            shape.DrawTraits(traits, settings);
+            shape.Phase = phaseShare * shape.Cycle;
             shape._heights = shape.SampleHeights(start, length, groundHeight);
             return shape;
+        }
+
+        /// <summary>
+        /// Rolled metres at cycle position <paramref name="cycle"/>: the cycle itself up to the stall, held at the stall's
+        /// landing through it, the cycle less the stall after; past <see cref="Length"/> once resting. Never decreases.
+        /// </summary>
+        public double RolledAt(double cycle) {
+            if (!HasStall || cycle <= StallAt) return cycle;
+
+            return cycle < StallAt + StallGap ? StallAt : cycle - StallGap;
         }
 
         /// <summary>The wind's drift (metres, x East z North) along the roll's direction.</summary>
@@ -261,6 +328,36 @@ namespace AlpineLib.Procedural.Sky {
                 heights[index] = groundHeight(x, z);
             }
             return heights;
+        }
+
+        // Stall (heavy props only, at an inner landing so no hop is cut), squash and tilt, all from the trait stream.
+        private void DrawTraits(SplitMix64 traits, RollerPathSettings settings) {
+            double stallRoll = traits.NextDouble();
+            double stallSpot = traits.NextDouble();
+            double stallLength = traits.NextDouble();
+            if (Heft >= settings.StallHeft && stallRoll < settings.StallChance && HopCount >= 2) {
+                int landing = 1 + Math.Min(HopCount - 2, (int)Math.Floor(stallSpot * (HopCount - 1)));
+                StallAt = landing * HopSpacing;
+                StallGap = Lerp(settings.MinStall, settings.MaxStall, stallLength);
+            }
+
+            double squashX = 1.0 - settings.MaxSquash * traits.NextDouble();
+            double squashY = 1.0 - settings.MaxSquash * traits.NextDouble();
+            double squashZ = 1.0 - settings.MaxSquash * traits.NextDouble();
+            double widest = Math.Max(squashX, Math.Max(squashY, squashZ));
+            SquashX = squashX / widest;
+            SquashY = squashY / widest;
+            SquashZ = squashZ / widest;
+            Tilt = (traits.NextDouble() * 2.0 - 1.0) * settings.MaxTiltDegrees * DegreesToRadians;
+        }
+
+        private static double HeftOf(double size, RollerPathSettings settings) {
+            double range = settings.MaxSize - settings.MinSize;
+            return range > 0.0 ? Clamp01((size - settings.MinSize) / range) : 0.5;
+        }
+
+        private static double Clamp01(double value) {
+            return Math.Max(0.0, Math.Min(1.0, value));
         }
 
         private static double Lerp(double from, double to, double share) {

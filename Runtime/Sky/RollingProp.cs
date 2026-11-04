@@ -16,7 +16,7 @@ namespace AlpineLib.Sky {
         /// <summary>Index returned by <see cref="RollingPropField.AddKind"/>.</summary>
         public int Kind { get; }
 
-        /// <summary>Uniform scale of the kind's mesh (the path's radius already includes it).</summary>
+        /// <summary>Uniform scale of the kind's mesh, normally the path's <see cref="RollerPath.Size"/> (its radius already includes it).</summary>
         public float Scale { get; }
     }
 }

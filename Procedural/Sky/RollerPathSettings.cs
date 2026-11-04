@@ -3,7 +3,8 @@ using System;
 namespace AlpineLib.Procedural.Sky {
     /// <summary>
     /// Tunables of wind-rolled props (tumbleweeds): how long a roll runs, how it hops and wobbles, how long a prop rests
-    /// at the end before it reappears at the start, and how fast it rolls for the wind's drift.
+    /// at the end before it reappears at the start, how fast it rolls for the wind's drift, and how much props vary in
+    /// size, speed, wobble and shape (small ones common and fast, big ones rare, slow and prone to stalling).
     /// </summary>
     /// <remarks>Distances are ground metres along the path unless named otherwise.</remarks>
     public sealed class RollerPathSettings {
@@ -23,6 +24,14 @@ namespace AlpineLib.Procedural.Sky {
         /// </summary>
         public double DirectionJitterDegrees { get; set; } = 10.0;
 
+        /// <summary>Range of a prop's size over its kind's mesh; size = lerp(min, max, u^<see cref="SizeBias"/>).</summary>
+        public double MinSize { get; set; } = 0.65;
+        public double MaxSize { get; set; } = 1.45;
+
+        /// <summary>Power on the size draw: above 1 makes small props common and big ones rare.</summary>
+        public double SizeBias { get; set; } = 2.0;
+
+        /// <summary>Hop spacing and height at size 1; both scale with the prop's size.</summary>
         public double MinHopSpacing { get; set; } = 6.0;
         public double MaxHopSpacing { get; set; } = 14.0;
         public double MinHopHeight { get; set; } = 0.2;
@@ -31,6 +40,9 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Most the roll strays sideways from its straight line, metres.</summary>
         public double WobbleAmplitude { get; set; } = 1.2;
 
+        /// <summary>Least share of <see cref="WobbleAmplitude"/> a prop wobbles with (each draws its own share up to 1).</summary>
+        public double MinWobbleShare { get; set; } = 0.35;
+
         /// <summary>Wavelength of the sideways wobble along the path, metres.</summary>
         public double WobblePeriod { get; set; } = 24.0;
 
@@ -38,8 +50,27 @@ namespace AlpineLib.Procedural.Sky {
         public double MinRestGap { get; set; } = 20.0;
         public double MaxRestGap { get; set; } = 60.0;
 
-        /// <summary>Share of the wind's drift along the path a prop rolls.</summary>
-        public double GroundSpeedShare { get; set; } = 0.6;
+        /// <summary>
+        /// Range of the share of the wind's drift along the path a prop rolls: the lightest props roll near the maximum,
+        /// the heaviest near the minimum, each jittered by <see cref="SpeedJitter"/> of the range.
+        /// </summary>
+        public double MinGroundSpeedShare { get; set; } = 0.4;
+        public double MaxGroundSpeedShare { get; set; } = 0.85;
+        public double SpeedJitter { get; set; } = 0.3;
+
+        /// <summary>Props at least this heavy (0 smallest .. 1 biggest size) may stall once mid-roll, with this chance.</summary>
+        public double StallHeft { get; set; } = 0.55;
+        public double StallChance { get; set; } = 0.5;
+
+        /// <summary>Range of a stall, cycle metres spent sitting at a landing before rolling on.</summary>
+        public double MinStall { get; set; } = 2.0;
+        public double MaxStall { get; set; } = 6.0;
+
+        /// <summary>Most a prop's mesh is squashed along any of its axes (its widest axis keeps full size).</summary>
+        public double MaxSquash { get; set; } = 0.08;
+
+        /// <summary>Most a prop's mesh is tipped off its roll axis, degrees, so no two spin alike.</summary>
+        public double MaxTiltDegrees { get; set; } = 10.0;
 
         /// <summary>Cycle metres a prop takes to scale in at the start and out at the end of its rest (about a second of the base wind).</summary>
         public double ScaleDistance { get; set; } = 1.8;
@@ -79,17 +110,28 @@ namespace AlpineLib.Procedural.Sky {
             RequireRange(MinHopSpacing, MaxHopSpacing, nameof(MinHopSpacing));
             RequireRange(MinHopHeight, MaxHopHeight, nameof(MinHopHeight));
             RequireRange(MinRestGap, MaxRestGap, nameof(MinRestGap));
+            RequireRange(MinSize, MaxSize, nameof(MinSize));
+            RequireRange(MinGroundSpeedShare, MaxGroundSpeedShare, nameof(MinGroundSpeedShare));
+            RequireRange(MinStall, MaxStall, nameof(MinStall));
+            RequirePositive(MinSize, nameof(MinSize));
+            RequirePositive(SizeBias, nameof(SizeBias));
             RequirePositive(MinLength, nameof(MinLength));
             RequirePositive(MinHopSpacing, nameof(MinHopSpacing));
             RequirePositive(ProfileStep, nameof(ProfileStep));
             RequirePositive(ClipStep, nameof(ClipStep));
-            RequirePositive(GroundSpeedShare, nameof(GroundSpeedShare));
+            RequirePositive(MinGroundSpeedShare, nameof(MinGroundSpeedShare));
             RequirePositive(ScaleDistance, nameof(ScaleDistance));
             RequirePositive(RockPeriod, nameof(RockPeriod));
             RequirePositive(WobblePeriod, nameof(WobblePeriod));
             if (ScaleDistance > MaxScaleDistance) throw new ArgumentException($"{nameof(ScaleDistance)} {ScaleDistance} must fit half the shortest rest and the shortest roll ({MaxScaleDistance}).");
             if (WobbleAmplitude < 0.0 || MinHopHeight < 0.0 || UpwindReach < 0.0 || RockAngle < 0.0) throw new ArgumentException("Wobble, hop height, upwind reach and rock angle must not be negative.");
+            if (!InUnit(SpeedJitter) || !InUnit(MinWobbleShare) || !InUnit(StallHeft) || !InUnit(StallChance)) throw new ArgumentException("Speed jitter, wobble share, stall heft and stall chance must be in [0, 1].");
+            if (MinStall < 0.0 || MaxSquash < 0.0 || MaxSquash >= 1.0 || MaxTiltDegrees < 0.0 || MaxTiltDegrees > 90.0) throw new ArgumentException("Stalls must not be negative, squash must be in [0, 1) and tilt in [0, 90] degrees.");
             if (DirectionJitterDegrees < 0.0 || DirectionJitterDegrees > MaxOffWindDegrees) throw new ArgumentException($"{nameof(DirectionJitterDegrees)} must be in [0, {MaxOffWindDegrees}].");
+        }
+
+        private static bool InUnit(double value) {
+            return value >= 0.0 && value <= 1.0;
         }
 
         private static void RequireRange(double min, double max, string name) {

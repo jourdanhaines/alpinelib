@@ -38,21 +38,21 @@ namespace AlpineLib.Server.Tests.Sky {
                 slotX = -prevailing.X * 40.0;
                 slotZ = -prevailing.Z * 40.0;
             }
-            return RollerPath.Build(seed, slotX, slotZ, _radius, prevailing, Settings, IsClear, Height);
+            double size = RollerPath.SizeOf(seed, Settings);
+            double radius = _radius * size;
+            return RollerPath.Build(seed, slotX, slotZ, radius, size, prevailing, Settings, (x, z) => Penetration(x, z, radius) <= 0.0, Height);
         }
 
-        public double Penetration(double x, double z) {
-            double worst = Math.Max(Math.Abs(x), Math.Abs(z)) - (HalfCell - _radius);
+        // How far a ball of the scene's radius at size 1 (or `radius`) at (x, z) reaches into a disc or past the cell.
+        public double Penetration(double x, double z, double radius = 0.0) {
+            if (radius <= 0.0) radius = _radius;
+            double worst = Math.Max(Math.Abs(x), Math.Abs(z)) - (HalfCell - radius);
             foreach (double[] disc in _discs) {
                 double dx = x - disc[0];
                 double dz = z - disc[1];
-                worst = Math.Max(worst, disc[2] + _radius - Math.Sqrt(dx * dx + dz * dz));
+                worst = Math.Max(worst, disc[2] + radius - Math.Sqrt(dx * dx + dz * dz));
             }
             return worst;
-        }
-
-        private bool IsClear(double x, double z) {
-            return Penetration(x, z) <= 0.0;
         }
 
         private static double Height(double x, double z) {
