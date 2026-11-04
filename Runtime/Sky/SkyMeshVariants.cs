@@ -7,25 +7,46 @@ using UnityEngine;
 
 namespace AlpineLib.Sky {
     /// <summary>
-    /// The sky's cached meshes: one unit silhouette per backdrop (kind, variant) and the ground annulus under the
-    /// ring, built once from a seed, a palette and the ring's settings and shared by every camera.
-    /// <see cref="Dispose"/> destroys them.
+    /// The sky's cached meshes: one unit silhouette per backdrop (kind, variant), the ground annulus under the
+    /// ring and one drifting cloud per (class, variant), built once from seeds and palettes and shared by every
+    /// camera. <see cref="Dispose"/> destroys them.
     /// </summary>
     /// <remarks>
-    /// Records each cloud bank's own width over height (<see cref="CloudBankAspects"/>) for the layout to size it by.
+    /// Backdrop and clouds build separately (<see cref="BuildBackdrop"/>, <see cref="BuildClouds"/>), so a bad
+    /// setting for one never costs the other. Records each cloud bank's own width over height
+    /// (<see cref="CloudBankAspects"/>) for the layout to size it by, and each cloud's puffs for its ground shadow.
     /// Vertex alpha is the fog blend weight <c>_FOG_SCALE_BLEND</c> reads: rock's foot fog
     /// (<see cref="BackdropSilhouette.FootFogWeight"/>), 0 on cloud banks and the annulus.
     /// </remarks>
     public sealed class SkyMeshVariants : IDisposable {
         private readonly Mesh[] _backdrop = new Mesh[BackdropSettings.MeshCount];
         private readonly double[] _cloudBankAspects = new double[BackdropSettings.VariantsPerKind];
+        private readonly Mesh[] _clouds = new Mesh[CloudFieldSettings.MeshCount];
+        private readonly BlobPuff[][] _cloudPuffs = new BlobPuff[CloudFieldSettings.MeshCount][];
         private Mesh _ground;
 
-        /// <summary>Builds every backdrop silhouette of <paramref name="seed"/> painted from <paramref name="palette"/>, and the annulus of <paramref name="settings"/>. Main thread.</summary>
+        /// <summary>No meshes yet: build them with <see cref="BuildBackdrop"/> and <see cref="BuildClouds"/>.</summary>
+        public SkyMeshVariants() {
+        }
+
+        /// <summary>Builds the backdrop at once (see <see cref="BuildBackdrop"/>). Main thread.</summary>
         public SkyMeshVariants(ulong seed, BackdropPalette palette, BackdropSettings settings) {
+            BuildBackdrop(seed, palette, settings);
+        }
+
+        /// <summary>True once the backdrop silhouettes are built.</summary>
+        public bool HasBackdrop => _ground != null;
+
+        /// <summary>True once the cloud meshes are built.</summary>
+        public bool HasClouds => _clouds[0] != null;
+
+        /// <summary>Builds every backdrop silhouette of <paramref name="seed"/> painted from <paramref name="palette"/>, and the annulus of <paramref name="settings"/>. Main thread.</summary>
+        public void BuildBackdrop(ulong seed, BackdropPalette palette, BackdropSettings settings) {
             if (palette == null) throw new ArgumentNullException(nameof(palette));
             if (settings == null) throw new ArgumentNullException(nameof(settings));
+            if (IsDisposed) throw new ObjectDisposedException(nameof(SkyMeshVariants));
 
+            DestroyBackdrop();
             for (int index = 0; index < _backdrop.Length; index++) {
                 var kind = (BackdropFeatureKind)(index / BackdropSettings.VariantsPerKind);
                 int variant = index % BackdropSettings.VariantsPerKind;
@@ -34,6 +55,38 @@ namespace AlpineLib.Sky {
                 _backdrop[index] = ToFoggedMesh(facets, $"Backdrop {kind} {variant}", isRock);
             }
             _ground = ToFoggedMesh(BackdropSilhouette.BuildGround(settings, palette), "Backdrop Ground", false);
+        }
+
+        /// <summary>
+        /// Builds every cloud mesh of <paramref name="seed"/> (<see cref="CloudHeap"/>, metres, base at y 0) for the
+        /// classes of <paramref name="settings"/>, painted from <paramref name="palette"/>. Main thread.
+        /// </summary>
+        public void BuildClouds(ulong seed, CloudFieldSettings settings, CloudPalette palette) {
+            if (settings == null) throw new ArgumentNullException(nameof(settings));
+            if (palette == null) throw new ArgumentNullException(nameof(palette));
+            if (IsDisposed) throw new ObjectDisposedException(nameof(SkyMeshVariants));
+
+            settings.Validate();
+            DestroyClouds();
+            for (int index = 0; index < _clouds.Length; index++) {
+                CloudClass cloudClass = CloudFieldSettings.ClassOfMesh(index);
+                int variant = index % CloudFieldSettings.VariantsPerClass;
+                CloudClassSettings classSettings = settings.ClassOf(cloudClass);
+                double diameter = CloudHeap.TargetDiameter(classSettings, settings, variant);
+                FacetMesh facets = CloudHeap.Build(classSettings, diameter, CloudHeap.VariantSeed(seed, cloudClass, variant), palette, out BlobPuff[] puffs);
+                _clouds[index] = FacetMeshUnity.ToMesh(facets, $"Cloud {cloudClass} {variant}");
+                _cloudPuffs[index] = puffs;
+            }
+        }
+
+        /// <summary>The cloud mesh of <see cref="CloudInstance.MeshIndex"/> <paramref name="meshIndex"/>, or null before <see cref="BuildClouds"/>.</summary>
+        public Mesh Cloud(int meshIndex) {
+            return _clouds[meshIndex];
+        }
+
+        /// <summary>The puffs cloud mesh <paramref name="meshIndex"/> was heaped from (mesh space, metres), or null.</summary>
+        public IReadOnlyList<BlobPuff> CloudPuffs(int meshIndex) {
+            return _cloudPuffs[meshIndex];
         }
 
         /// <summary>Width over height of each cloud bank mesh, by variant (hand to the <see cref="BackdropLayout"/>).</summary>
@@ -57,12 +110,25 @@ namespace AlpineLib.Sky {
             if (IsDisposed) return;
 
             IsDisposed = true;
+            DestroyBackdrop();
+            DestroyClouds();
+        }
+
+        private void DestroyBackdrop() {
             for (int index = 0; index < _backdrop.Length; index++) {
                 DestroyMesh(_backdrop[index]);
                 _backdrop[index] = null;
             }
             DestroyMesh(_ground);
             _ground = null;
+        }
+
+        private void DestroyClouds() {
+            for (int index = 0; index < _clouds.Length; index++) {
+                DestroyMesh(_clouds[index]);
+                _clouds[index] = null;
+                _cloudPuffs[index] = null;
+            }
         }
 
         private FacetMesh BuildSilhouette(BackdropFeatureKind kind, int variant, ulong seed, BackdropPalette palette) {

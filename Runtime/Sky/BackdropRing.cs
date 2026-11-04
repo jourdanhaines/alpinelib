@@ -164,7 +164,7 @@ namespace AlpineLib.Sky {
             _revision++;
         }
 
-        private bool IsReady => _layout != null && _meshes != null && !_meshes.IsDisposed && _template != null;
+        private bool IsReady => _layout != null && _meshes != null && !_meshes.IsDisposed && _meshes.HasBackdrop && _template != null;
 
         private void OnEnable() {
             if (_isSubscribed) return;
