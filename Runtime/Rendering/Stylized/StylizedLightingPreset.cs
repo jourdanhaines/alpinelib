@@ -68,7 +68,6 @@ namespace AlpineLib.Rendering {
         [SerializeField] private VolumeProfile volumeProfile;
 
         [NonSerialized] private Material _skyboxInstance;
-        [NonSerialized] private bool _isQuitting;
 
         public Vector3 SunEuler => sunEuler;
         public Color SunColor => sunColor;
@@ -165,23 +164,11 @@ namespace AlpineLib.Rendering {
             RenderSettings.skybox = _skyboxInstance;
         }
 
-        private void OnEnable() {
-            Application.quitting += MarkQuitting;
-        }
-
-        // Runs on unload, domain reload and shutdown. RenderSettings is only touched while a scene is still playing
-        // (at quit and in editor shutdown its manager may already be gone).
+        // Runs on asset unload, domain reload and shutdown, when the RenderSettings manager may already be gone (an
+        // editor exit while playing never raises Application.quitting). Only the instance is freed; a sky that still
+        // points at it draws nothing until the next apply.
         private void OnDisable() {
-            Application.quitting -= MarkQuitting;
-            if (_skyboxInstance != null && Application.isPlaying && !_isQuitting && RenderSettings.skybox == _skyboxInstance) {
-                RenderSettings.skybox = null;
-            }
-
             DestroySkyboxInstance();
-        }
-
-        private void MarkQuitting() {
-            _isQuitting = true;
         }
 
         private void DestroySkyboxInstance() {
