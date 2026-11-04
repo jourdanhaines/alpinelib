@@ -10,7 +10,8 @@ using UnityEngine.Rendering;
 namespace AlpineLib.Sky {
     /// <summary>
     /// Emits faceted smoke puffs from its transform (a locomotive's stack): a pooled <see cref="PuffSimulation"/> fed
-    /// the wind relative to the emitter's measured motion, drawn instanced per camera.
+    /// the wind relative to the emitter's measured motion, styled by a <see cref="SmokeStyle"/> at the efficiency its
+    /// driver sets, drawn instanced per camera with one draw per shape and live shade.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -22,7 +23,7 @@ namespace AlpineLib.Sky {
     /// </para>
     /// <para>
     /// Cosmetic and not replicated: deterministic per seed and steps (<see cref="PuffSimulation"/>), so other players see
-    /// similar smoke, not the same puffs. Owns its <see cref="PuffSettings.VariantCount"/> meshes (destroyed with it);
+    /// similar smoke, not the same puffs. Owns a mesh per shape and shade (destroyed with it);
     /// draws through the material asset itself (keywords baked, see <see cref="HasSmokeKeywords"/>) from
     /// <c>beginCameraRendering</c> with shadows off, on one layer, never for capture cameras (<see cref="SkyCameraFilter"/>).
     /// Something else drives it (<see cref="Step"/> once per frame) and sets the emission (<see cref="SetEmission"/>).
@@ -30,8 +31,8 @@ namespace AlpineLib.Sky {
     /// </remarks>
     [ExecuteAlways, DisallowMultipleComponent]
     public sealed class PuffEmitter : MonoBehaviour, IOriginShiftListener {
-        private readonly List<Matrix4x4>[] _matrices = new List<Matrix4x4>[PuffSettings.VariantCount];
-        private readonly Mesh[] _meshes = new Mesh[PuffSettings.VariantCount];
+        private readonly List<Matrix4x4>[] _matrices = new List<Matrix4x4>[PuffSettings.VariantCount * SmokeStyle.MaxShades];
+        private readonly Mesh[] _meshes = new Mesh[PuffSettings.VariantCount * SmokeStyle.MaxShades];
         private readonly PuffMotion _motion = new PuffMotion();
         private PuffSimulation _simulation;
         private Material _material;
@@ -43,6 +44,7 @@ namespace AlpineLib.Sky {
         private double _rate;
         private int _burst = 1;
         private double _effort;
+        private int _shadeCount;
         private bool _isSubscribed;
         private Bounds _bounds;
 
@@ -79,28 +81,35 @@ namespace AlpineLib.Sky {
         public int Burst => _burst;
         public double Effort => _effort;
 
-        /// <summary>Puff mesh <paramref name="variant"/>, or null before <see cref="Configure"/>.</summary>
-        public Mesh MeshOf(int variant) {
-            return variant >= 0 && variant < _meshes.Length ? _meshes[variant] : null;
+        /// <summary>The style puffs are painted by, or null before <see cref="Configure"/>.</summary>
+        public SmokeStyle Style => _simulation?.Style;
+
+        /// <summary>Shades the meshes were built for (the style's).</summary>
+        public int ShadeCount => _shadeCount;
+
+        /// <summary>Puff mesh of shape <paramref name="variant"/> in shade <paramref name="shade"/>, or null before <see cref="Configure"/>.</summary>
+        public Mesh MeshOf(int variant, int shade) {
+            if (variant < 0 || variant >= PuffSettings.VariantCount || shade < 0 || shade >= _shadeCount) return null;
+
+            return _meshes[Slot(variant, shade)];
         }
 
         /// <summary>
-        /// Builds the puff meshes of <paramref name="seed"/> painted from <paramref name="light"/> and
-        /// <paramref name="dark"/> and starts an empty pool; puffs draw through <paramref name="material"/> (an asset with
-        /// the smoke keywords, not owned) on <paramref name="layer"/>.
+        /// Builds every puff shape of <paramref name="seed"/> once per shade of <paramref name="style"/> and starts an
+        /// empty pool; puffs draw through <paramref name="material"/> (an asset with the smoke keywords, not owned) on
+        /// <paramref name="layer"/>.
         /// </summary>
-        public void Configure(PuffSettings settings, ulong seed, SkyAtlasBand light, SkyAtlasBand dark, Material material, int layer) {
+        public void Configure(PuffSettings settings, SmokeStyle style, ulong seed, Material material, int layer) {
             if (settings == null) throw new ArgumentNullException(nameof(settings));
+            if (style == null) throw new ArgumentNullException(nameof(style));
             if (material == null) throw new ArgumentNullException(nameof(material));
             if (layer < 0 || layer > 31) throw new ArgumentOutOfRangeException(nameof(layer), layer, "Must be a layer index.");
             if (!HasSmokeKeywords(material)) Debug.LogWarning($"PuffEmitter::Configure->'{material.name}' lacks instancing or the smoke keywords; player builds strip variants switched on at runtime.", this);
 
-            var simulation = new PuffSimulation(settings, seed);
+            var simulation = new PuffSimulation(settings, seed, style);
             DestroyMeshes();
-            for (int variant = 0; variant < _meshes.Length; variant++) {
-                _meshes[variant] = FacetMeshUnity.ToMesh(PuffShape.Build(variant, seed, light, dark), $"Smoke Puff {variant}");
-                _matrices[variant] ??= new List<Matrix4x4>(settings.Capacity);
-            }
+            _shadeCount = style.Shades.Count;
+            for (int variant = 0; variant < PuffSettings.VariantCount; variant++) BuildShades(variant, seed, style, settings.Capacity);
 
             _simulation = simulation;
             _material = material;
@@ -126,6 +135,12 @@ namespace AlpineLib.Sky {
             _rate = Math.Max(0.0, ratePerSecond);
             _burst = Math.Max(0, burst);
             _effort = Math.Min(1.0, Math.Max(0.0, effort));
+        }
+
+        /// <summary>As <see cref="SetEmission(double, int, double)"/>, with the efficiency (0..1) the style's smoothed efficiency heads for.</summary>
+        public void SetEmission(double ratePerSecond, int burst, double effort, double efficiency) {
+            SetEmission(ratePerSecond, burst, effort);
+            if (_simulation != null) _simulation.TargetEfficiency = efficiency;
         }
 
         /// <summary>Measures the emitter's motion over <paramref name="seconds"/> and advances the puffs by it.</summary>
@@ -170,10 +185,10 @@ namespace AlpineLib.Sky {
                 receiveShadows = false,
             };
             int draws = 0;
-            for (int variant = 0; variant < _meshes.Length; variant++) {
-                if (_matrices[variant].Count == 0 || _meshes[variant] == null) continue;
+            for (int slot = 0; slot < _meshes.Length; slot++) {
+                if (_meshes[slot] == null || _matrices[slot].Count == 0) continue;
 
-                Graphics.RenderMeshInstanced(parameters, _meshes[variant], 0, _matrices[variant]);
+                Graphics.RenderMeshInstanced(parameters, _meshes[slot], 0, _matrices[slot]);
                 draws++;
             }
 
@@ -188,7 +203,9 @@ namespace AlpineLib.Sky {
             if (_simulation == null) return;
 
             Rebuild();
-            foreach (List<Matrix4x4> list in _matrices) matrices.AddRange(list);
+            foreach (List<Matrix4x4> list in _matrices) {
+                if (list != null) matrices.AddRange(list);
+            }
         }
 
         void IOriginShiftListener.OnOriginShifted(Vector3 delta) {
@@ -238,17 +255,17 @@ namespace AlpineLib.Sky {
             Vector3 max = origin;
             for (int index = 0; index < _simulation.Count; index++) {
                 Puff puff = _simulation[index];
-                float size = (float)_simulation.SizeAt(_simulation.Progress(puff.Age), puff.Effort);
-                if (size <= 0f) continue;
+                float size = (float)_simulation.SizeOf(puff);
+                if (size <= 0f || puff.Shade >= _shadeCount) continue;
 
                 var position = new Vector3(origin.x + puff.Offset.X, origin.y + puff.Offset.Y, origin.z + puff.Offset.Z);
                 var rotation = Quaternion.AngleAxis((float)(PuffSimulation.YawOf(puff) * Mathf.Rad2Deg), Vector3.up);
-                _matrices[puff.Variant].Add(Matrix4x4.TRS(position, rotation, new Vector3(size, size, size)));
+                _matrices[Slot(puff.Variant, puff.Shade)].Add(Matrix4x4.TRS(position, rotation, new Vector3(size, size, size)));
                 min = Vector3.Min(min, position);
                 max = Vector3.Max(max, position);
             }
 
-            float reach = (float)_simulation.Settings.EndSize;
+            float reach = (float)(_simulation.Settings.EndSize * MaxThickness());
             var grow = new Vector3(reach, reach, reach);
             _bounds = new Bounds((min + max) * 0.5f, max - min + grow * 2f);
         }
@@ -261,14 +278,34 @@ namespace AlpineLib.Sky {
             return new Vector3(value.X, value.Y, value.Z);
         }
 
-        private void DestroyMeshes() {
-            for (int variant = 0; variant < _meshes.Length; variant++) {
-                if (_meshes[variant] == null) continue;
+        private static int Slot(int variant, int shade) {
+            return shade * PuffSettings.VariantCount + variant;
+        }
 
-                if (Application.isPlaying) Destroy(_meshes[variant]);
-                else DestroyImmediate(_meshes[variant]);
-                _meshes[variant] = null;
+        private void BuildShades(int variant, ulong seed, SmokeStyle style, int capacity) {
+            for (int shade = 0; shade < style.Shades.Count; shade++) {
+                int slot = Slot(variant, shade);
+                _meshes[slot] = FacetMeshUnity.ToMesh(PuffShape.Build(variant, seed, style.Shades[shade]), $"Smoke Puff {variant} Shade {shade}");
+                _matrices[slot] ??= new List<Matrix4x4>(capacity);
             }
+        }
+
+        private double MaxThickness() {
+            double most = 1.0;
+            foreach (SmokeStage stage in _simulation.Style.Stages) most = Math.Max(most, stage.Thickness);
+            return most;
+        }
+
+        private void DestroyMeshes() {
+            for (int slot = 0; slot < _meshes.Length; slot++) {
+                _matrices[slot]?.Clear();
+                if (_meshes[slot] == null) continue;
+
+                if (Application.isPlaying) Destroy(_meshes[slot]);
+                else DestroyImmediate(_meshes[slot]);
+                _meshes[slot] = null;
+            }
+            _shadeCount = 0;
         }
     }
 }

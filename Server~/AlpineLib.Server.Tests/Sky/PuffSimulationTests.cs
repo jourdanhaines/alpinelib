@@ -146,21 +146,21 @@ namespace AlpineLib.Server.Tests.Sky {
             var hashes = new HashSet<ulong>();
             for (ulong seed = 1; seed <= 40; seed++) {
                 for (int variant = 0; variant < PuffSettings.VariantCount; variant++) {
-                    FacetMesh mesh = PuffShape.Build(variant, seed, Light, Dark);
+                    FacetMesh mesh = PuffShape.Build(variant, seed, variant % 2 == 0 ? Light : Dark);
                     Assert.InRange(PuffShape.BlobsOf(variant), 5, 8);
                     Assert.InRange(mesh.FaceCount, 40, PuffShape.FaceBudget);
                     Vector3 size = mesh.Bounds.Size;
                     Assert.Equal(1.0, Math.Max(size.X, Math.Max(size.Y, size.Z)), 4);
                     Assert.True(Math.Min(size.X, Math.Min(size.Y, size.Z)) > 0.6f, $"variant {variant} seed {seed} is flat: {size}");
                     Assert.True(mesh.Bounds.Centre.Length() < 1e-4f);
-                    float column = variant < PuffSettings.LightVariantCount ? Light.Light.X : Dark.Light.X;
+                    float column = variant % 2 == 0 ? Light.Light.X : Dark.Light.X;
                     foreach (Vector2 uv in mesh.Uvs) Assert.Equal(column, uv.X, 5);
                     hashes.Add(mesh.ComputePositionHash());
                 }
             }
 
             Assert.Equal(40 * PuffSettings.VariantCount, hashes.Count);
-            Assert.Equal(PuffShape.Build(2, 7UL, Light, Dark).ComputePositionHash(), PuffShape.Build(2, 7UL, Light, Dark).ComputePositionHash());
+            Assert.Equal(PuffShape.Build(2, 7UL, Light).ComputePositionHash(), PuffShape.Build(2, 7UL, Dark).ComputePositionHash());
         }
 
         private static string Run(ulong seed) {

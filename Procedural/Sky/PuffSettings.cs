@@ -10,9 +10,6 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Distinct puff meshes an emitter builds and picks from.</summary>
         public const int VariantCount = 6;
 
-        /// <summary>Variants painted from the light strip (the rest from the dark one).</summary>
-        public const int LightVariantCount = 3;
-
         /// <summary>Most puffs alive at once; a puff emitted into a full pool is dropped.</summary>
         public int Capacity { get; set; } = 64;
 
@@ -38,16 +35,12 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Share a puff's start size grows by at full effort.</summary>
         public double BurstGrowth { get; set; } = 0.25;
 
-        /// <summary>Chance an idle puff is painted dark; full effort adds <see cref="EffortDarkShare"/>.</summary>
-        public double IdleDarkShare { get; set; } = 0.1;
-        public double EffortDarkShare { get; set; } = 0.25;
-
         /// <summary>
         /// Most bursts per second of <paramref name="burst"/> puffs that keep the steady pool at <paramref name="share"/>
-        /// of <see cref="Capacity"/> (live ≈ rate × burst × lifetime).
+        /// of <see cref="Capacity"/> (live ≈ rate × burst × lifetime), puffs living up to <paramref name="lifeScale"/> × <see cref="Lifetime"/>.
         /// </summary>
-        public double SafeBurstRate(int burst, double share) {
-            return Math.Max(0.0, share) * Capacity / (Math.Max(1, burst) * Lifetime);
+        public double SafeBurstRate(int burst, double share, double lifeScale = 1.0) {
+            return Math.Max(0.0, share) * Capacity / (Math.Max(1, burst) * Lifetime * Math.Max(1e-6, lifeScale));
         }
 
         /// <summary>Throws when a value is out of range.</summary>
@@ -58,9 +51,6 @@ namespace AlpineLib.Procedural.Sky {
             if (!(StartRise >= 0.0) || !(EndRise >= 0.0)) throw new ArgumentOutOfRangeException(nameof(StartRise), StartRise, "Rise speeds must not be negative.");
             if (!(ShrinkShare > 0.0) || ShrinkShare > 1.0) throw new ArgumentOutOfRangeException(nameof(ShrinkShare), ShrinkShare, "Must be in (0, 1].");
             if (!(Spread >= 0.0) || !(BurstRise >= 0.0) || !(BurstGrowth >= 0.0)) throw new ArgumentOutOfRangeException(nameof(Spread), Spread, "Spread and burst must not be negative.");
-            if (!(IdleDarkShare >= 0.0) || !(EffortDarkShare >= 0.0) || IdleDarkShare + EffortDarkShare > 1.0) {
-                throw new ArgumentOutOfRangeException(nameof(IdleDarkShare), IdleDarkShare, "Dark shares must be in [0, 1] together.");
-            }
         }
     }
 }

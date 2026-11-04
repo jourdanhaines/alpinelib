@@ -12,8 +12,8 @@ namespace AlpineLib.Procedural.Sky {
     /// Variant v has <see cref="BlobsOf"/> blobs (5 to 8). Faces buried inside another blob's kernel (behind all its
     /// face planes) are dropped; while still over <see cref="FaceBudget"/> the satellites are pulled in a little and the
     /// clump rebuilt, as a last resort dropping satellites (never below 5 blobs). The puff only ever scales uniformly
-    /// (never stretched after meshing). Light variants (below <see cref="PuffSettings.LightVariantCount"/>) are painted
-    /// from the light strip, the rest from the dark one.
+    /// (never stretched after meshing). The shape depends on the variant and seed only; the strip it is painted from is
+    /// the caller's (one mesh per shape and shade).
     /// </remarks>
     public static class PuffShape {
         /// <summary>Most triangles one puff mesh may have.</summary>
@@ -43,8 +43,8 @@ namespace AlpineLib.Procedural.Sky {
             return StableHash.Mix(StableHash.Mix(seed, ShapeSalt), (ulong)(uint)variant);
         }
 
-        /// <summary>Variant <paramref name="variant"/> under <paramref name="seed"/>, painted from <paramref name="light"/> or <paramref name="dark"/>.</summary>
-        public static FacetMesh Build(int variant, ulong seed, SkyAtlasBand light, SkyAtlasBand dark) {
+        /// <summary>Variant <paramref name="variant"/> under <paramref name="seed"/>, painted from <paramref name="band"/>.</summary>
+        public static FacetMesh Build(int variant, ulong seed, SkyAtlasBand band) {
             ulong variantSeed = VariantSeed(seed, variant);
             List<BlobPuff> blobs = Layout(BlobsOf(variant), variantSeed);
             BlobSpec spec = Spec();
@@ -60,7 +60,6 @@ namespace AlpineLib.Procedural.Sky {
             if (mesh.FaceCount > FaceBudget) throw new InvalidOperationException($"Puff variant {variant} keeps {mesh.FaceCount} faces over the budget {FaceBudget}.");
 
             FacetMesh fitted = FitUnit(mesh);
-            SkyAtlasBand band = variant < PuffSettings.LightVariantCount ? light : dark;
             FacetBounds bounds = fitted.Bounds;
             FacetUv.BandByHeight(fitted, (shade) => band.At(shade * UndersideReach), bounds.Min.Y, bounds.Max.Y);
             return fitted;

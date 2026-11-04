@@ -18,11 +18,16 @@ namespace AlpineLib.Procedural.Sky {
     /// seed fed the same steps gives the same puffs bit for bit. Smoke is cosmetic and not replicated: a joiner's
     /// emitter starts its count at 0 with its own steps, so it shows similar smoke, not the same puffs.
     /// </para>
+    /// <para>
+    /// Each puff's shade, thickness, life and rise come from the <see cref="Style"/> at the smoothed
+    /// <see cref="Efficiency"/> when it is emitted, so the mix of colours follows the target without popping.
+    /// </para>
     /// <para>A burst emitted into a full pool loses what does not fit (<see cref="Dropped"/>); live puffs never pop.</para>
     /// </remarks>
     public sealed class PuffSimulation {
         private const long PhaseKey = -1;
         private const long VariantKey = 0;
+        private const ulong LookSalt = 0x4C4F4F4BUL;
         private const long YawKey = 1;
         private const long SpinKey = 2;
         private const long DriftAngleKey = 3;
@@ -34,16 +39,36 @@ namespace AlpineLib.Procedural.Sky {
         private readonly ulong _seed;
         private double _cadence;
         private ulong _emitted;
+        private double _targetEfficiency;
 
-        public PuffSimulation(PuffSettings settings, ulong seed) {
+        /// <summary>A pool of <paramref name="settings"/> keyed by <paramref name="seed"/>, painted by <paramref name="style"/> (one plain shade when null).</summary>
+        public PuffSimulation(PuffSettings settings, ulong seed, SmokeStyle style = null) {
             Settings = settings ?? throw new ArgumentNullException(nameof(settings));
             settings.Validate();
+            Style = style ?? SmokeStyle.Single(default);
             _seed = seed;
             _puffs = new Puff[settings.Capacity];
             _cadence = LatticeHash.Unit(seed, PhaseKey);
         }
 
         public PuffSettings Settings { get; }
+
+        public SmokeStyle Style { get; }
+
+        /// <summary>The efficiency (0..1) <see cref="Efficiency"/> heads for, by the style's time constants.</summary>
+        public double TargetEfficiency {
+            get => _targetEfficiency;
+            set => _targetEfficiency = Clamp01(value);
+        }
+
+        /// <summary>The smoothed efficiency new puffs are styled at.</summary>
+        public double Efficiency { get; private set; }
+
+        /// <summary>Jumps <see cref="Efficiency"/> and its target to <paramref name="efficiency"/> (a fresh start, no fade).</summary>
+        public void ResetEfficiency(double efficiency) {
+            _targetEfficiency = Clamp01(efficiency);
+            Efficiency = _targetEfficiency;
+        }
 
         /// <summary>Puffs alive now.</summary>
         public int Count { get; private set; }
@@ -82,6 +107,7 @@ namespace AlpineLib.Procedural.Sky {
             if (!(seconds > 0.0)) return;
 
             double clampedEffort = Math.Min(1.0, Math.Max(0.0, effort));
+            Efficiency = Style.Smooth(Efficiency, _targetEfficiency, seconds);
             AdvanceLive(seconds, relativeAir);
             if (!(rate > 0.0) || burst < 1) return;
 
@@ -98,12 +124,30 @@ namespace AlpineLib.Procedural.Sky {
             return Math.Min(1.0, Math.Max(0.0, age / Settings.Lifetime));
         }
 
-        /// <summary>Diameter at life share <paramref name="progress"/> for <paramref name="effort"/>: eases out from the start to the end size, shrinking to 0 over the last <see cref="PuffSettings.ShrinkShare"/>.</summary>
-        public double SizeAt(double progress, double effort) {
+        /// <summary>Seconds <paramref name="puff"/> lives (the lifetime by its life scale).</summary>
+        public double LifetimeOf(in Puff puff) {
+            return Settings.Lifetime * puff.LifeScale;
+        }
+
+        /// <summary>Share of its own life <paramref name="puff"/> has lived, 0..1.</summary>
+        public double ProgressOf(in Puff puff) {
+            return Clamp01(puff.Age / LifetimeOf(puff));
+        }
+
+        /// <summary>Diameter of <paramref name="puff"/> now.</summary>
+        public double SizeOf(in Puff puff) {
+            return SizeAt(ProgressOf(puff), puff.Effort, puff.Thickness);
+        }
+
+        /// <summary>
+        /// Diameter at life share <paramref name="progress"/> for <paramref name="effort"/> and <paramref name="thickness"/>
+        /// (a multiplier): eases out from the start to the end size, shrinking to 0 over the last <see cref="PuffSettings.ShrinkShare"/>.
+        /// </summary>
+        public double SizeAt(double progress, double effort, double thickness = 1.0) {
             double share = Clamp01(progress);
             double start = Settings.StartSize * (1.0 + Settings.BurstGrowth * Clamp01(effort));
             double grown = start + (Settings.EndSize - start) * (1.0 - (1.0 - share) * (1.0 - share));
-            return grown * ShrinkAt(share);
+            return grown * ShrinkAt(share) * thickness;
         }
 
         /// <summary>1 until the last <see cref="PuffSettings.ShrinkShare"/> of the life, then smoothly down to 0 at its end.</summary>
@@ -134,7 +178,7 @@ namespace AlpineLib.Procedural.Sky {
             int index = 0;
             while (index < Count) {
                 Puff moved = Move(_puffs[index], seconds, relativeAir);
-                if (moved.Age >= Settings.Lifetime) {
+                if (moved.Age >= LifetimeOf(moved)) {
                     Count--;
                     _puffs[index] = _puffs[Count];
                     continue;
@@ -147,8 +191,8 @@ namespace AlpineLib.Procedural.Sky {
 
         // Midpoint rise over the step; drift and the relative air are constant across it.
         private Puff Move(in Puff puff, double seconds, Vector3 relativeAir) {
-            double middle = Progress(puff.Age + seconds * 0.5);
-            var rise = new Vector3(0f, (float)RiseAt(middle, puff.Effort), 0f);
+            double middle = Clamp01((puff.Age + seconds * 0.5) / LifetimeOf(puff));
+            var rise = new Vector3(0f, (float)(RiseAt(middle, puff.Effort) * puff.RiseScale), 0f);
             Vector3 offset = puff.Offset + (rise + puff.Drift + relativeAir) * (float)seconds;
             return puff.Moved(offset, (float)(puff.Age + seconds));
         }
@@ -161,20 +205,24 @@ namespace AlpineLib.Procedural.Sky {
             }
 
             long key = unchecked((long)index);
-            double darkChance = Settings.IdleDarkShare + Settings.EffortDarkShare * effort;
-            bool isDark = LatticeHash.Unit(_seed, key, VariantKey) < darkChance;
-            int pick = (int)(LatticeHash.Unit(_seed, key, VariantKey, 1) * PuffSettings.LightVariantCount);
-            int variant = isDark ? PuffSettings.LightVariantCount + pick % (PuffSettings.VariantCount - PuffSettings.LightVariantCount) : pick;
+            SmokeSample look = Style.Sample(Efficiency, StableHash.Mix(StableHash.Mix(_seed, LookSalt), index));
+            int variant = ShapeFor(LatticeHash.Unit(_seed, key, VariantKey), look.Thickness);
             double yaw = LatticeHash.Unit(_seed, key, YawKey) * 2.0 * Math.PI;
             double spin = (LatticeHash.Unit(_seed, key, SpinKey) * 2.0 - 1.0) * MaxSpin;
             double driftAngle = LatticeHash.Unit(_seed, key, DriftAngleKey) * 2.0 * Math.PI;
             double driftSpeed = Settings.Spread * Math.Sqrt(LatticeHash.Unit(_seed, key, DriftSpeedKey));
             var drift = new Vector3((float)(Math.Cos(driftAngle) * driftSpeed), 0f, (float)(Math.Sin(driftAngle) * driftSpeed));
-            var born = new Puff(Vector3.Zero, 0f, variant, (float)yaw, (float)spin, drift, effort, index);
+            var born = new Puff(Vector3.Zero, 0f, variant, (float)yaw, (float)spin, drift, effort, index, look);
             Puff moved = late > 0.0 ? Move(born, late, relativeAir) : born;
-            if (moved.Age >= Settings.Lifetime) return;
+            if (moved.Age >= LifetimeOf(moved)) return;
 
             _puffs[Count++] = moved;
+        }
+
+        /// <summary>Shape at <paramref name="roll"/> (0..1): even at thickness 1, thicker smoke leaning to the lumpier (more blobs) shapes.</summary>
+        public static int ShapeFor(double roll, double thickness) {
+            double leaned = Math.Pow(Clamp01(roll), 1.0 / Math.Max(0.25, thickness));
+            return Math.Min(PuffSettings.VariantCount - 1, (int)(leaned * PuffSettings.VariantCount));
         }
 
         private static double Clamp01(double value) {
