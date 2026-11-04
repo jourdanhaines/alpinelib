@@ -1,11 +1,15 @@
 namespace AlpineLib.Procedural.Sky {
-    /// <summary>The atlas strips backdrop silhouettes are painted from: near and far rock, and a cloud bank's top and underside.</summary>
+    /// <summary>
+    /// The atlas strips backdrop silhouettes are painted from: near and far rock, a cloud bank's top and underside,
+    /// and the ground annulus under the ring.
+    /// </summary>
     public sealed class BackdropPalette {
-        public BackdropPalette(SkyAtlasBand near, SkyAtlasBand far, SkyAtlasBand cloudTop, SkyAtlasBand cloudUnderside) {
+        public BackdropPalette(SkyAtlasBand near, SkyAtlasBand far, SkyAtlasBand cloudTop, SkyAtlasBand cloudUnderside, SkyAtlasBand ground) {
             Near = near;
             Far = far;
             CloudTop = cloudTop;
             CloudUnderside = cloudUnderside;
+            Ground = ground;
         }
 
         /// <summary>Warmer rock, painted on even variants.</summary>
@@ -16,6 +20,9 @@ namespace AlpineLib.Procedural.Sky {
 
         public SkyAtlasBand CloudTop { get; }
         public SkyAtlasBand CloudUnderside { get; }
+
+        /// <summary>The ground annulus is painted from the middle of this strip.</summary>
+        public SkyAtlasBand Ground { get; }
 
         /// <summary>The rock strip of <paramref name="variant"/>.</summary>
         public SkyAtlasBand RockFor(int variant) {

@@ -11,10 +11,11 @@ namespace AlpineLib.Rendering {
         /// <summary>False on a null graphics device (batchmode <c>-nographics</c>), where nothing renders.</summary>
         public static bool CanRender => SystemInfo.graphicsDeviceType != GraphicsDeviceType.Null;
 
-        /// <summary>Renders <paramref name="camera"/> into <paramref name="target"/>; false when nothing was rendered.</summary>
+        /// <summary>Renders <paramref name="camera"/> into <paramref name="target"/>, marking it a capture camera; false when nothing was rendered.</summary>
         public static bool Submit(Camera camera, RenderTexture target) {
             if (!CanRender || camera == null || target == null) return false;
 
+            CaptureCameraSetup.Register(camera);
             var request = new RenderPipeline.StandardRequest { destination = target };
             if (RenderPipeline.SupportsRenderRequest(camera, request)) {
                 RenderPipeline.SubmitRenderRequest(camera, request);

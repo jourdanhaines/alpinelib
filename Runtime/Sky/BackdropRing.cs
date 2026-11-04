@@ -20,13 +20,27 @@ namespace AlpineLib.Sky {
     /// <para>
     /// Instanced through <c>Graphics.RenderMeshInstanced</c> per camera from <c>beginCameraRendering</c>, on one
     /// layer, with shadows off both ways and no colliders; <see cref="SkyCameraFilter"/> keeps it out of capture
-    /// cameras. Matrices are rebuilt only when the camera moved more than <see cref="RebuildDistance"/>.
+    /// cameras. Matrices are rebuilt whenever the camera moved more than <see cref="RebuildDistance"/> (about every
+    /// moving frame: cached world-space matrices would otherwise lag and jump). One flat annulus, fogged like the
+    /// world, is drawn under the ring about the camera to hide the edge of the streamed world.
+    /// </para>
+    /// <para>
+    /// Rock draws through the template material itself when its fog scale already matches (the template asset
+    /// must carry <c>_FLAT_SHADING</c>, <c>_NO_LIGHT_COOKIE</c> and <c>_RECEIVE_SHADOWS_OFF</c>, see
+    /// <see cref="HasSkyKeywords"/>: keywords switched on at runtime are stripped from player builds); cloud banks
+    /// and the annulus draw through clones that differ only in fog scale.
     /// </para>
     /// </remarks>
     [ExecuteAlways, DisallowMultipleComponent]
     public sealed class BackdropRing : MonoBehaviour {
         /// <summary>Camera motion, metres, before its instances are rebuilt.</summary>
-        public const float RebuildDistance = 1f;
+        public const float RebuildDistance = 0.01f;
+
+        /// <summary>Fog distance scale of the ground annulus: fogged exactly like the world it continues.</summary>
+        public const float GroundFogScale = 1f;
+
+        /// <summary>Most a cloud bank's yaw strays from broadside to the camera, degrees.</summary>
+        public const float CloudYawJitterDegrees = 20f;
 
         private const int StaleBatchFrames = 120;
         private const int SectorCacheLimit = 2048;
@@ -40,6 +54,9 @@ namespace AlpineLib.Sky {
         private SkyMeshVariants _meshes;
         private IAbsoluteFrame _frame;
         private Material _material;
+        private Material _cloudMaterial;
+        private Material _groundMaterial;
+        private Material _template;
         private int _layer;
         private int _revision;
         private bool _isSubscribed;
@@ -47,33 +64,55 @@ namespace AlpineLib.Sky {
         /// <summary>The layout the ring draws, or null before <see cref="Configure"/>.</summary>
         public BackdropLayout Layout => _layout;
 
-        /// <summary>The ring's own material (a clone of the template); destroyed with the ring.</summary>
+        /// <summary>The material rock draws through: the template, or a clone of it when the fog scale differs.</summary>
         public Material Material => _material;
+
+        /// <summary>The cloud banks' clone of the template.</summary>
+        public Material CloudMaterial => _cloudMaterial;
+
+        /// <summary>The ground annulus's clone of the template, fogged at <see cref="GroundFogScale"/>.</summary>
+        public Material GroundMaterial => _groundMaterial;
 
         /// <summary>The layer every instance draws on.</summary>
         public int Layer => _layer;
 
         /// <summary>
-        /// Draws <paramref name="layout"/> with <paramref name="meshes"/> (not owned) through a clone of
-        /// <paramref name="materialTemplate"/> fogged at <paramref name="fogScale"/> of the scene's distance, on
-        /// <paramref name="layer"/>, placed through <paramref name="frame"/>.
+        /// Draws <paramref name="layout"/> with <paramref name="meshes"/> (not owned) through <paramref name="materialTemplate"/>,
+        /// rock fogged at <paramref name="fogScale"/> and cloud banks at <paramref name="cloudFogScale"/> of the scene's
+        /// distance, on <paramref name="layer"/>, placed through <paramref name="frame"/>.
         /// </summary>
-        public void Configure(BackdropLayout layout, SkyMeshVariants meshes, Material materialTemplate, float fogScale, int layer, IAbsoluteFrame frame) {
+        public void Configure(BackdropLayout layout, SkyMeshVariants meshes, Material materialTemplate, float fogScale, float cloudFogScale, int layer, IAbsoluteFrame frame) {
             if (materialTemplate == null) throw new ArgumentNullException(nameof(materialTemplate));
 
             _layout = layout ?? throw new ArgumentNullException(nameof(layout));
             _meshes = meshes ?? throw new ArgumentNullException(nameof(meshes));
             _frame = frame;
             _layer = layer;
-            DestroyMaterial();
-            _material = CreateMaterial(materialTemplate, fogScale);
+            DestroyMaterials();
+            _template = materialTemplate;
+            if (!HasSkyKeywords(materialTemplate)) Debug.LogWarning($"BackdropRing::Configure->'{materialTemplate.name}' lacks the sky keywords; player builds strip variants switched on at runtime.", this);
+            _material = MaterialFor(fogScale);
+            _cloudMaterial = MaterialFor(cloudFogScale);
+            _groundMaterial = MaterialFor(GroundFogScale);
             _sectors.Clear();
             _revision++;
         }
 
-        /// <summary>Sets the fog distance scale of the ring's material (1 = fogged like the world).</summary>
+        /// <summary>Sets the fog distance scale rock draws with (1 = fogged like the world), cloning the template first if needed.</summary>
         public void SetFogScale(float fogScale) {
-            if (_material != null) _material.SetFloat(StylizedLitShader.FogScale, fogScale);
+            if (_material == null) return;
+
+            if (_material == _template) _material = MaterialFor(fogScale);
+            else _material.SetFloat(StylizedLitShader.FogScale, fogScale);
+        }
+
+        /// <summary>True when <paramref name="material"/> is instanced and carries every keyword a sky draw needs.</summary>
+        public static bool HasSkyKeywords(Material material) {
+            if (material == null || !material.enableInstancing) return false;
+
+            return material.IsKeywordEnabled(StylizedLitShader.FlatShadingKeyword)
+                && material.IsKeywordEnabled(StylizedLitShader.NoLightCookieKeyword)
+                && material.IsKeywordEnabled(StylizedLitShader.ReceiveShadowsOffKeyword);
         }
 
         /// <summary>
@@ -90,12 +129,13 @@ namespace AlpineLib.Sky {
                 List<Matrix4x4> matrices = batch.MatricesOf(meshIndex);
                 if (matrices.Count == 0) continue;
 
-                RenderParams parameters = CreateParams(camera, batch.Bounds);
-                Graphics.RenderMeshInstanced(parameters, _meshes.Backdrop(meshIndex), 0, matrices);
+                Material material = BackdropSettings.KindOf(meshIndex) == BackdropFeatureKind.CloudBank ? _cloudMaterial : _material;
+                Graphics.RenderMeshInstanced(CreateParams(material, camera, batch.Bounds), _meshes.Backdrop(meshIndex), 0, matrices);
                 draws++;
             }
 
-            return draws;
+            Graphics.RenderMesh(CreateParams(_groundMaterial, camera, batch.GroundBounds), _meshes.Ground, 0, batch.GroundMatrix);
+            return draws + 1;
         }
 
         /// <summary>The instances <paramref name="camera"/> would draw now (rebuilt if it moved), or null when it is filtered out.</summary>
@@ -112,7 +152,7 @@ namespace AlpineLib.Sky {
             _revision++;
         }
 
-        private bool IsReady => _layout != null && _meshes != null && !_meshes.IsDisposed && _material != null;
+        private bool IsReady => _layout != null && _meshes != null && !_meshes.IsDisposed && _material != null && _cloudMaterial != null && _groundMaterial != null;
 
         private void OnEnable() {
             if (_isSubscribed) return;
@@ -129,7 +169,7 @@ namespace AlpineLib.Sky {
         }
 
         private void OnDestroy() {
-            DestroyMaterial();
+            DestroyMaterials();
             _batches.Clear();
             _sectors.Clear();
         }
@@ -175,7 +215,7 @@ namespace AlpineLib.Sky {
             BackdropSettings settings = _layout.Settings;
             double centreX = absoluteX * settings.ParallaxFactor;
             double centreZ = absoluteZ * settings.ParallaxFactor;
-            double reach = settings.RequiredFarClip;
+            double reach = settings.MaxBandRadius;
             float groundY = _frame != null ? _frame.GroundY : 0f;
 
             batch.Clear();
@@ -189,7 +229,12 @@ namespace AlpineLib.Sky {
             }
 
             float height = (float)(settings.CloudBankMaxAltitude + settings.CloudBankMaxHeight + settings.MaxHeight);
-            batch.Bounds = new Bounds(new Vector3(world.x, groundY + height * 0.5f, world.z), new Vector3((float)reach * 2f, height * 2f, (float)reach * 2f));
+            float extent = (float)settings.RequiredFarClip * 2f;
+            batch.Bounds = new Bounds(new Vector3(world.x, groundY + height * 0.5f, world.z), new Vector3(extent, height * 2f, extent));
+            float groundAt = groundY - (float)settings.GroundDrop;
+            float groundExtent = (float)settings.GroundOuterRadius * 2f;
+            batch.GroundMatrix = Matrix4x4.Translate(new Vector3(world.x, groundAt, world.z));
+            batch.GroundBounds = new Bounds(new Vector3(world.x, groundAt, world.z), new Vector3(groundExtent, 1f, groundExtent));
             batch.CameraWorld = world;
             batch.AbsoluteX = absoluteX;
             batch.AbsoluteZ = absoluteZ;
@@ -204,23 +249,32 @@ namespace AlpineLib.Sky {
                 double presence = settings.Presence(feature.Kind, Math.Sqrt(offsetX * offsetX + offsetZ * offsetZ));
                 if (presence <= 0.0) continue;
 
-                batch.Add(feature.MeshIndex, InstanceMatrix(feature, settings, presence, world.x + (float)offsetX, world.z + (float)offsetZ, groundY));
+                float x = (float)(world.x + offsetX);
+                float z = (float)(world.z + offsetZ);
+                batch.Add(feature.MeshIndex, InstanceMatrix(feature, settings, presence, x, z, offsetX, offsetZ, groundY));
             }
         }
 
-        // Rock sinks into the ground as it fades; a cloud bank shrinks about its base.
-        private static Matrix4x4 InstanceMatrix(BackdropFeature feature, BackdropSettings settings, double presence, float x, float z, float groundY) {
-            Quaternion yaw = Quaternion.Euler(0f, (float)(feature.Yaw * (180.0 / Math.PI)), 0f);
+        // Rock sinks into the ground as it fades; a cloud bank turns broadside to the camera and shrinks about its base.
+        private static Matrix4x4 InstanceMatrix(BackdropFeature feature, BackdropSettings settings, double presence, float x, float z, double offsetX, double offsetZ, float groundY) {
             float width = (float)feature.Width;
             float height = (float)feature.Height;
             if (feature.Kind == BackdropFeatureKind.CloudBank) {
                 float scale = (float)presence;
                 var position = new Vector3(x, groundY + (float)feature.Altitude, z);
-                return Matrix4x4.TRS(position, yaw, new Vector3(width * scale, height * scale, width * scale));
+                return Matrix4x4.TRS(position, CloudYaw(feature, offsetX, offsetZ), new Vector3(width * scale, height * scale, width * scale));
             }
 
+            Quaternion yaw = Quaternion.Euler(0f, (float)(feature.Yaw * (180.0 / Math.PI)), 0f);
             float sink = (float)(settings.BaseSink + (1.0 - presence) * (1.0 + settings.BaseSink)) * height;
             return Matrix4x4.TRS(new Vector3(x, groundY - sink, z), yaw, new Vector3(width, height, width));
+        }
+
+        // The bank's long (x) axis across the line of sight, give or take the feature's own jitter.
+        private static Quaternion CloudYaw(BackdropFeature feature, double offsetX, double offsetZ) {
+            double bearing = Math.Atan2(offsetX, offsetZ) * (180.0 / Math.PI);
+            double jitter = (feature.Yaw / Math.PI - 1.0) * CloudYawJitterDegrees;
+            return Quaternion.Euler(0f, (float)(bearing + jitter), 0f);
         }
 
         private BackdropFeature[] SectorOf(int sectorX, int sectorZ) {
@@ -242,8 +296,8 @@ namespace AlpineLib.Sky {
             foreach (int id in _staleCameras) _batches.Remove(id);
         }
 
-        private RenderParams CreateParams(Camera camera, Bounds bounds) {
-            return new RenderParams(_material) {
+        private RenderParams CreateParams(Material material, Camera camera, Bounds bounds) {
+            return new RenderParams(material) {
                 camera = camera,
                 layer = _layer,
                 worldBounds = bounds,
@@ -262,21 +316,30 @@ namespace AlpineLib.Sky {
             Debug.LogWarning($"BackdropRing::Submit->camera '{camera.name}' clips at {camera.farClipPlane:0} m; the ring needs {required:0} m.", camera);
         }
 
-        private static Material CreateMaterial(Material template, float fogScale) {
-            var material = new Material(template) { name = $"{template.name} (Backdrop)", hideFlags = HideFlags.DontSave, enableInstancing = true };
+        // The template itself when its fog scale already matches, else a clone differing only in fog scale (same variant).
+        private Material MaterialFor(float fogScale) {
+            if (Mathf.Approximately(_template.GetFloat(StylizedLitShader.FogScale), fogScale)) return _template;
+
+            var material = new Material(_template) { name = $"{_template.name} (fog {fogScale:0.00})", hideFlags = HideFlags.DontSave };
             material.SetFloat(StylizedLitShader.FogScale, fogScale);
-            StylizedLitShader.SetKeyword(material, StylizedLitShader.FlatShadingKeyword, true);
-            StylizedLitShader.SetKeyword(material, StylizedLitShader.NoLightCookieKeyword, true);
-            StylizedLitShader.SetKeyword(material, StylizedLitShader.ReceiveShadowsOffKeyword, true);
             return material;
         }
 
-        private void DestroyMaterial() {
-            if (_material == null) return;
-
-            if (Application.isPlaying) Destroy(_material);
-            else DestroyImmediate(_material);
+        private void DestroyMaterials() {
+            DestroyClone(_material);
+            DestroyClone(_cloudMaterial);
+            DestroyClone(_groundMaterial);
             _material = null;
+            _cloudMaterial = null;
+            _groundMaterial = null;
+            _template = null;
+        }
+
+        private void DestroyClone(Material material) {
+            if (material == null || material == _template) return;
+
+            if (Application.isPlaying) Destroy(material);
+            else DestroyImmediate(material);
         }
     }
 }

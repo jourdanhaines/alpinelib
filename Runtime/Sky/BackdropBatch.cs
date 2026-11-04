@@ -33,6 +33,12 @@ namespace AlpineLib.Sky {
         /// <summary>Box holding every instance.</summary>
         public Bounds Bounds { get; set; }
 
+        /// <summary>Where the ground annulus is drawn (about the camera, below the ground).</summary>
+        public Matrix4x4 GroundMatrix { get; set; }
+
+        /// <summary>Box holding the ground annulus.</summary>
+        public Bounds GroundBounds { get; set; }
+
         /// <summary>Instances of mesh <paramref name="meshIndex"/>.</summary>
         public List<Matrix4x4> MatricesOf(int meshIndex) {
             return _matrices[meshIndex];

@@ -71,10 +71,13 @@ namespace AlpineLib.Procedural.Sky {
             double localZ = layout.NextDouble() * Settings.SectorSize;
             BackdropFeatureKind kind = PickKind(layout.NextDouble(), layout.NextDouble());
             bool isCloud = kind == BackdropFeatureKind.CloudBank;
-            double width = Lerp(Settings.MinWidth, Settings.MaxWidth, layout.NextDouble());
+            double widthRoll = layout.NextDouble();
             double height = isCloud
                 ? Lerp(Settings.CloudBankMinHeight, Settings.CloudBankMaxHeight, layout.NextDouble())
                 : Lerp(Settings.MinHeight, Settings.MaxHeight, layout.NextDouble());
+            double width = isCloud
+                ? height * Lerp(Settings.CloudBankMinAspect, Settings.CloudBankMaxAspect, widthRoll)
+                : Lerp(Settings.MinWidth, Settings.MaxWidth, widthRoll);
             double altitude = isCloud ? Lerp(Settings.CloudBankMinAltitude, Settings.CloudBankMaxAltitude, layout.NextDouble()) : 0.0;
             int variant = looks.NextInt(BackdropSettings.VariantsPerKind);
             double yaw = looks.NextDouble() * 2.0 * Math.PI;

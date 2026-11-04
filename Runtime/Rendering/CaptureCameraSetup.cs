@@ -8,8 +8,9 @@ namespace AlpineLib.Rendering {
     /// no shadows, no post-process anti-aliasing and no depth/opaque textures. MSAA is left to the target.
     /// </summary>
     /// <remarks>
-    /// Every camera made by <see cref="Create"/> or shaped by <see cref="Configure"/> is remembered, so world
-    /// decoration that must stay out of captures (sky, effects) can ask <see cref="IsCaptureCamera"/>.
+    /// Every camera made by <see cref="Create"/>, shaped by <see cref="Configure"/> or rendered through
+    /// <see cref="CaptureRender.Submit"/> is remembered, so world decoration that must stay out of captures (sky,
+    /// effects) can ask <see cref="IsCaptureCamera"/>; <see cref="Unregister"/> returns a camera to normal duty.
     /// </remarks>
     public static class CaptureCameraSetup {
         private static readonly HashSet<int> CaptureCameraIds = new HashSet<int>();
@@ -31,6 +32,11 @@ namespace AlpineLib.Rendering {
         /// <summary>Marks <paramref name="camera"/> as a capture camera without changing it.</summary>
         public static void Register(Camera camera) {
             if (camera != null) CaptureCameraIds.Add(camera.GetInstanceID());
+        }
+
+        /// <summary>Forgets <paramref name="camera"/> as a capture camera (a borrowed camera handed back to gameplay).</summary>
+        public static void Unregister(Camera camera) {
+            if (camera != null) CaptureCameraIds.Remove(camera.GetInstanceID());
         }
 
         /// <summary>Configures <paramref name="camera"/> to draw <paramref name="cullingMask"/> over a <paramref name="clear"/> background.</summary>

@@ -55,16 +55,41 @@ namespace AlpineLib.Procedural.Sky {
         public double CloudBankMinHeight { get; set; } = 18.0;
         public double CloudBankMaxHeight { get; set; } = 40.0;
 
+        /// <summary>Width of a cloud bank as a multiple of its height, so a bank always reads long and low.</summary>
+        public double CloudBankMinAspect { get; set; } = 4.5;
+        public double CloudBankMaxAspect { get; set; } = 6.5;
+
+        /// <summary>
+        /// The flat ground annulus drawn under the ring, centred on the camera: it hides the edge of the streamed
+        /// world from height and the sunk feet of near silhouettes.
+        /// </summary>
+        public double GroundInnerRadius { get; set; } = 380.0;
+        public double GroundOuterRadius { get; set; } = 1000.0;
+
+        /// <summary>How far below the ground height the annulus lies, so it never shows through streamed ground.</summary>
+        public double GroundDrop { get; set; } = 0.3;
+
         /// <summary>Relative chances of mesa, butte and ridge among the rock silhouettes.</summary>
         public double MesaWeight { get; set; } = 0.4;
         public double ButteWeight { get; set; } = 0.25;
         public double RidgeWeight { get; set; } = 0.35;
 
+        /// <summary>The kind whose silhouette is mesh <paramref name="meshIndex"/> (see <see cref="BackdropFeature.MeshIndex"/>).</summary>
+        public static BackdropFeatureKind KindOf(int meshIndex) {
+            return (BackdropFeatureKind)(meshIndex / VariantsPerKind);
+        }
+
         /// <summary>The settings the plan starts from.</summary>
         public static BackdropSettings Default => new BackdropSettings();
 
-        /// <summary>Least far clip a camera needs to see the whole ring: the outer radius plus half the widest silhouette.</summary>
-        public double RequiredFarClip => Math.Max(OuterRadius, CloudBankOuterRadius) + MaxWidth * 0.5;
+        /// <summary>Least far clip a camera needs to see the whole ring: each band's outer radius plus half its widest silhouette.</summary>
+        public double RequiredFarClip => Math.Max(OuterRadius + MaxWidth * 0.5, CloudBankOuterRadius + CloudBankMaxWidth * 0.5);
+
+        /// <summary>Farthest any feature is drawn from the camera: the outer edge of the widest band.</summary>
+        public double MaxBandRadius => Math.Max(OuterRadius, CloudBankOuterRadius);
+
+        /// <summary>Widest a cloud bank can be.</summary>
+        public double CloudBankMaxWidth => CloudBankMaxHeight * CloudBankMaxAspect;
 
         /// <summary>The band <paramref name="kind"/> is drawn in, from the camera.</summary>
         public void BandOf(BackdropFeatureKind kind, out double inner, out double outer) {
@@ -97,8 +122,14 @@ namespace AlpineLib.Procedural.Sky {
             RequireOrdered(MinHeight, MaxHeight, nameof(MaxHeight));
             RequireOrdered(CloudBankMinAltitude, CloudBankMaxAltitude, nameof(CloudBankMaxAltitude));
             RequireOrdered(CloudBankMinHeight, CloudBankMaxHeight, nameof(CloudBankMaxHeight));
+            RequirePositive(CloudBankMinAspect, nameof(CloudBankMinAspect));
+            RequireOrdered(CloudBankMinAspect, CloudBankMaxAspect, nameof(CloudBankMaxAspect));
+            RequirePositive(GroundInnerRadius, nameof(GroundInnerRadius));
+            RequireOrdered(GroundInnerRadius, GroundOuterRadius, nameof(GroundOuterRadius));
+            if (GroundDrop < 0.0) throw new ArgumentOutOfRangeException(nameof(GroundDrop), GroundDrop, "Must not be negative.");
             RequirePositive(MinWidth, nameof(MinWidth));
             RequirePositive(MinHeight, nameof(MinHeight));
+            RequirePositive(CloudBankMinHeight, nameof(CloudBankMinHeight));
             if (FadeBand < 0.0) throw new ArgumentOutOfRangeException(nameof(FadeBand), FadeBand, "Must not be negative.");
             if (MinFeaturesPerSector < 0 || MaxFeaturesPerSector < MinFeaturesPerSector) {
                 throw new ArgumentOutOfRangeException(nameof(MaxFeaturesPerSector), MaxFeaturesPerSector, "Need 0 <= min <= max features per sector.");

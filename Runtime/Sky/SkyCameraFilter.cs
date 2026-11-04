@@ -3,11 +3,12 @@ using UnityEngine;
 
 namespace AlpineLib.Sky {
     /// <summary>
-    /// Which cameras draw sky decoration: game, scene-view and preview cameras whose culling mask holds the sky's
-    /// layer, never a capture camera (map tiles, portraits), whose masks may hold that layer for other reasons.
+    /// Which cameras draw sky decoration: game and scene-view cameras whose culling mask holds the sky's layer,
+    /// never a capture camera (map tiles, portraits), whose masks may hold that layer for other reasons, and never
+    /// an inspector preview (material, mesh and prefab thumbnails have no world to sit in).
     /// </summary>
     public static class SkyCameraFilter {
-        private const CameraType DrawingTypes = CameraType.Game | CameraType.SceneView | CameraType.Preview;
+        private const CameraType DrawingTypes = CameraType.Game | CameraType.SceneView;
 
         /// <summary>True when <paramref name="camera"/> should draw sky geometry on <paramref name="layer"/>.</summary>
         public static bool ShouldDraw(Camera camera, int layer) {

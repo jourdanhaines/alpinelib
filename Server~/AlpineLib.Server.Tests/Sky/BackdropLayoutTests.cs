@@ -113,7 +113,8 @@ namespace AlpineLib.Server.Tests.Sky {
                     FacetMesh mesh = BackdropSilhouette.Build(featureKind, variant, 99UL, palette);
                     FacetMesh again = BackdropSilhouette.Build(featureKind, variant, 99UL, palette);
                     Assert.Equal(mesh.ComputePositionHash(), again.ComputePositionHash());
-                    Assert.True(mesh.FaceCount >= 30 && mesh.FaceCount <= 260, $"{featureKind} {variant}: {mesh.FaceCount} faces");
+                    int most = featureKind == BackdropFeatureKind.CloudBank ? CloudBankShape.Default.FaceBudget : 260;
+                    Assert.True(mesh.FaceCount >= 30 && mesh.FaceCount <= most, $"{featureKind} {variant}: {mesh.FaceCount} faces");
                     FacetBounds bounds = mesh.Bounds;
                     Assert.InRange(bounds.Min.X, -0.5f - 1e-5f, -0.3f);
                     Assert.InRange(bounds.Max.X, 0.3f, 0.5f + 1e-5f);
@@ -126,6 +127,50 @@ namespace AlpineLib.Server.Tests.Sky {
 
             Assert.NotEqual(BackdropSilhouette.Build(BackdropFeatureKind.Mesa, 0, 99UL, palette).ComputePositionHash(),
                 BackdropSilhouette.Build(BackdropFeatureKind.Mesa, 1, 99UL, palette).ComputePositionHash());
+        }
+
+        [Theory]
+        [InlineData(6, 0)]
+        [InlineData(7, 2)]
+        [InlineData(10, 0)]
+        [InlineData(8, 2)]
+        public void CloudBanksHeapRoundPuffsWithinTheBudget(int rowPuffs, int crownPuffs) {
+            var shape = new CloudBankShape { RowPuffs = rowPuffs, CrownPuffs = crownPuffs };
+            for (int variant = 0; variant < BackdropSettings.VariantsPerKind; variant++) {
+                ulong seed = BackdropSilhouette.VariantSeed(5UL, BackdropFeatureKind.CloudBank, variant);
+                FacetMesh mesh = BackdropSilhouette.BuildCloudBank(seed, TestPalette(), shape);
+                Assert.InRange(mesh.FaceCount, (rowPuffs + crownPuffs) * 20, shape.FaceBudget);
+                Assert.True(mesh.FaceCount >= 80 * 4, $"{mesh.FaceCount} faces: too few round puffs");
+                FacetBounds bounds = mesh.Bounds;
+                Assert.InRange(bounds.Min.Y, -1e-5f, 1e-5f);
+                Assert.InRange(bounds.Max.Y, 1f - 1e-5f, 1f + 1e-5f);
+                Assert.InRange(bounds.Max.X - bounds.Min.X, 1f - 1e-5f, 1f + 1e-5f);
+                CheckPainted(mesh, BackdropFeatureKind.CloudBank, variant, TestPalette());
+            }
+        }
+
+        [Fact]
+        public void CloudBankBellyIsItsUndersideAndTopIsItsTopStrip() {
+            BackdropPalette palette = TestPalette();
+            FacetMesh mesh = BackdropSilhouette.Build(BackdropFeatureKind.CloudBank, 1, 3UL, palette);
+            for (int face = 0; face < mesh.FaceCount; face++) {
+                Vector2 uv = mesh.Uvs[face * 3];
+                bool isTop = mesh.FaceCentroid(face).Y >= BackdropSilhouette.CloudSplit;
+                Assert.True(isTop ? OnBand(uv, palette.CloudTop) : OnBand(uv, palette.CloudUnderside), $"face {face} at {mesh.FaceCentroid(face).Y} is on the wrong strip");
+            }
+        }
+
+        [Fact]
+        public void GroundAnnulusFacesUpAcrossItsBand() {
+            var settings = new BackdropSettings();
+            FacetMesh mesh = BackdropSilhouette.BuildGround(settings, TestPalette());
+            Assert.Equal(BackdropSilhouette.GroundSegments * 2, mesh.FaceCount);
+            for (int face = 0; face < mesh.FaceCount; face++) Assert.True(mesh.FaceNormal(face).Y > 0.99f, $"face {face} faces {mesh.FaceNormal(face)}");
+            foreach (Vector3 position in mesh.Positions) {
+                float radius = new Vector2(position.X, position.Z).Length();
+                Assert.InRange(radius, (float)settings.GroundInnerRadius - 1e-3f, (float)settings.GroundOuterRadius + 1e-3f);
+                Assert.Equal(0f, position.Y);
+            }
         }
 
         [Fact]
@@ -148,15 +193,17 @@ namespace AlpineLib.Server.Tests.Sky {
             Assert.InRange(feature.LocalX, 0.0, Settings.SectorSize);
             Assert.InRange(feature.LocalZ, 0.0, Settings.SectorSize);
             Assert.InRange(feature.Variant, 0, BackdropSettings.VariantsPerKind - 1);
-            Assert.InRange(feature.Width, Settings.MinWidth, Settings.MaxWidth);
             Assert.InRange(feature.Yaw, 0.0, 2.0 * Math.PI);
             Assert.InRange(feature.MeshIndex, 0, BackdropSettings.MeshCount - 1);
             kinds[(int)feature.Kind]++;
             if (feature.Kind == BackdropFeatureKind.CloudBank) {
                 Assert.InRange(feature.Altitude, Settings.CloudBankMinAltitude, Settings.CloudBankMaxAltitude);
                 Assert.InRange(feature.Height, Settings.CloudBankMinHeight, Settings.CloudBankMaxHeight);
+                Assert.InRange(feature.Width / feature.Height, Settings.CloudBankMinAspect - 1e-9, Settings.CloudBankMaxAspect + 1e-9);
+                Assert.True(feature.Width / feature.Height >= 4.0, "a cloud bank narrower than 4:1");
                 return;
             }
+            Assert.InRange(feature.Width, Settings.MinWidth, Settings.MaxWidth);
             Assert.Equal(0.0, feature.Altitude);
             Assert.InRange(feature.Height, Settings.MinHeight, Settings.MaxHeight);
         }
@@ -177,7 +224,8 @@ namespace AlpineLib.Server.Tests.Sky {
 
         private static BackdropPalette TestPalette() {
             return new BackdropPalette(new SkyAtlasBand(new Vector2(0.1f, 0.9f), new Vector2(0.1f, 0.8f)), new SkyAtlasBand(new Vector2(0.2f, 0.9f), new Vector2(0.2f, 0.8f)),
-                new SkyAtlasBand(new Vector2(0.3f, 0.9f), new Vector2(0.3f, 0.8f)), new SkyAtlasBand(new Vector2(0.4f, 0.9f), new Vector2(0.4f, 0.8f)));
+                new SkyAtlasBand(new Vector2(0.3f, 0.9f), new Vector2(0.3f, 0.8f)), new SkyAtlasBand(new Vector2(0.4f, 0.9f), new Vector2(0.4f, 0.8f)),
+                new SkyAtlasBand(new Vector2(0.5f, 0.9f), new Vector2(0.5f, 0.8f)));
         }
 
         private static BackdropFeature[] Around(BackdropLayout layout) {
