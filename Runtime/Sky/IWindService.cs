@@ -14,7 +14,13 @@ namespace AlpineLib.Sky {
         /// <summary>Wind velocity now, m/s, in Unity axes (y 0).</summary>
         Vector3 Velocity { get; }
 
-        /// <summary>How far the air has moved since the session began, metres (x East, z North).</summary>
+        /// <summary>
+        /// How far the air has moved since the session began, metres (x East, z North). While <see cref="IsReady"/> is
+        /// false this is the last known drift (zero at first).
+        /// </summary>
         WindVector Displacement { get; }
+
+        /// <summary>False while a long cold join replays the drift on a worker; consumers keep their last placement meanwhile.</summary>
+        bool IsReady { get; }
     }
 }

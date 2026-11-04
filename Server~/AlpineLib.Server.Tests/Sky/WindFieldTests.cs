@@ -115,12 +115,70 @@ namespace AlpineLib.Server.Tests.Sky {
             Assert.True(difference <= Settings.HeadingWanderDegrees * Math.PI / 180.0 + 1e-9);
         }
 
+        [Theory]
+        [InlineData(0.0)]
+        [InlineData(35.0)]
+        [InlineData(80.0)]
+        public void SeriesTangentMatchesTheLibraryTangent(double degrees) {
+            double angle = degrees * Math.PI / 180.0;
+            Assert.InRange(WindField.SeriesTangent(angle) - Math.Tan(angle), -1e-12, 1e-12);
+        }
+
         [Fact]
-        public void FullWanderBendsByExactlyTheWanderAngle() {
+        public void FullNoiseBendsByExactlyTheWander() {
             var field = new WindField(21UL, new WindSettings(3.0, 35.0, 600.0, 0.4, 45.0, 8.0));
-            double bent = Math.Atan(Math.Tan(35.0 * Math.PI / 180.0));
-            Assert.Equal(35.0 * Math.PI / 180.0, bent, 12);
-            Assert.InRange(field.Prevailing.Length, 1.0 - 1e-15, 1.0 + 1e-15);
+            double wander = 35.0 * Math.PI / 180.0;
+            double left = AngleFrom(field.Prevailing, field.Bend(1.0));
+            double right = AngleFrom(field.Prevailing, field.Bend(-1.0));
+
+            Assert.InRange(Math.Abs(left) - wander, -1e-12, 1e-12);
+            Assert.InRange(Math.Abs(right) - wander, -1e-12, 1e-12);
+            Assert.True(left * right < 0.0, "full noise either way bends to the same side");
+            Assert.Equal(field.Prevailing, field.Bend(0.0));
+        }
+
+        [Fact]
+        public async System.Threading.Tasks.Task WeekLongColdJoinOnAWorkerEqualsTheSteppedSum() {
+            const long week = 7L * 24 * 3600;
+            var cold = new WindField(42UL, Settings);
+            WindReplay replay = await System.Threading.Tasks.Task.Run(() => cold.Replay(week));
+            cold.Adopt(replay);
+
+            var stepped = new WindField(42UL, Settings);
+            for (long steps = 0; steps <= week; steps += 997) stepped.SumOfSteps(steps);
+
+            Assert.Equal(stepped.SumOfSteps(week), replay.Sum);
+            Assert.Equal(stepped.Displacement(week + 0.5), cold.Displacement(week + 0.5));
+            Assert.Equal(0L, cold.StepsToReach(week + 0.5));
+            Assert.Equal(stepped.SumOfSteps(300000), cold.SumOfSteps(300000));
+        }
+
+        [Fact]
+        public void ReplayLeavesTheCacheAloneAndAdoptOnlyMovesItForward() {
+            var field = new WindField(9UL, Settings);
+            field.Displacement(5000.0);
+            WindReplay early = field.Replay(1000);
+            Assert.Equal(5000L, field.CachedSteps);
+
+            field.Adopt(early);
+            Assert.Equal(5000L, field.CachedSteps);
+            Assert.Throws<ArgumentException>(() => field.Adopt(new WindField(9UL, Settings).Replay(10)));
+            Assert.True(new WindField(9UL, Settings).StepsToReach(WindField.ReplayBudgetSteps + 10.0) > WindField.ReplayBudgetSteps);
+        }
+
+        [Fact]
+        public void EasingBackOneStepCostsNoReplay() {
+            var field = new WindField(13UL, Settings);
+            WindVector ahead = field.Displacement(1000.1);
+            Assert.Equal(0L, field.StepsToReach(999.9));
+            WindVector back = field.Displacement(999.9);
+            Assert.Equal(999L, field.CachedSteps);
+            Assert.Equal(new WindField(13UL, Settings).Displacement(999.9), back);
+            Assert.Equal(ahead, field.Displacement(1000.1));
+        }
+
+        private static double AngleFrom(WindVector from, WindVector to) {
+            return Math.Atan2(from.X * to.Z - from.Z * to.X, from.X * to.X + from.Z * to.Z);
         }
 
         [Fact]
