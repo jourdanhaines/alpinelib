@@ -231,6 +231,17 @@ namespace AlpineLib.Server.Tests.Sky {
             }
         }
 
+        // The lattice's anchor sits up to half a snap diagonal from the camera, so its hole shrinks by that much.
+        [Fact]
+        public void GroundLatticeHoleNeverOpensPastTheAnnulus() {
+            BackdropSettings settings = BackdropSettings.Default;
+            Assert.Equal(settings.GroundInnerRadius - settings.GroundLatticeSnap * Math.Sqrt(0.5), settings.GroundLatticeHoleRadius, 12);
+            Assert.True(settings.GroundLatticeHoleRadius > 0.0);
+
+            settings.GroundLatticeSnap = settings.GroundInnerRadius * 2.0;
+            Assert.Throws<ArgumentOutOfRangeException>(() => settings.Validate());
+        }
+
         [Fact]
         public void RockFootFogGivesWaySmoothlyToItsOwn() {
             Assert.Equal(1.0, BackdropSilhouette.FootFogWeight(0.0));

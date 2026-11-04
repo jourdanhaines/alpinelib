@@ -77,6 +77,15 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>How far below the ground height the annulus lies, so it never shows through streamed ground.</summary>
         public double GroundDrop { get; set; } = 0.3;
 
+        /// <summary>Vertex spacing (m) of the world-anchored lattice that replaces the annulus when the consumer colours its ground.</summary>
+        public double GroundLatticeSpacing { get; set; } = 16.0;
+
+        /// <summary>Step (m) the lattice's anchor snaps to in absolute xz; it is recoloured only when the anchor moves.</summary>
+        public double GroundLatticeSnap { get; set; } = 32.0;
+
+        /// <summary>The lattice's hole about its anchor: the annulus's inner radius less the farthest the anchor sits from the camera.</summary>
+        public double GroundLatticeHoleRadius => GroundInnerRadius - GroundLatticeSnap * Math.Sqrt(0.5);
+
         /// <summary>Relative chances of mesa, butte and ridge among the rock silhouettes.</summary>
         public double MesaWeight { get; set; } = 0.4;
         public double ButteWeight { get; set; } = 0.25;
@@ -136,6 +145,9 @@ namespace AlpineLib.Procedural.Sky {
             RequirePositive(GroundInnerRadius, nameof(GroundInnerRadius));
             RequireOrdered(GroundInnerRadius, GroundOuterRadius, nameof(GroundOuterRadius));
             if (GroundDrop < 0.0) throw new ArgumentOutOfRangeException(nameof(GroundDrop), GroundDrop, "Must not be negative.");
+            RequirePositive(GroundLatticeSpacing, nameof(GroundLatticeSpacing));
+            RequirePositive(GroundLatticeSnap, nameof(GroundLatticeSnap));
+            RequirePositive(GroundLatticeHoleRadius, nameof(GroundLatticeHoleRadius));
             RequirePositive(MinWidth, nameof(MinWidth));
             RequirePositive(MinHeight, nameof(MinHeight));
             RequirePositive(MaxRockAspect, nameof(MaxRockAspect));

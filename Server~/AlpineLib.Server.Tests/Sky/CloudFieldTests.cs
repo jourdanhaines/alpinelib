@@ -114,8 +114,8 @@ namespace AlpineLib.Server.Tests.Sky {
                 previous = presence;
             }
             Assert.InRange(scatter.Presence(0.5 * (Settings.FullRadius + Settings.WindowRadius)), 0.3, 0.7);
-            // The shipped consumer fogs radially to 400 m at cloud fog scale 0.48: fully fogged before any shrink.
-            Assert.True(Settings.FullRadius >= 400.0 / 0.48);
+            // The shipped consumer fogs radially to 750 m at cloud fog scale 0.9: fully fogged before any shrink.
+            Assert.True(Settings.FullRadius >= 750.0 / 0.9);
         }
 
         [Fact]

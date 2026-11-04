@@ -22,7 +22,8 @@ namespace AlpineLib.Sky {
     /// layer, with shadows off both ways and no colliders; <see cref="SkyCameraFilter"/> keeps it out of capture
     /// cameras. Matrices are rebuilt whenever the camera moved more than <see cref="RebuildDistance"/> (about every
     /// moving frame: cached world-space matrices would otherwise lag and jump). One flat annulus, fogged like the
-    /// world, is drawn under the ring about the camera to hide the edge of the streamed world; rock's foot is
+    /// world, is drawn under the ring about the camera to hide the edge of the streamed world (or, with
+    /// <see cref="SetGroundSource"/>, a world-anchored lattice coloured like the consumer's ground); rock's foot is
     /// fogged like the world too (<see cref="BackdropSilhouette.FootFogWeight"/> in vertex alpha), so a silhouette
     /// rises out of that ground haze instead of standing vivid on a pale band.
     /// </para>
@@ -54,6 +55,9 @@ namespace AlpineLib.Sky {
         private readonly List<BackdropFeature> _scratch = new List<BackdropFeature>();
         private readonly List<int> _staleCameras = new List<int>();
         private readonly HashSet<int> _warnedFarClip = new HashSet<int>();
+        private readonly Dictionary<int, BackdropGroundLattice> _lattices = new Dictionary<int, BackdropGroundLattice>();
+        private Func<double, double, Color32> _groundColourAt;
+        private Material _groundSourceMaterial;
         private BackdropLayout _layout;
         private SkyMeshVariants _meshes;
         private IAbsoluteFrame _frame;
@@ -82,6 +86,9 @@ namespace AlpineLib.Sky {
         /// <summary>The ground annulus's clone of the template, fogged at <see cref="GroundFogScale"/>.</summary>
         public Material GroundMaterial => _groundMaterial;
 
+        /// <summary>The material the ground lattice draws through (<see cref="SetGroundSource"/>), or null for the flat annulus.</summary>
+        public Material GroundSourceMaterial => _groundSourceMaterial;
+
         /// <summary>The layer every instance draws on.</summary>
         public int Layer => _layer;
 
@@ -98,6 +105,7 @@ namespace AlpineLib.Sky {
             _frame = frame;
             _layer = layer;
             DestroyMaterials();
+            DisposeLattices();
             _template = materialTemplate;
             _fogScale = fogScale;
             _cloudFogScale = cloudFogScale;
@@ -114,6 +122,25 @@ namespace AlpineLib.Sky {
 
             if (_material == _template) _material = MaterialFor(fogScale, GroundFogScale);
             else _material.SetFloat(StylizedLitShader.FogScale, fogScale);
+        }
+
+        /// <summary>
+        /// Replaces the flat annulus with a world-anchored lattice drawn through <paramref name="material"/> (not owned;
+        /// vertex-coloured like the world's ground, fogged like it) whose vertex colours (sRGB) come from
+        /// <paramref name="colourAt"/>(absolute x, absolute z), so the streamed world's edge does not show through
+        /// translucent fog. Null for either restores the annulus. Survives <see cref="Configure"/>.
+        /// </summary>
+        public void SetGroundSource(Material material, Func<double, double, Color32> colourAt) {
+            bool isSet = material != null && colourAt != null;
+            _groundSourceMaterial = isSet ? material : null;
+            _groundColourAt = isSet ? colourAt : null;
+            DisposeLattices();
+            _revision++;
+        }
+
+        /// <summary>The ground lattice <paramref name="camera"/> draws, or null (no ground source, or not drawn yet).</summary>
+        public BackdropGroundLattice GroundLatticeOf(Camera camera) {
+            return camera != null && _lattices.TryGetValue(camera.GetInstanceID(), out BackdropGroundLattice lattice) ? lattice : null;
         }
 
         /// <summary>True when <paramref name="material"/> is instanced and carries every keyword a sky draw needs.</summary>
@@ -146,7 +173,9 @@ namespace AlpineLib.Sky {
                 draws++;
             }
 
-            Graphics.RenderMesh(CreateParams(_groundMaterial, camera, batch.GroundBounds), _meshes.Ground, 0, batch.GroundMatrix);
+            BackdropGroundLattice lattice = GroundLatticeOf(camera);
+            if (lattice != null && _groundSourceMaterial != null) Graphics.RenderMesh(CreateParams(_groundSourceMaterial, camera, batch.GroundBounds), lattice.Mesh, 0, batch.GroundMatrix);
+            else Graphics.RenderMesh(CreateParams(_groundMaterial, camera, batch.GroundBounds), _meshes.Ground, 0, batch.GroundMatrix);
             return draws + 1;
         }
 
@@ -175,7 +204,10 @@ namespace AlpineLib.Sky {
 
         // Edit mode frees its clones here (domain reloads and scene saves skip OnDestroy); the next draw rebuilds them.
         private void OnDisable() {
-            if (!Application.isPlaying) DestroyClones();
+            if (!Application.isPlaying) {
+                DestroyClones();
+                DisposeLattices();
+            }
             if (!_isSubscribed) return;
 
             RenderPipelineManager.beginCameraRendering -= HandleBeginCamera;
@@ -184,6 +216,7 @@ namespace AlpineLib.Sky {
 
         private void OnDestroy() {
             DestroyMaterials();
+            DisposeLattices();
             _batches.Clear();
             _sectors.Clear();
         }
@@ -205,6 +238,7 @@ namespace AlpineLib.Sky {
             if (!NeedsRebuild(batch, world, absoluteX, absoluteZ)) return batch;
 
             Rebuild(batch, world, absoluteX, absoluteZ);
+            PlaceGroundLattice(id, batch, world, absoluteX, absoluteZ);
             DropStaleBatches();
             return batch;
         }
@@ -307,7 +341,37 @@ namespace AlpineLib.Sky {
             foreach (KeyValuePair<int, BackdropBatch> entry in _batches) {
                 if (Time.frameCount - entry.Value.LastUsedFrame > StaleBatchFrames) _staleCameras.Add(entry.Key);
             }
-            foreach (int id in _staleCameras) _batches.Remove(id);
+            foreach (int id in _staleCameras) {
+                _batches.Remove(id);
+                if (!_lattices.TryGetValue(id, out BackdropGroundLattice lattice)) continue;
+
+                lattice.Dispose();
+                _lattices.Remove(id);
+            }
+        }
+
+        // With a ground source, the camera's lattice is recoloured about the snapped anchor and drawn there instead of the annulus.
+        private void PlaceGroundLattice(int id, BackdropBatch batch, Vector3 world, double absoluteX, double absoluteZ) {
+            if (_groundColourAt == null) return;
+
+            BackdropSettings settings = _layout.Settings;
+            if (!_lattices.TryGetValue(id, out BackdropGroundLattice lattice) || lattice.Mesh == null) {
+                lattice = new BackdropGroundLattice(settings.GroundLatticeSpacing, settings.GroundLatticeSnap, settings.GroundLatticeHoleRadius, settings.GroundOuterRadius, _groundColourAt);
+                _lattices[id] = lattice;
+            }
+
+            lattice.AnchorFor(absoluteX, absoluteZ, out double anchorX, out double anchorZ);
+            lattice.Recolour(anchorX, anchorZ);
+            float groundAt = (_frame != null ? _frame.GroundY : 0f) - (float)settings.GroundDrop;
+            var centre = new Vector3(world.x + (float)(anchorX - absoluteX), groundAt, world.z + (float)(anchorZ - absoluteZ));
+            float extent = (float)settings.GroundOuterRadius * 2f;
+            batch.GroundMatrix = Matrix4x4.Translate(centre);
+            batch.GroundBounds = new Bounds(centre, new Vector3(extent, 1f, extent));
+        }
+
+        private void DisposeLattices() {
+            foreach (BackdropGroundLattice lattice in _lattices.Values) lattice.Dispose();
+            _lattices.Clear();
         }
 
         private RenderParams CreateParams(Material material, Camera camera, Bounds bounds) {
