@@ -113,7 +113,7 @@ namespace AlpineLib.Server.Tests.Sky {
                     FacetMesh mesh = BackdropSilhouette.Build(featureKind, variant, 99UL, palette);
                     FacetMesh again = BackdropSilhouette.Build(featureKind, variant, 99UL, palette);
                     Assert.Equal(mesh.ComputePositionHash(), again.ComputePositionHash());
-                    Assert.True(mesh.FaceCount >= 30 && mesh.FaceCount <= 200, $"{featureKind} {variant}: {mesh.FaceCount} faces");
+                    Assert.True(mesh.FaceCount >= 30 && mesh.FaceCount <= 260, $"{featureKind} {variant}: {mesh.FaceCount} faces");
                     FacetBounds bounds = mesh.Bounds;
                     Assert.InRange(bounds.Min.X, -0.5f - 1e-5f, -0.3f);
                     Assert.InRange(bounds.Max.X, 0.3f, 0.5f + 1e-5f);

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Numerics;
 using AlpineLib.Procedural.Meshing;
 using AlpineLib.Procedural.Noise;
 
@@ -25,8 +26,10 @@ namespace AlpineLib.Procedural.Sky {
         // Rings as (height share, radius share) from the foot up, per kind.
         private static readonly double[][] MesaRings = { new[] { 0.0, 1.0 }, new[] { 0.1, 0.93 }, new[] { 0.22, 0.8 }, new[] { 0.3, 0.74 }, new[] { 0.88, 0.7 }, new[] { 0.96, 0.66 }, new[] { 1.0, 0.63 } };
         private static readonly double[][] ButteRings = { new[] { 0.0, 1.0 }, new[] { 0.12, 0.84 }, new[] { 0.28, 0.56 }, new[] { 0.36, 0.47 }, new[] { 0.9, 0.42 }, new[] { 1.0, 0.37 } };
-        private static readonly double[][] RidgeRings = { new[] { 0.0, 1.0 }, new[] { 0.35, 0.76 }, new[] { 0.7, 0.44 }, new[] { 1.0, 0.12 } };
-        private static readonly double[][] CloudRings = { new[] { 0.0, 0.66 }, new[] { 0.25, 0.92 }, new[] { 0.55, 1.0 }, new[] { 0.8, 0.78 }, new[] { 1.0, 0.36 } };
+        private static readonly double[][] RidgeRings = { new[] { 0.0, 1.0 }, new[] { 0.3, 0.84 }, new[] { 0.62, 0.6 }, new[] { 0.85, 0.42 }, new[] { 1.0, 0.3 } };
+        // Cloud bank puffs as (x centre, width share, height share).
+        private static readonly double[][] CloudPuffs = { new[] { -0.29, 0.42, 0.62 }, new[] { 0.0, 0.58, 1.0 }, new[] { 0.3, 0.4, 0.74 } };
+        private static readonly double[][] CloudRings = { new[] { 0.0, 0.94 }, new[] { 0.14, 1.0 }, new[] { 0.42, 0.86 }, new[] { 0.72, 0.58 }, new[] { 1.0, 0.24 } };
 
         /// <summary>The seed of (<paramref name="kind"/>, <paramref name="variant"/>) under <paramref name="seed"/>.</summary>
         public static ulong VariantSeed(ulong seed, BackdropFeatureKind kind, int variant) {
@@ -39,16 +42,26 @@ namespace AlpineLib.Procedural.Sky {
             if (variant < 0 || variant >= BackdropSettings.VariantsPerKind) throw new ArgumentOutOfRangeException(nameof(variant), variant, "Outside the kind's variants.");
 
             ulong variantSeed = VariantSeed(seed, kind, variant);
-            List<LoftRing> rings = BuildRings(ProfileOf(kind), SidesOf(kind), DepthOf(kind), variantSeed);
-            bool isCloud = kind == BackdropFeatureKind.CloudBank;
-            FacetMesh mesh = LoftMesh.Build(rings, true, isCloud);
-            if (isCloud) {
-                FacetUv.BandByHeight(mesh, (t) => CloudUv(palette, t), 0.0, 1.0);
-            } else {
-                SkyAtlasBand rock = palette.RockFor(variant);
-                FacetUv.BandByHeight(mesh, (t) => rock.At(t), 0.0, 1.0);
+            if (kind == BackdropFeatureKind.CloudBank) return BuildCloudBank(variantSeed, palette);
+
+            FacetMesh mesh = LoftMesh.Build(BuildRings(ProfileOf(kind), SidesOf(kind), DepthOf(kind), variantSeed), true, false);
+            SkyAtlasBand rock = palette.RockFor(variant);
+            FacetUv.BandByHeight(mesh, (t) => rock.At(t), 0.0, 1.0);
+            return mesh;
+        }
+
+        // A bank of three flat-based puffs side by side, the middle one tallest, so it reads as cumulus, not a lens.
+        private static FacetMesh BuildCloudBank(ulong seed, BackdropPalette palette) {
+            var mesh = new FacetMesh();
+            for (int puff = 0; puff < CloudPuffs.Length; puff++) {
+                double[] shape = CloudPuffs[puff];
+                ulong puffSeed = StableHash.Mix(seed, (ulong)puff);
+                FacetMesh piece = LoftMesh.Build(BuildRings(CloudRings, SidesOf(BackdropFeatureKind.CloudBank), DepthOf(BackdropFeatureKind.CloudBank), puffSeed), true, true);
+                var place = Matrix4x4.CreateScale((float)shape[1], (float)shape[2], (float)shape[1]) * Matrix4x4.CreateTranslation((float)shape[0], 0f, 0f);
+                mesh.Append(piece, place);
             }
 
+            FacetUv.BandByHeight(mesh, (t) => CloudUv(palette, t), 0.0, 1.0);
             return mesh;
         }
 
@@ -92,7 +105,12 @@ namespace AlpineLib.Procedural.Sky {
         }
 
         private static int SidesOf(BackdropFeatureKind kind) {
-            return kind == BackdropFeatureKind.Butte ? 9 : kind == BackdropFeatureKind.Mesa ? 10 : 12;
+            switch (kind) {
+                case BackdropFeatureKind.Mesa: return 10;
+                case BackdropFeatureKind.Butte: return 9;
+                case BackdropFeatureKind.Ridge: return 12;
+                default: return 8;
+            }
         }
 
         // Footprint depth (z) as a share of its width (x).
@@ -100,8 +118,8 @@ namespace AlpineLib.Procedural.Sky {
             switch (kind) {
                 case BackdropFeatureKind.Mesa: return 0.34f;
                 case BackdropFeatureKind.Butte: return 0.6f;
-                case BackdropFeatureKind.Ridge: return 0.16f;
-                default: return 0.24f;
+                case BackdropFeatureKind.Ridge: return 0.35f;
+                default: return 0.32f;
             }
         }
     }
