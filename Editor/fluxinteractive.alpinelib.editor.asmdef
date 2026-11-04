@@ -6,6 +6,7 @@
     "FluxInteractive.AlpineLib.Appearance",
     "UnityEngine.UI",
     "FluxInteractive.AlpineLib.Rendering",
+    "FluxInteractive.AlpineLib.Procedural",
     "Unity.RenderPipelines.Core.Runtime"
   ],
   "includePlatforms": [
