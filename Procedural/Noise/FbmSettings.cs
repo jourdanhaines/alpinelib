@@ -6,7 +6,7 @@ namespace AlpineLib.Procedural.Noise {
     /// the first octave's frequency, and how frequency and amplitude change per octave.
     /// </summary>
     /// <remarks>
-    /// <c>default(FbmSettings)</c> has zero octaves, which <see cref="Fbm"/> samples as a flat 0.
+    /// <c>default(FbmSettings)</c> has zero octaves; <see cref="Fbm"/> and <see cref="NoiseField2"/> reject it.
     /// </remarks>
     public readonly struct FbmSettings : IEquatable<FbmSettings> {
         /// <summary>The most octaves a settings value may ask for.</summary>

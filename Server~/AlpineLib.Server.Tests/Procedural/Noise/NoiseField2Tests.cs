@@ -31,5 +31,11 @@ namespace AlpineLib.Server.Tests.Procedural.Noise {
                 Assert.InRange(field.Sample01(x, y), 0.0, 1.0);
             }
         }
+
+        [Fact]
+        public void RejectsSettingsWithoutOctaves() {
+            Assert.Throws<System.ArgumentException>(() => new NoiseField2(1UL, default));
+            Assert.Throws<System.ArgumentException>(() => new NoiseField2(1UL, new FbmSettings(2, 0.1), 3.0));
+        }
     }
 }

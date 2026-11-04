@@ -1,3 +1,5 @@
+using System;
+
 namespace AlpineLib.Procedural.Noise {
     /// <summary>
     /// A ready-to-sample 2D scalar field: optional domain warp followed by fBm, all under one seed.
@@ -12,9 +14,15 @@ namespace AlpineLib.Procedural.Noise {
         /// <summary>
         /// A field of <paramref name="settings"/> fBm under <paramref name="seed"/>, warped by
         /// <paramref name="warpAmplitude"/> units of <paramref name="warpSettings"/> fBm (no warp when the
-        /// amplitude is 0).
+        /// amplitude is 0). Throws when either settings value in use has no octaves.
         /// </summary>
         public NoiseField2(ulong seed, FbmSettings settings, double warpAmplitude = 0.0, FbmSettings warpSettings = default) {
+            if (settings.Octaves < 1) {
+                throw new ArgumentException("Settings has no octaves.", nameof(settings));
+            }
+            if (warpAmplitude != 0.0 && warpSettings.Octaves < 1) {
+                throw new ArgumentException("A non-zero warp amplitude needs warp settings with octaves.", nameof(warpSettings));
+            }
             Seed = seed;
             Settings = settings;
             WarpAmplitude = warpAmplitude;
@@ -35,7 +43,7 @@ namespace AlpineLib.Procedural.Noise {
 
         /// <summary>The field at (<paramref name="x"/>, <paramref name="y"/>), in [−1, 1].</summary>
         public double Sample(double x, double y) {
-            if (WarpAmplitude != 0.0 && WarpSettings.Octaves > 0) {
+            if (WarpAmplitude != 0.0) {
                 DomainWarp.Warp2(StableHash.Mix(Seed, WarpSalt), ref x, ref y, WarpAmplitude, WarpSettings);
             }
             return Fbm.Sample2(Seed, x, y, Settings);

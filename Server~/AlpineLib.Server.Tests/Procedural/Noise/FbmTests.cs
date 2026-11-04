@@ -6,19 +6,46 @@ using Xunit;
 namespace AlpineLib.Server.Tests.Procedural.Noise {
     public sealed class FbmTests {
         [Fact]
-        public void DefaultSettingsSampleFlatZero() {
+        public void DefaultSettingsAreRejected() {
             FbmSettings settings = default;
 
-            Assert.Equal(0.0, Fbm.Sample1(1UL, 3.3, settings));
-            Assert.Equal(0.0, Fbm.Sample2(1UL, 3.3, 4.4, settings));
+            Assert.Throws<ArgumentException>(() => Fbm.Sample1(1UL, 3.3, settings));
+            Assert.Throws<ArgumentException>(() => Fbm.Sample2(1UL, 3.3, 4.4, settings));
         }
 
         [Fact]
-        public void SingleOctaveIsGradientNoiseAtTheOctaveSeed() {
+        public void SingleOctaveIsOffsetGradientNoiseAtTheOctaveSeed() {
             FbmSettings settings = new FbmSettings(1, 0.5);
+            ulong octaveSeed = Fbm.OctaveSeed(9UL, 0);
+            double offsetX = Fbm.OctaveOffset(9UL, 0, 0);
+            double offsetY = Fbm.OctaveOffset(9UL, 0, 1);
 
-            Assert.Equal(GradientNoise.Sample2(Fbm.OctaveSeed(9UL, 0), 1.5, 2.0), Fbm.Sample2(9UL, 3.0, 4.0, settings));
-            Assert.Equal(GradientNoise.Sample1(Fbm.OctaveSeed(9UL, 0), 1.5), Fbm.Sample1(9UL, 3.0, settings));
+            Assert.Equal(GradientNoise.Sample2(octaveSeed, 1.5 + offsetX, 2.0 + offsetY), Fbm.Sample2(9UL, 3.0, 4.0, settings));
+            Assert.Equal(GradientNoise.Sample1(octaveSeed, 1.5 + offsetX), Fbm.Sample1(9UL, 3.0, settings));
+            Assert.NotEqual(offsetX, offsetY);
+        }
+
+        [Fact]
+        public void NotPinnedToZeroOnTheFrequencyGrid() {
+            FbmSettings ground = new FbmSettings(3, 1.0 / 18.0);
+            FbmSettings wind = new FbmSettings(2, 1.0 / 600.0);
+            int zeros = 0;
+            for (int cellX = -10; cellX <= 10; cellX++) {
+                for (int cellY = -10; cellY <= 10; cellY++) {
+                    zeros += Fbm.Sample2(42UL, 18.0 * cellX, 18.0 * cellY, ground) == 0.0 ? 1 : 0;
+                }
+                zeros += Fbm.Sample1(9UL, 600.0 * cellX, wind) == 0.0 ? 1 : 0;
+            }
+            Assert.Equal(0, zeros);
+        }
+
+        [Fact]
+        public void OctaveSeedsAreSaltedAwayFromLatticeHashes() {
+            for (int octave = 0; octave < FbmSettings.MaxOctaves; octave++) {
+                Assert.NotEqual(LatticeHash.Hash(7UL, octave), Fbm.OctaveSeed(7UL, octave));
+                Assert.NotEqual(AlpineLib.Procedural.StableHash.Mix(7UL, (ulong)octave), Fbm.OctaveSeed(7UL, octave));
+            }
+            Assert.Throws<ArgumentOutOfRangeException>(() => Fbm.OctaveOffset(7UL, 0, 2));
         }
 
         [Fact]

@@ -13,10 +13,12 @@ namespace AlpineLib.Procedural.Noise {
     /// within ±2⁶² after scaling. Static, allocation-free and thread-safe.
     /// </remarks>
     public static class GradientNoise {
-        // Unit-gradient Perlin noise is bounded by sqrt(N)/2; these rescale each dimension to [-1, 1].
+        // 1D/2D: the sqrt(N)/2 bound, reached in practice (peaks ~0.93/0.98). 3D edge gradients peak near
+        // 0.707 raw (2e7 samples), well under sqrt(3)/2, so 3D is scaled to the observed peak (~0.98); the
+        // clamp absorbs rarer extremes.
         private const double Scale1 = 2.0;
         private const double Scale2 = 1.4142135623730951;
-        private const double Scale3 = 1.1547005383792515;
+        private const double Scale3 = 1.39;
 
         private const double Diagonal = 0.70710678118654757;
         private const double Cos22 = 0.92387953251128674;
