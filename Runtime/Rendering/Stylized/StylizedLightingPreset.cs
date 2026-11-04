@@ -9,8 +9,9 @@ namespace AlpineLib.Rendering {
     /// optional post profile. <see cref="Apply"/> writes it all into <see cref="RenderSettings"/>.
     /// </summary>
     /// <remarks>
-    /// The sky's haze is always the fog colour, so the fogged world melts into the horizon band. The skybox is
-    /// drawn from an instanced copy of <see cref="SkyboxMaterial"/>, so applying never dirties the asset.
+    /// The sky's haze is always the fog colour, so the fogged world melts into the horizon band. In play mode the
+    /// skybox is an instanced copy of <see cref="SkyboxMaterial"/>, so applying never dirties the asset; edit mode
+    /// draws the asset as baked.
     /// </remarks>
     [CreateAssetMenu(fileName = "StylizedLightingPreset", menuName = "AlpineLib/Rendering/Stylized Lighting Preset")]
     public sealed class StylizedLightingPreset : ScriptableObject {
@@ -67,6 +68,7 @@ namespace AlpineLib.Rendering {
         [SerializeField] private VolumeProfile volumeProfile;
 
         [NonSerialized] private Material _skyboxInstance;
+        [NonSerialized] private bool _isQuitting;
 
         public Vector3 SunEuler => sunEuler;
         public Color SunColor => sunColor;
@@ -142,8 +144,15 @@ namespace AlpineLib.Rendering {
             RenderSettings.sun = sun;
         }
 
+        // Edit mode draws the asset itself (the bake menu writes the values into it), so a saved scene never points at
+        // a DontSave copy; play mode draws an instanced copy so the asset stays clean.
         private void ApplySkybox() {
             if (skyboxMaterial == null) return;
+
+            if (!Application.isPlaying) {
+                RenderSettings.skybox = skyboxMaterial;
+                return;
+            }
 
             if (_skyboxInstance == null || _skyboxInstance.shader != skyboxMaterial.shader) {
                 DestroySkyboxInstance();
@@ -156,9 +165,23 @@ namespace AlpineLib.Rendering {
             RenderSettings.skybox = _skyboxInstance;
         }
 
-        // Runs on unload, domain reload and editor shutdown, where RenderSettings may already be gone: only the instance is freed.
+        private void OnEnable() {
+            Application.quitting += MarkQuitting;
+        }
+
+        // Runs on unload, domain reload and shutdown. RenderSettings is only touched while a scene is still playing
+        // (at quit and in editor shutdown its manager may already be gone).
         private void OnDisable() {
+            Application.quitting -= MarkQuitting;
+            if (_skyboxInstance != null && Application.isPlaying && !_isQuitting && RenderSettings.skybox == _skyboxInstance) {
+                RenderSettings.skybox = null;
+            }
+
             DestroySkyboxInstance();
+        }
+
+        private void MarkQuitting() {
+            _isQuitting = true;
         }
 
         private void DestroySkyboxInstance() {
