@@ -1,6 +1,6 @@
 // Gradient skybox for URP: zenith to horizon to ground with a haze band on the horizon and a sun disc with a
 // glow. The sun follows the _AlpineSunDirection global (StylizedLightingGlobals); while that is unset (w 0)
-// the glow uses _SunDirectionFallback and the disc is hidden.
+// disc and glow are hidden (_SunDirectionFallback only keeps the maths finite).
 Shader "AlpineLib/Stylized/Skybox"
 {
     Properties
@@ -113,7 +113,7 @@ Shader "AlpineLib/Stylized/Skybox"
                 half glowFalloff = saturate(1.0h - distanceToSun / max(_SunGlowSize, 0.001h));
                 half glow = glowFalloff * glowFalloff * _SunGlowStrength;
                 half discVisible = _AlpineSunDirection.w > 0.5 ? 1.0h : 0.0h;
-                color += _SunColor.rgb * (disc * discVisible + glow);
+                color += _SunColor.rgb * ((disc + glow) * discVisible);
                 return half4(color, 1.0h);
             }
             ENDHLSL

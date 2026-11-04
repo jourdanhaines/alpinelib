@@ -29,6 +29,8 @@ half StylizedWrap(half ndotl, half wrap)
 // Two-tone step with an edge half-width of softness; softness 0 returns x unchanged.
 half StylizedRamp(half x, half softness)
 {
+    // smoothstep with equal edges divides by zero.
+    if (softness <= 0.0h) return x;
     half stepped = smoothstep(0.5h - softness, 0.5h + softness, x);
     return lerp(x, stepped, saturate(softness * ALPINE_RAMP_BLEND_SCALE));
 }
@@ -124,7 +126,8 @@ half3 StylizedFragmentColor(InputData inputData, StylizedSurface surface, half4 
     half directMask = mainLight.shadowAttenuation * mainLight.distanceAttenuation * saturate(dot(normalWS, mainLight.direction) * 4.0h);
     color += mainLight.color * specularColor * (highlight * surface.smoothness * surface.metallic * directMask);
 
-    half facing = max(1.0h - saturate(dot(normalWS, viewDirWS)), 1e-4h);
+    // abs keeps back faces (Cull Off) from reading as full-strength rim.
+    half facing = max(1.0h - saturate(abs(dot(normalWS, viewDirWS))), 1e-4h);
     half rim = pow(facing, max(_AlpineLightParams.z, 1e-3h)) * _AlpineRimColor.a * surface.rimStrength * presence;
     color += _AlpineRimColor.rgb * rim;
 
