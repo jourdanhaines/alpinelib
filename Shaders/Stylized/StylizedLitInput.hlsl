@@ -19,6 +19,7 @@ CBUFFER_START(UnityPerMaterial)
     half _RimStrength;
     half _VertexColorStrength;
     half _FogScale;
+    half _FogScaleAlpha;
     UNITY_TEXTURE_STREAMING_DEBUG_VARS;
 CBUFFER_END
 

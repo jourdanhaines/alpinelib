@@ -16,7 +16,7 @@ struct Attributes
     float4 positionOS : POSITION;
     float3 normalOS : NORMAL;
     float2 texcoord : TEXCOORD0;
-#if defined(_VERTEX_COLOR)
+#if defined(_VERTEX_COLOR) || defined(_FOG_SCALE_BLEND)
     half4 color : COLOR;
 #endif
     UNITY_VERTEX_INPUT_INSTANCE_ID
@@ -33,13 +33,17 @@ struct Varyings
 #if defined(REQUIRES_VERTEX_SHADOW_COORD_INTERPOLATOR)
     float4 shadowCoord : TEXCOORD4;
 #endif
+#if defined(_FOG_SCALE_BLEND)
+    half fogBlend : TEXCOORD5;
+#endif
     float4 positionCS : SV_POSITION;
     UNITY_VERTEX_INPUT_INSTANCE_ID
     UNITY_VERTEX_OUTPUT_STEREO
 };
 
-// Distance fog with the view depth scaled by _FogScale, so a material can sit further into (or out of) the fog.
-half StylizedFogFactor(float3 positionWS)
+// Distance fog with the view depth scaled by _FogScale, so a material can sit further into (or out of) the fog;
+// with _FOG_SCALE_BLEND the scale runs to _FogScaleAlpha by the vertex alpha.
+half StylizedFogFactor(float3 positionWS, half fogBlend)
 {
     bool anyFogEnabled = false;
 #if defined(FOG_LINEAR_KEYWORD_DECLARED)
@@ -55,7 +59,8 @@ half StylizedFogFactor(float3 positionWS)
 
     float viewZ = -(mul(UNITY_MATRIX_V, float4(positionWS, 1.0)).z);
     float nearToFarZ = max(viewZ - _ProjectionParams.y, 0.0);
-    return ComputeFogFactorZ0ToFar(nearToFarZ * _FogScale);
+    half fogScale = lerp(_FogScale, _FogScaleAlpha, fogBlend);
+    return ComputeFogFactorZ0ToFar(nearToFarZ * fogScale);
 }
 
 // Faceted normal from screen derivatives, turned to the side the mesh normal faces.
@@ -102,7 +107,11 @@ InputData StylizedInitializeInputData(Varyings input)
 #else
     inputData.shadowCoord = float4(0, 0, 0, 0);
 #endif
-    inputData.fogCoord = StylizedFogFactor(input.positionWS);
+#if defined(_FOG_SCALE_BLEND)
+    inputData.fogCoord = StylizedFogFactor(input.positionWS, input.fogBlend);
+#else
+    inputData.fogCoord = StylizedFogFactor(input.positionWS, 0.0h);
+#endif
     inputData.normalizedScreenSpaceUV = GetNormalizedScreenSpaceUV(input.positionCS);
     return inputData;
 }
@@ -122,6 +131,9 @@ Varyings StylizedLitPassVertex(Attributes input)
 #if defined(_VERTEX_COLOR)
     // Mesh colours arrive as raw sRGB bytes (Color32).
     output.vertexColor = SRGBToLinear(input.color.rgb);
+#endif
+#if defined(_FOG_SCALE_BLEND)
+    output.fogBlend = input.color.a;
 #endif
 #if defined(REQUIRES_VERTEX_SHADOW_COORD_INTERPOLATOR)
     output.shadowCoord = GetShadowCoord(vertexInput);

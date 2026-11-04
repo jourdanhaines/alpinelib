@@ -15,9 +15,12 @@ namespace AlpineLib.Rendering {
         public const string ReceiveShadowsOffKeyword = "_RECEIVE_SHADOWS_OFF";
         public const string NoLightCookieKeyword = "_NO_LIGHT_COOKIE";
 
+        /// <summary>Fog distance scale runs from <see cref="FogScale"/> to <see cref="FogScaleAlpha"/> by vertex alpha.</summary>
+        public const string FogScaleBlendKeyword = "_FOG_SCALE_BLEND";
+
         /// <summary>Every material keyword the shader declares.</summary>
         public static readonly string[] MaterialKeywords = {
-            VertexColorKeyword, FlatShadingKeyword, EmissionKeyword, AlphaTestKeyword, ReceiveShadowsOffKeyword, NoLightCookieKeyword
+            VertexColorKeyword, FlatShadingKeyword, EmissionKeyword, AlphaTestKeyword, ReceiveShadowsOffKeyword, NoLightCookieKeyword, FogScaleBlendKeyword
         };
 
         public static readonly int BaseMap = Shader.PropertyToID("_BaseMap");
@@ -30,6 +33,7 @@ namespace AlpineLib.Rendering {
         public static readonly int RimStrength = Shader.PropertyToID("_RimStrength");
         public static readonly int VertexColorStrength = Shader.PropertyToID("_VertexColorStrength");
         public static readonly int FogScale = Shader.PropertyToID("_FogScale");
+        public static readonly int FogScaleAlpha = Shader.PropertyToID("_FogScaleAlpha");
         public static readonly int Cull = Shader.PropertyToID("_Cull");
 
         // Inspector toggles that mirror the keywords (Toggle / ToggleOff drawers).
@@ -39,6 +43,7 @@ namespace AlpineLib.Rendering {
         public static readonly int AlphaClipToggle = Shader.PropertyToID("_AlphaClip");
         public static readonly int ReceiveShadowsToggle = Shader.PropertyToID("_ReceiveShadows");
         public static readonly int NoLightCookieToggle = Shader.PropertyToID("_NoLightCookie");
+        public static readonly int FogScaleBlendToggle = Shader.PropertyToID("_FogScaleBlend");
 
         public static readonly int ShadowTintGlobal = Shader.PropertyToID("_AlpineShadowTint");
         public static readonly int RimColorGlobal = Shader.PropertyToID("_AlpineRimColor");
@@ -77,6 +82,7 @@ namespace AlpineLib.Rendering {
                 case AlphaTestKeyword: return AlphaClipToggle;
                 case ReceiveShadowsOffKeyword: return ReceiveShadowsToggle;
                 case NoLightCookieKeyword: return NoLightCookieToggle;
+                case FogScaleBlendKeyword: return FogScaleBlendToggle;
                 default: return 0;
             }
         }

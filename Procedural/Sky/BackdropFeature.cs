@@ -5,7 +5,7 @@ namespace AlpineLib.Procedural.Sky {
     /// </summary>
     public readonly struct BackdropFeature {
         public BackdropFeature(int sectorX, int sectorZ, double localX, double localZ, BackdropFeatureKind kind, int variant,
-            double yaw, double width, double height, double altitude) {
+            double yaw, double width, double height, double depth, double altitude) {
             SectorX = sectorX;
             SectorZ = sectorZ;
             LocalX = localX;
@@ -15,6 +15,7 @@ namespace AlpineLib.Procedural.Sky {
             Yaw = yaw;
             Width = width;
             Height = height;
+            Depth = depth;
             Altitude = altitude;
         }
 
@@ -40,6 +41,9 @@ namespace AlpineLib.Procedural.Sky {
 
         /// <summary>Height of the silhouette, metres.</summary>
         public double Height { get; }
+
+        /// <summary>Scale of the mesh's unit z, metres: the width for rock, about the height for a cloud bank (see <see cref="BackdropSilhouette"/>).</summary>
+        public double Depth { get; }
 
         /// <summary>Height of its base above the ground, metres (0 for rock).</summary>
         public double Altitude { get; }

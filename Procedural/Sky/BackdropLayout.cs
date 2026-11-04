@@ -7,24 +7,36 @@ namespace AlpineLib.Procedural.Sky {
     /// and its coordinate, so every client sees the same skyline from the same absolute position.
     /// </summary>
     /// <remarks>
-    /// Placement, kind and size draw from <c>Mix(Mix(layoutSeed, sx), sz)</c>; mesh variant and yaw from the same
-    /// mix of <c>variantSeed</c>, so the look of a skyline can be re-rolled without moving it.
+    /// Placement, kind and size draw from <c>Mix(Mix(layoutSeed, sx), sz)</c>; mesh variant and yaw (and a cloud
+    /// bank's depth) from the same mix of <c>variantSeed</c>, so the look of a skyline can be re-rolled without
+    /// moving it. A cloud bank is as wide as its height times its mesh's own aspect (jittered a little, capped at
+    /// <see cref="BackdropSettings.CloudBankMaxAspect"/>), so its puffs keep the shape they were built with.
     /// </remarks>
     public sealed class BackdropLayout {
         private readonly ulong _layoutSeed;
         private readonly ulong _variantSeed;
+        private readonly double[] _cloudBankAspects;
 
-        /// <summary>A layout from the layout and variant stream seeds and validated <paramref name="settings"/>.</summary>
-        public BackdropLayout(ulong layoutSeed, ulong variantSeed, BackdropSettings settings) {
+        /// <summary>
+        /// A layout from the layout and variant stream seeds, validated <paramref name="settings"/> and the width over
+        /// height of each cloud bank mesh, by variant (<see cref="BackdropSilhouette.CloudBankAspects"/>).
+        /// </summary>
+        public BackdropLayout(ulong layoutSeed, ulong variantSeed, BackdropSettings settings, IReadOnlyList<double> cloudBankAspects) {
             if (settings == null) throw new ArgumentNullException(nameof(settings));
 
             settings.Validate();
+            _cloudBankAspects = CheckAspects(cloudBankAspects, settings);
             _layoutSeed = layoutSeed;
             _variantSeed = variantSeed;
             Settings = settings;
         }
 
         public BackdropSettings Settings { get; }
+
+        /// <summary>Width over height of cloud bank mesh <paramref name="variant"/>.</summary>
+        public double CloudBankAspect(int variant) {
+            return _cloudBankAspects[variant];
+        }
 
         /// <summary>The seed sector (<paramref name="sectorX"/>, <paramref name="sectorZ"/>) draws from in <paramref name="streamSeed"/>.</summary>
         public static ulong SectorSeed(ulong streamSeed, int sectorX, int sectorZ) {
@@ -70,18 +82,42 @@ namespace AlpineLib.Procedural.Sky {
             double localX = layout.NextDouble() * Settings.SectorSize;
             double localZ = layout.NextDouble() * Settings.SectorSize;
             BackdropFeatureKind kind = PickKind(layout.NextDouble(), layout.NextDouble());
-            bool isCloud = kind == BackdropFeatureKind.CloudBank;
             double widthRoll = layout.NextDouble();
-            double height = isCloud
-                ? Lerp(Settings.CloudBankMinHeight, Settings.CloudBankMaxHeight, layout.NextDouble())
-                : Lerp(Settings.MinHeight, Settings.MaxHeight, layout.NextDouble());
-            double width = isCloud
-                ? height * Lerp(Settings.CloudBankMinAspect, Settings.CloudBankMaxAspect, widthRoll)
-                : Lerp(Settings.MinWidth, Settings.MaxWidth, widthRoll);
-            double altitude = isCloud ? Lerp(Settings.CloudBankMinAltitude, Settings.CloudBankMaxAltitude, layout.NextDouble()) : 0.0;
+            double heightRoll = layout.NextDouble();
             int variant = looks.NextInt(BackdropSettings.VariantsPerKind);
             double yaw = looks.NextDouble() * 2.0 * Math.PI;
-            return new BackdropFeature(sectorX, sectorZ, localX, localZ, kind, variant, yaw, width, height, altitude);
+            if (kind != BackdropFeatureKind.CloudBank) {
+                double width = Lerp(Settings.MinWidth, Settings.MaxWidth, widthRoll);
+                double height = Lerp(Settings.MinHeight, Settings.MaxHeight, heightRoll);
+                return new BackdropFeature(sectorX, sectorZ, localX, localZ, kind, variant, yaw, width, height, width, 0.0);
+            }
+
+            double bankHeight = Lerp(Settings.CloudBankMinHeight, Settings.CloudBankMaxHeight, heightRoll);
+            double altitude = Lerp(Settings.CloudBankMinAltitude, Settings.CloudBankMaxAltitude, layout.NextDouble());
+            double aspect = Math.Min(_cloudBankAspects[variant] * Jitter(Settings.CloudBankWidthJitter, widthRoll), Settings.CloudBankMaxAspect);
+            double bankWidth = bankHeight * aspect;
+            double depth = bankHeight * Jitter(Settings.CloudBankDepthJitter, looks.NextDouble());
+            return new BackdropFeature(sectorX, sectorZ, localX, localZ, kind, variant, yaw, bankWidth, bankHeight, depth, altitude);
+        }
+
+        private static double[] CheckAspects(IReadOnlyList<double> aspects, BackdropSettings settings) {
+            if (aspects == null) throw new ArgumentNullException(nameof(aspects));
+            if (aspects.Count != BackdropSettings.VariantsPerKind) throw new ArgumentException($"Need one aspect per cloud bank variant ({BackdropSettings.VariantsPerKind}).", nameof(aspects));
+
+            var copy = new double[aspects.Count];
+            for (int variant = 0; variant < copy.Length; variant++) {
+                double aspect = aspects[variant];
+                if (!(aspect > 0.0) || double.IsInfinity(aspect)) throw new ArgumentOutOfRangeException(nameof(aspects), aspect, $"Cloud bank {variant}'s aspect must be positive and finite.");
+
+                copy[variant] = aspect;
+            }
+
+            return copy;
+        }
+
+        // 1 ± share across the roll.
+        private static double Jitter(double share, double roll) {
+            return 1.0 + share * (2.0 * roll - 1.0);
         }
 
         private BackdropFeatureKind PickKind(double cloudRoll, double rockRoll) {

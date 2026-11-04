@@ -10,10 +10,11 @@ namespace AlpineLib.Procedural.Sky {
     /// painted by height from a <see cref="BackdropPalette"/>.
     /// </summary>
     /// <remarks>
-    /// Unit size: the footprint spans x in [−0.5, 0.5] (z narrower, by kind) and the mesh y in [0, 1], so an
-    /// instance scales by (width, height, width). Rock is darkest at its foot; a cloud bank (a <see cref="CloudBankShape"/>
-    /// heap of rounded blobs) is its top strip above <see cref="CloudSplit"/> and the light half of its underside
-    /// strip below, so its belly melts toward the haze.
+    /// Unit size: the footprint spans x in [−0.5, 0.5] and the mesh y in [0, 1]. Rock's z is a share of its width
+    /// (scale by (width, height, width)); a cloud bank's z is a share of its height (scale by (width, height, depth)
+    /// with width = height × its own aspect, so puffs stay round). Rock is darkest at its foot; a cloud bank (a
+    /// <see cref="CloudBankShape"/> heap of rounded blobs) is its top strip above <see cref="CloudSplit"/> and the
+    /// light half of its underside strip below, so its belly melts toward the haze.
     /// </remarks>
     public static class BackdropSilhouette {
         /// <summary>Height share below which a cloud bank is painted from its underside strip.</summary>
@@ -24,6 +25,9 @@ namespace AlpineLib.Procedural.Sky {
 
         /// <summary>Segments around the ground annulus.</summary>
         public const int GroundSegments = 72;
+
+        /// <summary>Unit height by which rock's foot fog (<see cref="FootFogWeight"/>) has given way to its own.</summary>
+        public const double FootFogShare = 0.3;
 
         private const float RingJitter = 0.14f;
         private const float HeightJitter = 0.05f;
@@ -49,7 +53,7 @@ namespace AlpineLib.Procedural.Sky {
             if (variant < 0 || variant >= BackdropSettings.VariantsPerKind) throw new ArgumentOutOfRangeException(nameof(variant), variant, "Outside the kind's variants.");
 
             ulong variantSeed = VariantSeed(seed, kind, variant);
-            if (kind == BackdropFeatureKind.CloudBank) return BuildCloudBank(variantSeed, palette, CloudBankShape.Default);
+            if (kind == BackdropFeatureKind.CloudBank) return BuildCloudBank(variantSeed, palette, CloudBankShape.Default, out double _);
 
             FacetMesh mesh = LoftMesh.Build(BuildRings(ProfileOf(kind), SidesOf(kind), DepthOf(kind), variantSeed), true, false);
             SkyAtlasBand rock = palette.RockFor(variant);
@@ -57,11 +61,37 @@ namespace AlpineLib.Procedural.Sky {
             return mesh;
         }
 
-        /// <summary>A unit cloud bank of <paramref name="shape"/> from <paramref name="variantSeed"/> (see <see cref="VariantSeed"/>).</summary>
-        public static FacetMesh BuildCloudBank(ulong variantSeed, BackdropPalette palette, CloudBankShape shape) {
+        /// <summary>
+        /// A unit cloud bank of <paramref name="shape"/> from <paramref name="variantSeed"/> (see <see cref="VariantSeed"/>),
+        /// with <paramref name="aspect"/> its heap's own width over height: scale it by height × aspect across.
+        /// </summary>
+        public static FacetMesh BuildCloudBank(ulong variantSeed, BackdropPalette palette, CloudBankShape shape, out double aspect) {
             if (palette == null) throw new ArgumentNullException(nameof(palette));
             if (shape == null) throw new ArgumentNullException(nameof(shape));
 
+            FacetMesh heap = BuildHeap(variantSeed, shape);
+            FacetBounds bounds = heap.Bounds;
+            aspect = (bounds.Max.X - bounds.Min.X) / (double)bounds.Max.Y;
+            FacetMesh mesh = ToUnit(heap);
+            FacetUv.BandByHeight(mesh, (height) => CloudUv(palette, height), 0.0, 1.0);
+            return mesh;
+        }
+
+        /// <summary>The heap aspect (width over height) of each cloud bank variant of <paramref name="seed"/>, by variant.</summary>
+        public static double[] CloudBankAspects(ulong seed, CloudBankShape shape) {
+            if (shape == null) throw new ArgumentNullException(nameof(shape));
+
+            var aspects = new double[BackdropSettings.VariantsPerKind];
+            for (int variant = 0; variant < aspects.Length; variant++) {
+                FacetBounds bounds = BuildHeap(VariantSeed(seed, BackdropFeatureKind.CloudBank, variant), shape).Bounds;
+                aspects[variant] = (bounds.Max.X - bounds.Min.X) / (double)bounds.Max.Y;
+            }
+
+            return aspects;
+        }
+
+        // The puffs in metres of puff radius, flat base at y 0, largest puffs on the round level-1 blob until the budget is spent.
+        private static FacetMesh BuildHeap(ulong variantSeed, CloudBankShape shape) {
             shape.Validate();
             List<BlobPuff> puffs = CloudPuffs(variantSeed, shape);
             int fine = Math.Min(puffs.Count, (shape.FaceBudget - CoarseFaces * puffs.Count) / (FineFaces - CoarseFaces));
@@ -73,9 +103,7 @@ namespace AlpineLib.Procedural.Sky {
                 BlobMesh.AppendTo(heap, spec, StableHash.Mix(variantSeed, (ulong)bySize[rank]), puff.Centre);
             }
 
-            FacetMesh mesh = ToUnit(heap);
-            FacetUv.BandByHeight(mesh, (height) => CloudUv(palette, height), 0.0, 1.0);
-            return mesh;
+            return heap;
         }
 
         /// <summary>The flat annulus laid under the ring, in metres about its centre, facing up, painted mid <see cref="BackdropPalette.Ground"/>.</summary>
@@ -101,6 +129,16 @@ namespace AlpineLib.Procedural.Sky {
             return mesh;
         }
 
+        /// <summary>
+        /// How far rock at unit height <paramref name="height"/> is fogged like the world rather than like rock: 1 at
+        /// its foot, smoothstepped to 0 by <see cref="FootFogShare"/>, so a silhouette rises out of the ground haze
+        /// instead of standing vivid on it.
+        /// </summary>
+        public static double FootFogWeight(double height) {
+            double t = Math.Max(0.0, Math.Min(1.0, height / FootFogShare));
+            return 1.0 - t * t * (3.0 - 2.0 * t);
+        }
+
         private static Vector3 OnCircle(float radius, double angle) {
             return new Vector3(radius * (float)Math.Cos(angle), 0f, radius * (float)Math.Sin(angle));
         }
@@ -109,12 +147,12 @@ namespace AlpineLib.Procedural.Sky {
         private static List<BlobPuff> CloudPuffs(ulong seed, CloudBankShape shape) {
             var random = new SplitMix64(StableHash.Mix(seed, CloudSalt));
             var puffs = new List<BlobPuff>(shape.RowPuffs + shape.CrownPuffs);
-            double half = shape.Aspect * 0.5;
+            double half = shape.RowLength * shape.MaxRadius * 0.5;
             for (int index = 0; index < shape.RowPuffs; index++) {
                 double along = -1.0 + 2.0 * (index + 0.5) / shape.RowPuffs + (random.NextDouble() - 0.5) / shape.RowPuffs;
                 double envelope = Envelope(along, shape.Lean);
                 double radius = Lerp(shape.MinRadius, shape.MaxRadius, envelope * (0.5 + 0.5 * random.NextDouble()));
-                double stretch = 1.25 + 0.7 * (1.0 - envelope);
+                double stretch = shape.PuffStretch + shape.EndStretch * (1.0 - envelope);
                 var radii = new Vector3((float)(radius * stretch), (float)(radius * shape.Rise), (float)(radius * 0.9));
                 double x = along * (half - radii.X * 0.55);
                 puffs.Add(new BlobPuff(new Vector3((float)x, radii.Y * 0.25f, 0f), radii));
@@ -154,15 +192,26 @@ namespace AlpineLib.Procedural.Sky {
             return top;
         }
 
+        // Puff indices, tallest first, ties by index: an insertion sort, so every runtime orders them alike.
         private static int[] RankBySize(List<BlobPuff> puffs) {
             var order = new int[puffs.Count];
-            for (int index = 0; index < order.Length; index++) order[index] = index;
+            for (int index = 0; index < order.Length; index++) {
+                int candidate = index;
+                int slot = index;
+                while (slot > 0 && IsTaller(puffs, candidate, order[slot - 1])) {
+                    order[slot] = order[slot - 1];
+                    slot--;
+                }
+                order[slot] = candidate;
+            }
 
-            Array.Sort(order, (left, right) => {
-                int bySize = puffs[right].Radii.Y.CompareTo(puffs[left].Radii.Y);
-                return bySize != 0 ? bySize : left.CompareTo(right);
-            });
             return order;
+        }
+
+        private static bool IsTaller(List<BlobPuff> puffs, int left, int right) {
+            float leftHeight = puffs[left].Radii.Y;
+            float rightHeight = puffs[right].Radii.Y;
+            return leftHeight > rightHeight || (leftHeight == rightHeight && left < right);
         }
 
         // Round, soft-bellied blobs sharing the bank's flat base at y 0.
@@ -178,12 +227,12 @@ namespace AlpineLib.Procedural.Sky {
             };
         }
 
-        // Centred on x and z, spanning x in [−0.5, 0.5] (z by the same scale) and y in [0, 1].
+        // Centred on x and z, spanning x in [−0.5, 0.5] and y in [0, 1], z by the same scale as y.
         private static FacetMesh ToUnit(FacetMesh heap) {
             FacetBounds bounds = heap.Bounds;
             float across = 1f / (bounds.Max.X - bounds.Min.X);
             float up = 1f / bounds.Max.Y;
-            var place = Matrix4x4.CreateTranslation(-bounds.Centre.X, 0f, -bounds.Centre.Z) * Matrix4x4.CreateScale(across, up, across);
+            var place = Matrix4x4.CreateTranslation(-bounds.Centre.X, 0f, -bounds.Centre.Z) * Matrix4x4.CreateScale(across, up, up);
             var mesh = new FacetMesh(heap.FaceCount);
             mesh.Append(heap, place);
             return mesh;

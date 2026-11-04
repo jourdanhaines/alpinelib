@@ -55,9 +55,14 @@ namespace AlpineLib.Procedural.Sky {
         public double CloudBankMinHeight { get; set; } = 18.0;
         public double CloudBankMaxHeight { get; set; } = 40.0;
 
-        /// <summary>Width of a cloud bank as a multiple of its height, so a bank always reads long and low.</summary>
-        public double CloudBankMinAspect { get; set; } = 4.5;
-        public double CloudBankMaxAspect { get; set; } = 6.5;
+        /// <summary>Most a cloud bank's width strays from height × its mesh's own aspect, as a share (0.1 = 0.9–1.1).</summary>
+        public double CloudBankWidthJitter { get; set; } = 0.1;
+
+        /// <summary>Most a cloud bank's depth strays from its height, as a share (0.2 = 0.8–1.2).</summary>
+        public double CloudBankDepthJitter { get; set; } = 0.2;
+
+        /// <summary>Widest a cloud bank may be, in heights (jitter included): bounds the far clip; the layout caps wider ones.</summary>
+        public double CloudBankMaxAspect { get; set; } = 7.0;
 
         /// <summary>
         /// The flat ground annulus drawn under the ring, centred on the camera: it hides the edge of the streamed
@@ -88,7 +93,7 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Farthest any feature is drawn from the camera: the outer edge of the widest band.</summary>
         public double MaxBandRadius => Math.Max(OuterRadius, CloudBankOuterRadius);
 
-        /// <summary>Widest a cloud bank can be.</summary>
+        /// <summary>Widest a cloud bank can be, metres.</summary>
         public double CloudBankMaxWidth => CloudBankMaxHeight * CloudBankMaxAspect;
 
         /// <summary>The band <paramref name="kind"/> is drawn in, from the camera.</summary>
@@ -122,8 +127,9 @@ namespace AlpineLib.Procedural.Sky {
             RequireOrdered(MinHeight, MaxHeight, nameof(MaxHeight));
             RequireOrdered(CloudBankMinAltitude, CloudBankMaxAltitude, nameof(CloudBankMaxAltitude));
             RequireOrdered(CloudBankMinHeight, CloudBankMaxHeight, nameof(CloudBankMaxHeight));
-            RequirePositive(CloudBankMinAspect, nameof(CloudBankMinAspect));
-            RequireOrdered(CloudBankMinAspect, CloudBankMaxAspect, nameof(CloudBankMaxAspect));
+            RequirePositive(CloudBankMaxAspect, nameof(CloudBankMaxAspect));
+            RequireShare(CloudBankWidthJitter, nameof(CloudBankWidthJitter));
+            RequireShare(CloudBankDepthJitter, nameof(CloudBankDepthJitter));
             RequirePositive(GroundInnerRadius, nameof(GroundInnerRadius));
             RequireOrdered(GroundInnerRadius, GroundOuterRadius, nameof(GroundOuterRadius));
             if (GroundDrop < 0.0) throw new ArgumentOutOfRangeException(nameof(GroundDrop), GroundDrop, "Must not be negative.");
@@ -141,6 +147,10 @@ namespace AlpineLib.Procedural.Sky {
 
         private static void RequirePositive(double value, string name) {
             if (!(value > 0.0) || double.IsInfinity(value)) throw new ArgumentOutOfRangeException(name, value, "Must be positive and finite.");
+        }
+
+        private static void RequireShare(double value, string name) {
+            if (!(value >= 0.0 && value < 1.0)) throw new ArgumentOutOfRangeException(name, value, "Must be in [0, 1).");
         }
 
         private static void RequireOrdered(double low, double high, string name) {

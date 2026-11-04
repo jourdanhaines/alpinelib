@@ -15,6 +15,7 @@ Shader "AlpineLib/Stylized/Lit"
         _RimStrength("Rim Strength", Range(0.0, 2.0)) = 1.0
         _VertexColorStrength("Vertex Colour Strength", Range(0.0, 1.0)) = 1.0
         _FogScale("Fog Distance Scale", Range(0.0, 2.0)) = 1.0
+        _FogScaleAlpha("Fog Distance Scale At Vertex Alpha 1", Range(0.0, 2.0)) = 1.0
         [Enum(UnityEngine.Rendering.CullMode)] _Cull("Cull", Float) = 2.0
 
         [Toggle(_VERTEX_COLOR)] _VertexColor("Vertex Colour", Float) = 0.0
@@ -23,6 +24,7 @@ Shader "AlpineLib/Stylized/Lit"
         [Toggle(_ALPHATEST_ON)] _AlphaClip("Alpha Clip", Float) = 0.0
         [ToggleOff(_RECEIVE_SHADOWS_OFF)] _ReceiveShadows("Receive Shadows", Float) = 1.0
         [Toggle(_NO_LIGHT_COOKIE)] _NoLightCookie("Ignore Light Cookie", Float) = 0.0
+        [Toggle(_FOG_SCALE_BLEND)] _FogScaleBlend("Blend Fog Scale By Vertex Alpha", Float) = 0.0
     }
 
     SubShader
@@ -56,6 +58,7 @@ Shader "AlpineLib/Stylized/Lit"
             #pragma shader_feature_local_fragment _ALPHATEST_ON
             #pragma shader_feature_local _RECEIVE_SHADOWS_OFF
             #pragma shader_feature_local_fragment _NO_LIGHT_COOKIE
+            #pragma shader_feature_local _FOG_SCALE_BLEND
 
             // Universal Pipeline keywords (URP Simple Lit's set minus SSAO, decals, screen-space irradiance and
             // probe-volume SH: this shader does not read them)

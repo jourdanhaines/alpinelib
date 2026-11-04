@@ -1,18 +1,21 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
+using AlpineLib.Procedural;
 using AlpineLib.Procedural.Meshing;
 using AlpineLib.Procedural.Sky;
 using Xunit;
 
 namespace AlpineLib.Server.Tests.Sky {
     public sealed class BackdropLayoutTests {
+        private const int RockGoldenCount = 24;
+        private const ulong RockGoldenHash = 11005644601313286035UL;
         private static readonly BackdropSettings Settings = BackdropSettings.Default;
 
         [Fact]
         public void SameSeedsSameSectorsEverywhere() {
-            var first = new BackdropLayout(11UL, 12UL, Settings);
-            var second = new BackdropLayout(11UL, 12UL, BackdropSettings.Default);
+            var first = Layout(11UL, 12UL, Settings);
+            var second = Layout(11UL, 12UL, BackdropSettings.Default);
             for (int sectorZ = -20; sectorZ <= 20; sectorZ += 3) {
                 for (int sectorX = -20; sectorX <= 20; sectorX += 3) {
                     Assert.Equal(Describe(first.Sector(sectorX, sectorZ)), Describe(second.Sector(sectorX, sectorZ)));
@@ -22,9 +25,9 @@ namespace AlpineLib.Server.Tests.Sky {
 
         [Fact]
         public void OtherSeedsMoveTheSkyline() {
-            var layout = new BackdropLayout(11UL, 12UL, Settings);
-            var otherLayout = new BackdropLayout(13UL, 12UL, Settings);
-            var otherLooks = new BackdropLayout(11UL, 14UL, Settings);
+            var layout = Layout(11UL, 12UL, Settings);
+            var otherLayout = Layout(13UL, 12UL, Settings);
+            var otherLooks = Layout(11UL, 14UL, Settings);
             var features = Around(layout);
             Assert.NotEqual(Describe(features), Describe(Around(otherLayout)));
 
@@ -33,8 +36,9 @@ namespace AlpineLib.Server.Tests.Sky {
             int differentLooks = 0;
             for (int index = 0; index < features.Length; index++) {
                 Assert.Equal(features[index].LocalX, relooked[index].LocalX);
-                Assert.Equal(features[index].Width, relooked[index].Width);
+                Assert.Equal(features[index].Height, relooked[index].Height);
                 Assert.Equal(features[index].Kind, relooked[index].Kind);
+                if (features[index].Kind != BackdropFeatureKind.CloudBank) Assert.Equal(features[index].Width, relooked[index].Width);
                 differentLooks += features[index].Variant != relooked[index].Variant || features[index].Yaw != relooked[index].Yaw ? 1 : 0;
             }
             Assert.True(differentLooks > features.Length / 2);
@@ -42,7 +46,7 @@ namespace AlpineLib.Server.Tests.Sky {
 
         [Fact]
         public void FeaturesStayInsideTheirSectorAndSizeRanges() {
-            var layout = new BackdropLayout(5UL, 6UL, Settings);
+            var layout = Layout(5UL, 6UL, Settings);
             var counts = new int[Settings.MaxFeaturesPerSector + 1];
             var kinds = new int[BackdropSettings.KindCount];
             for (int sectorZ = -30; sectorZ < 30; sectorZ++) {
@@ -62,7 +66,7 @@ namespace AlpineLib.Server.Tests.Sky {
 
         [Fact]
         public void AroundCoversEverySectorTheSquareTouches() {
-            var layout = new BackdropLayout(5UL, 6UL, Settings);
+            var layout = Layout(5UL, 6UL, Settings);
             var features = new List<BackdropFeature>();
             layout.AppendAround(-1000.0, 333.0, 930.0, features);
             var expected = new List<BackdropFeature>();
@@ -92,16 +96,69 @@ namespace AlpineLib.Server.Tests.Sky {
 
         [Fact]
         public void FarClipCoversTheRing() {
-            Assert.Equal(930.0, Settings.RequiredFarClip);
+            Assert.Equal(940.0, Settings.RequiredFarClip);
             Assert.True(Settings.RequiredFarClip <= 1000.0);
         }
 
         [Fact]
         public void SettingsRejectInvertedBands() {
-            Assert.Throws<ArgumentOutOfRangeException>(() => new BackdropLayout(1UL, 2UL, new BackdropSettings { OuterRadius = 300.0 }));
-            Assert.Throws<ArgumentOutOfRangeException>(() => new BackdropLayout(1UL, 2UL, new BackdropSettings { MaxFeaturesPerSector = -1 }));
-            Assert.Throws<ArgumentOutOfRangeException>(() => new BackdropLayout(1UL, 2UL, new BackdropSettings { ParallaxFactor = 1.0 }));
-            Assert.Throws<ArgumentNullException>(() => new BackdropLayout(1UL, 2UL, null));
+            Assert.Throws<ArgumentOutOfRangeException>(() => Layout(1UL, 2UL, new BackdropSettings { OuterRadius = 300.0 }));
+            Assert.Throws<ArgumentOutOfRangeException>(() => Layout(1UL, 2UL, new BackdropSettings { MaxFeaturesPerSector = -1 }));
+            Assert.Throws<ArgumentOutOfRangeException>(() => Layout(1UL, 2UL, new BackdropSettings { ParallaxFactor = 1.0 }));
+            Assert.Throws<ArgumentNullException>(() => Layout(1UL, 2UL, null));
+            Assert.Throws<ArgumentOutOfRangeException>(() => Layout(1UL, 2UL, new BackdropSettings { GroundOuterRadius = 300.0 }));
+            Assert.Throws<ArgumentOutOfRangeException>(() => Layout(1UL, 2UL, new BackdropSettings { CloudBankWidthJitter = 1.0 }));
+            Assert.Throws<ArgumentNullException>(() => new BackdropLayout(1UL, 2UL, Settings, null));
+            Assert.Throws<ArgumentException>(() => new BackdropLayout(1UL, 2UL, Settings, new[] { 4.0, 4.0 }));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new BackdropLayout(1UL, 2UL, Settings, new[] { 4.0, 0.0, 4.0, 4.0 }));
+        }
+
+        // A bank is its mesh's own aspect wide and about its height deep, so a puff built round stays round in the world.
+        [Fact]
+        public void CloudBanksScaleByTheirMeshAspectSoPuffsStayRound() {
+            BackdropLayout layout = Layout(5UL, 6UL, Settings);
+            int banks = 0;
+            for (int sectorZ = -30; sectorZ < 30; sectorZ++) {
+                for (int sectorX = -30; sectorX < 30; sectorX++) {
+                    foreach (BackdropFeature feature in layout.Sector(sectorX, sectorZ)) {
+                        if (feature.Kind != BackdropFeatureKind.CloudBank) continue;
+
+                        banks++;
+                        double across = feature.Width / (feature.Height * layout.CloudBankAspect(feature.Variant));
+                        Assert.InRange(across, 1.0 - Settings.CloudBankWidthJitter - 1e-9, 1.0 + Settings.CloudBankWidthJitter + 1e-9);
+                        Assert.InRange(feature.Depth / feature.Height, 1.0 - Settings.CloudBankDepthJitter - 1e-9, 1.0 + Settings.CloudBankDepthJitter + 1e-9);
+                    }
+                }
+            }
+
+            Assert.True(banks > 100, $"only {banks} banks");
+        }
+
+        // The shipped heap is a long low bank (at least 4:1 before jitter) that fits the far clip uncapped.
+        [Fact]
+        public void ShippedCloudBanksAreLongAndFitTheFarClip() {
+            double widest = Settings.CloudBankMaxAspect / (1.0 + Settings.CloudBankWidthJitter);
+            for (ulong seed = 1; seed <= 64; seed++) {
+                foreach (double aspect in BackdropSilhouette.CloudBankAspects(seed, CloudBankShape.Default)) Assert.InRange(aspect, 4.0, widest);
+            }
+        }
+
+        // Rock placement and size are pinned for one seed: a change here moves every player's skyline.
+        [Fact]
+        public void RockPlacementGolden() {
+            BackdropLayout layout = Layout(42UL, 43UL, Settings);
+            ulong hash = 0x524F434BUL;
+            int rocks = 0;
+            for (int sectorX = 0; rocks < RockGoldenCount; sectorX++) {
+                foreach (BackdropFeature feature in layout.Sector(sectorX, -3)) {
+                    if (feature.Kind == BackdropFeatureKind.CloudBank || rocks >= RockGoldenCount) continue;
+
+                    hash = MixRock(hash, feature);
+                    rocks++;
+                }
+            }
+
+            Assert.Equal(RockGoldenHash, hash);
         }
 
         [Fact]
@@ -120,7 +177,7 @@ namespace AlpineLib.Server.Tests.Sky {
                     Assert.InRange(bounds.Max.X, 0.3f, 0.5f + 1e-5f);
                     Assert.InRange(bounds.Min.Y, -1e-5f, 1e-5f);
                     Assert.InRange(bounds.Max.Y, 1f - 1e-5f, 1f + 1e-5f);
-                    Assert.True(bounds.Max.Z <= 0.5f * 0.61f);
+                    Assert.True(bounds.Max.Z <= (featureKind == BackdropFeatureKind.CloudBank ? 1f : 0.5f * 0.61f), $"{featureKind} {variant}: z reaches {bounds.Max.Z}");
                     CheckPainted(mesh, featureKind, variant, palette);
                 }
             }
@@ -138,7 +195,8 @@ namespace AlpineLib.Server.Tests.Sky {
             var shape = new CloudBankShape { RowPuffs = rowPuffs, CrownPuffs = crownPuffs };
             for (int variant = 0; variant < BackdropSettings.VariantsPerKind; variant++) {
                 ulong seed = BackdropSilhouette.VariantSeed(5UL, BackdropFeatureKind.CloudBank, variant);
-                FacetMesh mesh = BackdropSilhouette.BuildCloudBank(seed, TestPalette(), shape);
+                FacetMesh mesh = BackdropSilhouette.BuildCloudBank(seed, TestPalette(), shape, out double aspect);
+                Assert.Equal(BackdropSilhouette.CloudBankAspects(5UL, shape)[variant], aspect);
                 Assert.InRange(mesh.FaceCount, (rowPuffs + crownPuffs) * 20, shape.FaceBudget);
                 Assert.True(mesh.FaceCount >= 80 * 4, $"{mesh.FaceCount} faces: too few round puffs");
                 FacetBounds bounds = mesh.Bounds;
@@ -174,6 +232,21 @@ namespace AlpineLib.Server.Tests.Sky {
         }
 
         [Fact]
+        public void RockFootFogGivesWaySmoothlyToItsOwn() {
+            Assert.Equal(1.0, BackdropSilhouette.FootFogWeight(0.0));
+            Assert.Equal(1.0, BackdropSilhouette.FootFogWeight(-0.04));
+            Assert.Equal(0.5, BackdropSilhouette.FootFogWeight(BackdropSilhouette.FootFogShare * 0.5), 12);
+            Assert.Equal(0.0, BackdropSilhouette.FootFogWeight(BackdropSilhouette.FootFogShare));
+            Assert.Equal(0.0, BackdropSilhouette.FootFogWeight(1.0));
+            double previous = 1.0;
+            for (double height = 0.0; height <= 1.0; height += 0.005) {
+                double weight = BackdropSilhouette.FootFogWeight(height);
+                Assert.True(weight <= previous && previous - weight < 0.03, $"weight jumps {previous} -> {weight} at {height}");
+                previous = weight;
+            }
+        }
+
+        [Fact]
         public void RockIsDarkestAtItsFoot() {
             BackdropPalette palette = TestPalette();
             FacetMesh mesh = BackdropSilhouette.Build(BackdropFeatureKind.Butte, 0, 3UL, palette);
@@ -199,11 +272,11 @@ namespace AlpineLib.Server.Tests.Sky {
             if (feature.Kind == BackdropFeatureKind.CloudBank) {
                 Assert.InRange(feature.Altitude, Settings.CloudBankMinAltitude, Settings.CloudBankMaxAltitude);
                 Assert.InRange(feature.Height, Settings.CloudBankMinHeight, Settings.CloudBankMaxHeight);
-                Assert.InRange(feature.Width / feature.Height, Settings.CloudBankMinAspect - 1e-9, Settings.CloudBankMaxAspect + 1e-9);
-                Assert.True(feature.Width / feature.Height >= 4.0, "a cloud bank narrower than 4:1");
+                Assert.InRange(feature.Width / feature.Height, 3.6, Settings.CloudBankMaxAspect + 1e-9);
                 return;
             }
             Assert.InRange(feature.Width, Settings.MinWidth, Settings.MaxWidth);
+            Assert.Equal(feature.Width, feature.Depth);
             Assert.Equal(0.0, feature.Altitude);
             Assert.InRange(feature.Height, Settings.MinHeight, Settings.MaxHeight);
         }
@@ -222,6 +295,18 @@ namespace AlpineLib.Server.Tests.Sky {
             return Math.Abs(uv.X - band.Light.X) < 1e-6f && uv.Y >= low && uv.Y <= high;
         }
 
+        private static BackdropLayout Layout(ulong layoutSeed, ulong variantSeed, BackdropSettings settings) {
+            return new BackdropLayout(layoutSeed, variantSeed, settings, BackdropSilhouette.CloudBankAspects(variantSeed, CloudBankShape.Default));
+        }
+
+        private static ulong MixRock(ulong hash, BackdropFeature feature) {
+            hash = StableHash.Mix(hash, (ulong)BitConverter.DoubleToInt64Bits(feature.FrameX(Settings.SectorSize)));
+            hash = StableHash.Mix(hash, (ulong)BitConverter.DoubleToInt64Bits(feature.FrameZ(Settings.SectorSize)));
+            hash = StableHash.Mix(hash, (ulong)BitConverter.DoubleToInt64Bits(feature.Width));
+            hash = StableHash.Mix(hash, (ulong)BitConverter.DoubleToInt64Bits(feature.Height));
+            return StableHash.Mix(hash, (ulong)feature.Kind);
+        }
+
         private static BackdropPalette TestPalette() {
             return new BackdropPalette(new SkyAtlasBand(new Vector2(0.1f, 0.9f), new Vector2(0.1f, 0.8f)), new SkyAtlasBand(new Vector2(0.2f, 0.9f), new Vector2(0.2f, 0.8f)),
                 new SkyAtlasBand(new Vector2(0.3f, 0.9f), new Vector2(0.3f, 0.8f)), new SkyAtlasBand(new Vector2(0.4f, 0.9f), new Vector2(0.4f, 0.8f)),
@@ -237,7 +322,7 @@ namespace AlpineLib.Server.Tests.Sky {
         private static string Describe(BackdropFeature[] features) {
             var parts = new List<string>();
             foreach (BackdropFeature feature in features) {
-                parts.Add($"{feature.SectorX},{feature.SectorZ},{BitConverter.DoubleToInt64Bits(feature.LocalX)},{BitConverter.DoubleToInt64Bits(feature.LocalZ)},{feature.Kind},{feature.Variant},{BitConverter.DoubleToInt64Bits(feature.Yaw)},{feature.Width},{feature.Height},{feature.Altitude}");
+                parts.Add($"{feature.SectorX},{feature.SectorZ},{BitConverter.DoubleToInt64Bits(feature.LocalX)},{BitConverter.DoubleToInt64Bits(feature.LocalZ)},{feature.Kind},{feature.Variant},{BitConverter.DoubleToInt64Bits(feature.Yaw)},{feature.Width},{feature.Height},{feature.Depth},{feature.Altitude}");
             }
             return string.Join("|", parts);
         }

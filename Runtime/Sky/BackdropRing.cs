@@ -22,13 +22,17 @@ namespace AlpineLib.Sky {
     /// layer, with shadows off both ways and no colliders; <see cref="SkyCameraFilter"/> keeps it out of capture
     /// cameras. Matrices are rebuilt whenever the camera moved more than <see cref="RebuildDistance"/> (about every
     /// moving frame: cached world-space matrices would otherwise lag and jump). One flat annulus, fogged like the
-    /// world, is drawn under the ring about the camera to hide the edge of the streamed world.
+    /// world, is drawn under the ring about the camera to hide the edge of the streamed world; rock's foot is
+    /// fogged like the world too (<see cref="BackdropSilhouette.FootFogWeight"/> in vertex alpha), so a silhouette
+    /// rises out of that ground haze instead of standing vivid on a pale band.
     /// </para>
     /// <para>
-    /// Rock draws through the template material itself when its fog scale already matches (the template asset
-    /// must carry <c>_FLAT_SHADING</c>, <c>_NO_LIGHT_COOKIE</c> and <c>_RECEIVE_SHADOWS_OFF</c>, see
-    /// <see cref="HasSkyKeywords"/>: keywords switched on at runtime are stripped from player builds); cloud banks
-    /// and the annulus draw through clones that differ only in fog scale.
+    /// Rock draws through the template material itself when its fog scales already match (the template asset
+    /// must carry <c>_FLAT_SHADING</c>, <c>_NO_LIGHT_COOKIE</c>, <c>_RECEIVE_SHADOWS_OFF</c> and <c>_FOG_SCALE_BLEND</c>,
+    /// see <see cref="HasSkyKeywords"/>: keywords switched on at runtime are stripped from player builds, so the
+    /// template's <c>_FogScale</c> is rock's and its <c>_FogScaleAlpha</c> the foot's, <see cref="GroundFogScale"/>);
+    /// cloud banks and the annulus draw through clones differing only in those two floats (set equal, so their
+    /// vertex alpha is moot). In edit mode clones are freed on disable and rebuilt on the next draw.
     /// </para>
     /// </remarks>
     [ExecuteAlways, DisallowMultipleComponent]
@@ -36,7 +40,7 @@ namespace AlpineLib.Sky {
         /// <summary>Camera motion, metres, before its instances are rebuilt.</summary>
         public const float RebuildDistance = 0.01f;
 
-        /// <summary>Fog distance scale of the ground annulus: fogged exactly like the world it continues.</summary>
+        /// <summary>Fog distance scale of the ground annulus and of rock's foot: fogged exactly like the world they continue.</summary>
         public const float GroundFogScale = 1f;
 
         /// <summary>Most a cloud bank's yaw strays from broadside to the camera, degrees.</summary>
@@ -57,6 +61,8 @@ namespace AlpineLib.Sky {
         private Material _cloudMaterial;
         private Material _groundMaterial;
         private Material _template;
+        private float _fogScale;
+        private float _cloudFogScale;
         private int _layer;
         private int _revision;
         private bool _isSubscribed;
@@ -64,10 +70,13 @@ namespace AlpineLib.Sky {
         /// <summary>The layout the ring draws, or null before <see cref="Configure"/>.</summary>
         public BackdropLayout Layout => _layout;
 
-        /// <summary>The material rock draws through: the template, or a clone of it when the fog scale differs.</summary>
+        /// <summary>
+        /// The material rock draws through: the template, or a clone of it when the fog scale differs. Often the
+        /// shared template asset itself: read it, never mutate it (use <see cref="SetFogScale"/>).
+        /// </summary>
         public Material Material => _material;
 
-        /// <summary>The cloud banks' clone of the template.</summary>
+        /// <summary>The cloud banks' material (a clone, or the template when the fog scales match: do not mutate).</summary>
         public Material CloudMaterial => _cloudMaterial;
 
         /// <summary>The ground annulus's clone of the template, fogged at <see cref="GroundFogScale"/>.</summary>
@@ -90,19 +99,20 @@ namespace AlpineLib.Sky {
             _layer = layer;
             DestroyMaterials();
             _template = materialTemplate;
+            _fogScale = fogScale;
+            _cloudFogScale = cloudFogScale;
             if (!HasSkyKeywords(materialTemplate)) Debug.LogWarning($"BackdropRing::Configure->'{materialTemplate.name}' lacks the sky keywords; player builds strip variants switched on at runtime.", this);
-            _material = MaterialFor(fogScale);
-            _cloudMaterial = MaterialFor(cloudFogScale);
-            _groundMaterial = MaterialFor(GroundFogScale);
+            EnsureMaterials();
             _sectors.Clear();
             _revision++;
         }
 
-        /// <summary>Sets the fog distance scale rock draws with (1 = fogged like the world), cloning the template first if needed.</summary>
+        /// <summary>Sets the fog distance scale rock draws with above its foot (1 = fogged like the world), cloning the template first if needed.</summary>
         public void SetFogScale(float fogScale) {
+            _fogScale = fogScale;
             if (_material == null) return;
 
-            if (_material == _template) _material = MaterialFor(fogScale);
+            if (_material == _template) _material = MaterialFor(fogScale, GroundFogScale);
             else _material.SetFloat(StylizedLitShader.FogScale, fogScale);
         }
 
@@ -112,7 +122,8 @@ namespace AlpineLib.Sky {
 
             return material.IsKeywordEnabled(StylizedLitShader.FlatShadingKeyword)
                 && material.IsKeywordEnabled(StylizedLitShader.NoLightCookieKeyword)
-                && material.IsKeywordEnabled(StylizedLitShader.ReceiveShadowsOffKeyword);
+                && material.IsKeywordEnabled(StylizedLitShader.ReceiveShadowsOffKeyword)
+                && material.IsKeywordEnabled(StylizedLitShader.FogScaleBlendKeyword);
         }
 
         /// <summary>
@@ -122,6 +133,7 @@ namespace AlpineLib.Sky {
         public int Submit(Camera camera) {
             if (!IsReady || !SkyCameraFilter.ShouldDraw(camera, _layer)) return 0;
 
+            EnsureMaterials();
             WarnFarClip(camera);
             BackdropBatch batch = BatchFor(camera);
             int draws = 0;
@@ -152,7 +164,7 @@ namespace AlpineLib.Sky {
             _revision++;
         }
 
-        private bool IsReady => _layout != null && _meshes != null && !_meshes.IsDisposed && _material != null && _cloudMaterial != null && _groundMaterial != null;
+        private bool IsReady => _layout != null && _meshes != null && !_meshes.IsDisposed && _template != null;
 
         private void OnEnable() {
             if (_isSubscribed) return;
@@ -161,7 +173,9 @@ namespace AlpineLib.Sky {
             _isSubscribed = true;
         }
 
+        // Edit mode frees its clones here (domain reloads and scene saves skip OnDestroy); the next draw rebuilds them.
         private void OnDisable() {
+            if (!Application.isPlaying) DestroyClones();
             if (!_isSubscribed) return;
 
             RenderPipelineManager.beginCameraRendering -= HandleBeginCamera;
@@ -262,7 +276,7 @@ namespace AlpineLib.Sky {
             if (feature.Kind == BackdropFeatureKind.CloudBank) {
                 float scale = (float)presence;
                 var position = new Vector3(x, groundY + (float)feature.Altitude, z);
-                return Matrix4x4.TRS(position, CloudYaw(feature, offsetX, offsetZ), new Vector3(width * scale, height * scale, width * scale));
+                return Matrix4x4.TRS(position, CloudYaw(feature, offsetX, offsetZ), new Vector3(width, height, (float)feature.Depth) * scale);
             }
 
             Quaternion yaw = Quaternion.Euler(0f, (float)(feature.Yaw * (180.0 / Math.PI)), 0f);
@@ -316,23 +330,38 @@ namespace AlpineLib.Sky {
             Debug.LogWarning($"BackdropRing::Submit->camera '{camera.name}' clips at {camera.farClipPlane:0} m; the ring needs {required:0} m.", camera);
         }
 
-        // The template itself when its fog scale already matches, else a clone differing only in fog scale (same variant).
-        private Material MaterialFor(float fogScale) {
-            if (Mathf.Approximately(_template.GetFloat(StylizedLitShader.FogScale), fogScale)) return _template;
+        private void EnsureMaterials() {
+            if (_template == null) return;
 
-            var material = new Material(_template) { name = $"{_template.name} (fog {fogScale:0.00})", hideFlags = HideFlags.DontSave };
+            if (_material == null) _material = MaterialFor(_fogScale, GroundFogScale);
+            if (_cloudMaterial == null) _cloudMaterial = MaterialFor(_cloudFogScale, _cloudFogScale);
+            if (_groundMaterial == null) _groundMaterial = MaterialFor(GroundFogScale, GroundFogScale);
+        }
+
+        // The template itself when both fog scales already match, else a clone differing only in them (same variant).
+        private Material MaterialFor(float fogScale, float footFogScale) {
+            bool isMatched = Mathf.Approximately(_template.GetFloat(StylizedLitShader.FogScale), fogScale)
+                && Mathf.Approximately(_template.GetFloat(StylizedLitShader.FogScaleAlpha), footFogScale);
+            if (isMatched) return _template;
+
+            var material = new Material(_template) { name = $"{_template.name} (fog {fogScale:0.00}/{footFogScale:0.00})", hideFlags = HideFlags.DontSave };
             material.SetFloat(StylizedLitShader.FogScale, fogScale);
+            material.SetFloat(StylizedLitShader.FogScaleAlpha, footFogScale);
             return material;
         }
 
         private void DestroyMaterials() {
+            DestroyClones();
+            _template = null;
+        }
+
+        private void DestroyClones() {
             DestroyClone(_material);
             DestroyClone(_cloudMaterial);
             DestroyClone(_groundMaterial);
             _material = null;
             _cloudMaterial = null;
             _groundMaterial = null;
-            _template = null;
         }
 
         private void DestroyClone(Material material) {
