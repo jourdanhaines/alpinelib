@@ -99,6 +99,44 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
             Assert.Throws<ArgumentOutOfRangeException>(() => LoftMesh.JitterPolygon(1UL, 2, 1f, 1f, 0f, false));
         }
 
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void CapsNeverFoldAtFullJitter(bool inwardOnly) {
+            for (ulong seed = 0; seed < 600; seed++) {
+                int sides = 4 + (int)(seed % 9);
+                Vector2[] polygon = LoftMesh.JitterPolygon(seed, sides, 3f, 2f, 1f, inwardOnly);
+                float twist = (seed % 3) * 0.7f;
+                FacetMesh mesh = LoftMesh.Build(new[] { new LoftRing(0f, polygon, twist), new LoftRing(2f, polygon, twist) }, true, true);
+                AssertCapsFace(mesh, sides * 2, sides, seed);
+            }
+        }
+
+        [Fact]
+        public void OrientationComesFromTheFirstRingWithArea() {
+            Vector2[] tip = { Vector2.Zero, Vector2.Zero, Vector2.Zero, Vector2.Zero, Vector2.Zero };
+            Vector2[] polygon = LoftMesh.JitterPolygon(3UL, 5, 2f, 2f, 0.2f, true);
+            Array.Reverse(polygon);
+            FacetMesh mesh = LoftMesh.Build(new[] { new LoftRing(0f, tip), new LoftRing(2f, polygon) }, true, false);
+
+            for (int face = 0; face < mesh.FaceCount; face++) {
+                Vector3 normal = mesh.FaceNormal(face);
+                Vector3 centroid = mesh.FaceCentroid(face);
+                bool outward = face >= 10 ? normal.Y > 0f : normal.X * centroid.X + normal.Z * centroid.Z >= 0f;
+                Assert.True(outward, $"face {face}");
+            }
+            Assert.Throws<ArgumentException>(() => LoftMesh.Build(new[] { new LoftRing(0f, tip), new LoftRing(1f, tip) }, true, true));
+        }
+
+        private static void AssertCapsFace(FacetMesh mesh, int firstCap, int sides, ulong seed) {
+            for (int face = firstCap; face < firstCap + sides; face++) {
+                Assert.True(mesh.FaceNormal(face).Y < 0f, $"seed {seed} bottom face {face}");
+            }
+            for (int face = firstCap + sides; face < firstCap + 2 * sides; face++) {
+                Assert.True(mesh.FaceNormal(face).Y > 0f, $"seed {seed} top face {face}");
+            }
+        }
+
         private static LoftRing[] Column(int sides, int ringCount, float jitter) {
             LoftRing[] rings = new LoftRing[ringCount];
             for (int ring = 0; ring < ringCount; ring++) {

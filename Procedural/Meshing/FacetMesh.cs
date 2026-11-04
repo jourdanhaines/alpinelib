@@ -110,6 +110,21 @@ namespace AlpineLib.Procedural.Meshing {
             }
         }
 
+        /// <summary>
+        /// FNV-1a 64 over the exact float bits of every corner position, in order: a fingerprint for
+        /// determinism checks (UVs are not included).
+        /// </summary>
+        public ulong ComputePositionHash() {
+            ulong hash = StableHash.Fnv1a64OffsetBasis;
+            for (int index = 0; index < Positions.Count; index++) {
+                Vector3 position = Positions[index];
+                hash = StableHash.Fnv1a64Append(hash, (uint)BitConverter.SingleToInt32Bits(position.X));
+                hash = StableHash.Fnv1a64Append(hash, (uint)BitConverter.SingleToInt32Bits(position.Y));
+                hash = StableHash.Fnv1a64Append(hash, (uint)BitConverter.SingleToInt32Bits(position.Z));
+            }
+            return hash;
+        }
+
         /// <summary>Removes every face, keeping capacity.</summary>
         public void Clear() {
             Positions.Clear();

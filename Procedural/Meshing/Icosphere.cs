@@ -26,7 +26,9 @@ namespace AlpineLib.Procedural.Meshing {
             for (int level = 0; level <= MaxSubdivisions; level++) {
                 Directions[level] = directions.ToArray();
                 Triangles[level] = triangles.ToArray();
-                triangles = Subdivide(directions, triangles);
+                if (level < MaxSubdivisions) {
+                    triangles = Subdivide(directions, triangles);
+                }
             }
         }
 

@@ -10,15 +10,17 @@ namespace AlpineLib.Procedural.Meshing {
     /// </summary>
     /// <remarks>
     /// Ring corners are computed once and reused by the side and cap faces, so a capped loft is
-    /// watertight. Caps fan from the ring's mean point, which suits star-shaped polygons (every
-    /// <see cref="JitterPolygon"/> output). A ring whose polygon is a single repeated point makes a cone
-    /// tip but leaves zero-area faces. Twist uses <c>Math.Cos/Sin</c>, so twisted rings may differ in the
+    /// watertight. Caps fan from the ring's axis point (0, y, 0), so polygons must be star-shaped about
+    /// the y axis, as every <see cref="JitterPolygon"/> output is (a vertex mean can leave the kernel of
+    /// a jittered ring and fold the cap). A ring whose polygon is a single repeated point makes a cone
+    /// tip but leaves zero-area faces. Winding is read from the first ring with non-zero area. Twist uses <c>Math.Cos/Sin</c>, so twisted rings may differ in the
     /// last float bit across runtimes; untwisted rings are exact. Static and thread-safe.
     /// </remarks>
     public static class LoftMesh {
         private const double TwoPi = 6.2831853071795862;
         private const ulong RadiusSalt = 0x52UL;
         private const ulong AngleSalt = 0x41UL;
+        private const double MinOrientationArea = 1e-12;
 
         /// <summary>A new loft of <paramref name="rings"/> (bottom to top), optionally capped.</summary>
         public static FacetMesh Build(IReadOnlyList<LoftRing> rings, bool capTop, bool capBottom) {
@@ -33,7 +35,7 @@ namespace AlpineLib.Procedural.Meshing {
                 throw new ArgumentNullException(nameof(target));
             }
             int sides = Validate(rings);
-            bool reversed = SignedArea(rings[0].Polygon) < 0.0;
+            bool reversed = IsReversed(rings);
             Vector3[] corners = RingCorners(rings, sides, reversed);
             for (int ring = 0; ring + 1 < rings.Count; ring++) {
                 AddBand(target, corners, ring * sides, (ring + 1) * sides, sides);
@@ -54,7 +56,9 @@ namespace AlpineLib.Procedural.Meshing {
         /// <remarks>
         /// With <paramref name="inwardOnly"/> the radius only shrinks, so no point leaves the ellipse's
         /// bounding box (|x| ≤ radiusX, |z| ≤ radiusZ): use it when the polygon must stay inside a collider.
-        /// Points come out in increasing-angle order and never cross, whatever the jitter.
+        /// Points come out in increasing-angle order and never cross, whatever the jitter, and the ring is
+        /// star-shaped about the origin, so caps fan cleanly. Neighbours sit at most 1.5 angular steps apart,
+        /// so use at least 4 sides at full jitter (3 sides can reach 180° and a degenerate cap face).
         /// </remarks>
         public static Vector2[] JitterPolygon(ulong seed, int sides, float radiusX, float radiusZ, float jitter, bool inwardOnly) {
             if (sides < 3) {
@@ -100,6 +104,16 @@ namespace AlpineLib.Procedural.Meshing {
             int sides = rings[0].Polygon.Length;
             int caps = (capTop ? 1 : 0) + (capBottom ? 1 : 0);
             return sides * (2 * (rings.Count - 1) + caps);
+        }
+
+        private static bool IsReversed(IReadOnlyList<LoftRing> rings) {
+            for (int ring = 0; ring < rings.Count; ring++) {
+                double area = SignedArea(rings[ring].Polygon);
+                if (Math.Abs(area) > MinOrientationArea) {
+                    return area < 0.0;
+                }
+            }
+            throw new ArgumentException("Every ring polygon has zero area, so the loft has no outward side.", nameof(rings));
         }
 
         // Twice the polygon's signed area in (x, z); positive for increasing-angle order.
@@ -151,7 +165,7 @@ namespace AlpineLib.Procedural.Meshing {
         }
 
         private static void AddCap(FacetMesh target, Vector3[] corners, int start, int sides, bool facesUp) {
-            Vector3 centre = MeanPoint(corners, start, sides);
+            Vector3 centre = new Vector3(0f, corners[start].Y, 0f);
             for (int side = 0; side < sides; side++) {
                 Vector3 here = corners[start + side];
                 Vector3 next = corners[start + (side + 1) % sides];
@@ -161,19 +175,6 @@ namespace AlpineLib.Procedural.Meshing {
                     target.AddFace(centre, here, next);
                 }
             }
-        }
-
-        private static Vector3 MeanPoint(Vector3[] corners, int start, int count) {
-            double x = 0.0;
-            double y = 0.0;
-            double z = 0.0;
-            for (int index = 0; index < count; index++) {
-                Vector3 corner = corners[start + index];
-                x += corner.X;
-                y += corner.Y;
-                z += corner.Z;
-            }
-            return new Vector3((float)(x / count), corners[start].Y, (float)(z / count));
         }
     }
 }

@@ -9,10 +9,12 @@ namespace AlpineLib.Procedural.Meshing {
     /// The union is by appending: each puff is a closed blob and overlapping interiors are kept. That is
     /// invisible for opaque flat-shaded clouds and smoke, but the result is not one manifold surface, so
     /// do not use it where a single shell matters (collision, transparency). Puff <c>n</c> uses seed
-    /// <c>Mix(seed, n)</c>, and <see cref="BlobSpec.FlattenBelowY"/> is read in cluster space, so every
+    /// <see cref="PuffSeed"/>, and <see cref="BlobSpec.FlattenBelowY"/> is read in cluster space, so every
     /// puff shares one flat base.
     /// </remarks>
     public static class BlobCluster {
+        private const ulong PuffSalt = 0x50554646UL;
+
         /// <summary>A new mesh holding one blob per puff.</summary>
         public static FacetMesh Build(IReadOnlyList<BlobPuff> puffs, in BlobSpec spec, ulong seed) {
             if (puffs == null) {
@@ -38,8 +40,13 @@ namespace AlpineLib.Procedural.Meshing {
                 if (spec.FlattenBelowY.HasValue) {
                     puffSpec.FlattenBelowY = spec.FlattenBelowY.Value - puff.Centre.Y;
                 }
-                BlobMesh.AppendTo(target, puffSpec, StableHash.Mix(seed, (ulong)index), puff.Centre);
+                BlobMesh.AppendTo(target, puffSpec, PuffSeed(seed, index), puff.Centre);
             }
+        }
+
+        /// <summary>The seed puff <paramref name="index"/> builds with: <c>Mix(Mix(seed, salt), index)</c>.</summary>
+        public static ulong PuffSeed(ulong seed, int index) {
+            return StableHash.Mix(StableHash.Mix(seed, PuffSalt), (ulong)index);
         }
     }
 }

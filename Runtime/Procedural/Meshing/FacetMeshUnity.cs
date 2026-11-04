@@ -1,8 +1,9 @@
 using System;
+using AlpineLib.Procedural.Meshing;
 using UnityEngine;
 using UnityEngine.Rendering;
 
-namespace AlpineLib.Procedural.Meshing {
+namespace AlpineLib.Procedural.Kits {
     /// <summary>
     /// Uploads an engine-free <see cref="FacetMesh"/> into a Unity <see cref="Mesh"/>: flat per-face
     /// normals, explicit bounds, one UV channel, never saved with scenes.
