@@ -13,7 +13,8 @@ namespace AlpineLib.Rendering {
     /// effects) can ask <see cref="IsCaptureCamera"/>; <see cref="Unregister"/> returns a camera to normal duty.
     /// </remarks>
     public static class CaptureCameraSetup {
-        private static readonly HashSet<int> CaptureCameraIds = new HashSet<int>();
+        private static readonly Dictionary<int, Camera> CaptureCameras = new Dictionary<int, Camera>();
+        private static readonly List<int> DestroyedIds = new List<int>();
 
         /// <summary>A hidden, disabled capture camera on a new GameObject that is never saved.</summary>
         public static Camera Create(string name) {
@@ -26,17 +27,34 @@ namespace AlpineLib.Rendering {
 
         /// <summary>True when <paramref name="camera"/> was made by <see cref="Create"/> or shaped by <see cref="Configure"/>.</summary>
         public static bool IsCaptureCamera(Camera camera) {
-            return camera != null && CaptureCameraIds.Contains(camera.GetInstanceID());
+            return camera != null && CaptureCameras.ContainsKey(camera.GetInstanceID());
         }
 
-        /// <summary>Marks <paramref name="camera"/> as a capture camera without changing it.</summary>
+        /// <summary>Marks <paramref name="camera"/> as a capture camera without changing it; a new one first forgets destroyed cameras.</summary>
         public static void Register(Camera camera) {
-            if (camera != null) CaptureCameraIds.Add(camera.GetInstanceID());
+            if (camera == null) return;
+
+            int id = camera.GetInstanceID();
+            if (CaptureCameras.ContainsKey(id)) return;
+
+            ForgetDestroyed();
+            CaptureCameras.Add(id, camera);
         }
+
+        /// <summary>Capture cameras remembered (destroyed ones linger until the next new registration).</summary>
+        public static int RegisteredCount => CaptureCameras.Count;
 
         /// <summary>Forgets <paramref name="camera"/> as a capture camera (a borrowed camera handed back to gameplay).</summary>
         public static void Unregister(Camera camera) {
-            if (camera != null) CaptureCameraIds.Remove(camera.GetInstanceID());
+            if (camera != null) CaptureCameras.Remove(camera.GetInstanceID());
+        }
+
+        private static void ForgetDestroyed() {
+            DestroyedIds.Clear();
+            foreach (KeyValuePair<int, Camera> entry in CaptureCameras) {
+                if (entry.Value == null) DestroyedIds.Add(entry.Key);
+            }
+            foreach (int id in DestroyedIds) CaptureCameras.Remove(id);
         }
 
         /// <summary>Configures <paramref name="camera"/> to draw <paramref name="cullingMask"/> over a <paramref name="clear"/> background.</summary>
