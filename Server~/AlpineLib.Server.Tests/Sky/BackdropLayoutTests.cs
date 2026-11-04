@@ -1,0 +1,197 @@
+using System;
+using System.Collections.Generic;
+using System.Numerics;
+using AlpineLib.Procedural.Meshing;
+using AlpineLib.Procedural.Sky;
+using Xunit;
+
+namespace AlpineLib.Server.Tests.Sky {
+    public sealed class BackdropLayoutTests {
+        private static readonly BackdropSettings Settings = BackdropSettings.Default;
+
+        [Fact]
+        public void SameSeedsSameSectorsEverywhere() {
+            var first = new BackdropLayout(11UL, 12UL, Settings);
+            var second = new BackdropLayout(11UL, 12UL, BackdropSettings.Default);
+            for (int sectorZ = -20; sectorZ <= 20; sectorZ += 3) {
+                for (int sectorX = -20; sectorX <= 20; sectorX += 3) {
+                    Assert.Equal(Describe(first.Sector(sectorX, sectorZ)), Describe(second.Sector(sectorX, sectorZ)));
+                }
+            }
+        }
+
+        [Fact]
+        public void OtherSeedsMoveTheSkyline() {
+            var layout = new BackdropLayout(11UL, 12UL, Settings);
+            var otherLayout = new BackdropLayout(13UL, 12UL, Settings);
+            var otherLooks = new BackdropLayout(11UL, 14UL, Settings);
+            var features = Around(layout);
+            Assert.NotEqual(Describe(features), Describe(Around(otherLayout)));
+
+            BackdropFeature[] relooked = Around(otherLooks);
+            Assert.Equal(features.Length, relooked.Length);
+            int differentLooks = 0;
+            for (int index = 0; index < features.Length; index++) {
+                Assert.Equal(features[index].LocalX, relooked[index].LocalX);
+                Assert.Equal(features[index].Width, relooked[index].Width);
+                Assert.Equal(features[index].Kind, relooked[index].Kind);
+                differentLooks += features[index].Variant != relooked[index].Variant || features[index].Yaw != relooked[index].Yaw ? 1 : 0;
+            }
+            Assert.True(differentLooks > features.Length / 2);
+        }
+
+        [Fact]
+        public void FeaturesStayInsideTheirSectorAndSizeRanges() {
+            var layout = new BackdropLayout(5UL, 6UL, Settings);
+            var counts = new int[Settings.MaxFeaturesPerSector + 1];
+            var kinds = new int[BackdropSettings.KindCount];
+            for (int sectorZ = -30; sectorZ < 30; sectorZ++) {
+                for (int sectorX = -30; sectorX < 30; sectorX++) {
+                    BackdropFeature[] features = layout.Sector(sectorX, sectorZ);
+                    Assert.InRange(features.Length, Settings.MinFeaturesPerSector, Settings.MaxFeaturesPerSector);
+                    counts[features.Length]++;
+                    foreach (BackdropFeature feature in features) CheckFeature(feature, sectorX, sectorZ, kinds);
+                }
+            }
+
+            foreach (int count in counts) Assert.True(count > 0);
+            foreach (int count in kinds) Assert.True(count > 0);
+            double cloudShare = (double)kinds[(int)BackdropFeatureKind.CloudBank] / (kinds[0] + kinds[1] + kinds[2] + kinds[3]);
+            Assert.InRange(cloudShare, Settings.CloudBankShare * 0.7, Settings.CloudBankShare * 1.3);
+        }
+
+        [Fact]
+        public void AroundCoversEverySectorTheSquareTouches() {
+            var layout = new BackdropLayout(5UL, 6UL, Settings);
+            var features = new List<BackdropFeature>();
+            layout.AppendAround(-1000.0, 333.0, 930.0, features);
+            var expected = new List<BackdropFeature>();
+            layout.SectorOf(-1930.0, -597.0, out int minX, out int minZ);
+            layout.SectorOf(-70.0, 1263.0, out int maxX, out int maxZ);
+            for (int sectorZ = minZ; sectorZ <= maxZ; sectorZ++) {
+                for (int sectorX = minX; sectorX <= maxX; sectorX++) expected.AddRange(layout.Sector(sectorX, sectorZ));
+            }
+
+            Assert.Equal(Describe(expected.ToArray()), Describe(features.ToArray()));
+            Assert.Equal(-13, minX);
+            Assert.Equal(-1, maxX);
+        }
+
+        [Fact]
+        public void PresenceRampsAcrossTheFadeBands() {
+            Assert.Equal(0.0, Settings.Presence(BackdropFeatureKind.Mesa, 400.0));
+            Assert.Equal(0.0, Settings.Presence(BackdropFeatureKind.Mesa, 420.0));
+            Assert.Equal(0.5, Settings.Presence(BackdropFeatureKind.Mesa, 450.0), 12);
+            Assert.Equal(1.0, Settings.Presence(BackdropFeatureKind.Ridge, 620.0));
+            Assert.Equal(0.25, Settings.Presence(BackdropFeatureKind.Butte, 805.0), 12);
+            Assert.Equal(0.0, Settings.Presence(BackdropFeatureKind.Butte, 820.0));
+            Assert.Equal(0.0, Settings.Presence(BackdropFeatureKind.CloudBank, 590.0));
+            Assert.Equal(1.0, Settings.Presence(BackdropFeatureKind.CloudBank, 700.0));
+            Assert.Equal(0.0, Settings.Presence(BackdropFeatureKind.CloudBank, double.NaN));
+        }
+
+        [Fact]
+        public void FarClipCoversTheRing() {
+            Assert.Equal(930.0, Settings.RequiredFarClip);
+            Assert.True(Settings.RequiredFarClip <= 1000.0);
+        }
+
+        [Fact]
+        public void SettingsRejectInvertedBands() {
+            Assert.Throws<ArgumentOutOfRangeException>(() => new BackdropLayout(1UL, 2UL, new BackdropSettings { OuterRadius = 300.0 }));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new BackdropLayout(1UL, 2UL, new BackdropSettings { MaxFeaturesPerSector = -1 }));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new BackdropLayout(1UL, 2UL, new BackdropSettings { ParallaxFactor = 1.0 }));
+            Assert.Throws<ArgumentNullException>(() => new BackdropLayout(1UL, 2UL, null));
+        }
+
+        [Fact]
+        public void SilhouettesAreUnitSizedPaintedAndRepeatable() {
+            BackdropPalette palette = TestPalette();
+            for (int kind = 0; kind < BackdropSettings.KindCount; kind++) {
+                for (int variant = 0; variant < BackdropSettings.VariantsPerKind; variant++) {
+                    var featureKind = (BackdropFeatureKind)kind;
+                    FacetMesh mesh = BackdropSilhouette.Build(featureKind, variant, 99UL, palette);
+                    FacetMesh again = BackdropSilhouette.Build(featureKind, variant, 99UL, palette);
+                    Assert.Equal(mesh.ComputePositionHash(), again.ComputePositionHash());
+                    Assert.True(mesh.FaceCount >= 30 && mesh.FaceCount <= 200, $"{featureKind} {variant}: {mesh.FaceCount} faces");
+                    FacetBounds bounds = mesh.Bounds;
+                    Assert.InRange(bounds.Min.X, -0.5f - 1e-5f, -0.3f);
+                    Assert.InRange(bounds.Max.X, 0.3f, 0.5f + 1e-5f);
+                    Assert.InRange(bounds.Min.Y, -1e-5f, 1e-5f);
+                    Assert.InRange(bounds.Max.Y, 1f - 1e-5f, 1f + 1e-5f);
+                    Assert.True(bounds.Max.Z <= 0.5f * 0.61f);
+                    CheckPainted(mesh, featureKind, variant, palette);
+                }
+            }
+
+            Assert.NotEqual(BackdropSilhouette.Build(BackdropFeatureKind.Mesa, 0, 99UL, palette).ComputePositionHash(),
+                BackdropSilhouette.Build(BackdropFeatureKind.Mesa, 1, 99UL, palette).ComputePositionHash());
+        }
+
+        [Fact]
+        public void RockIsDarkestAtItsFoot() {
+            BackdropPalette palette = TestPalette();
+            FacetMesh mesh = BackdropSilhouette.Build(BackdropFeatureKind.Butte, 0, 3UL, palette);
+            int lowest = 0;
+            int highest = 0;
+            for (int face = 1; face < mesh.FaceCount; face++) {
+                if (mesh.FaceCentroid(face).Y < mesh.FaceCentroid(lowest).Y) lowest = face;
+                if (mesh.FaceCentroid(face).Y > mesh.FaceCentroid(highest).Y) highest = face;
+            }
+
+            Assert.True(mesh.Uvs[lowest * 3].Y < mesh.Uvs[highest * 3].Y);
+        }
+
+        private static void CheckFeature(BackdropFeature feature, int sectorX, int sectorZ, int[] kinds) {
+            Assert.Equal(sectorX, feature.SectorX);
+            Assert.Equal(sectorZ, feature.SectorZ);
+            Assert.InRange(feature.LocalX, 0.0, Settings.SectorSize);
+            Assert.InRange(feature.LocalZ, 0.0, Settings.SectorSize);
+            Assert.InRange(feature.Variant, 0, BackdropSettings.VariantsPerKind - 1);
+            Assert.InRange(feature.Width, Settings.MinWidth, Settings.MaxWidth);
+            Assert.InRange(feature.Yaw, 0.0, 2.0 * Math.PI);
+            Assert.InRange(feature.MeshIndex, 0, BackdropSettings.MeshCount - 1);
+            kinds[(int)feature.Kind]++;
+            if (feature.Kind == BackdropFeatureKind.CloudBank) {
+                Assert.InRange(feature.Altitude, Settings.CloudBankMinAltitude, Settings.CloudBankMaxAltitude);
+                Assert.InRange(feature.Height, Settings.CloudBankMinHeight, Settings.CloudBankMaxHeight);
+                return;
+            }
+            Assert.Equal(0.0, feature.Altitude);
+            Assert.InRange(feature.Height, Settings.MinHeight, Settings.MaxHeight);
+        }
+
+        private static void CheckPainted(FacetMesh mesh, BackdropFeatureKind kind, int variant, BackdropPalette palette) {
+            foreach (Vector2 uv in mesh.Uvs) {
+                bool isCloud = kind == BackdropFeatureKind.CloudBank;
+                bool onBand = isCloud ? OnBand(uv, palette.CloudTop) || OnBand(uv, palette.CloudUnderside) : OnBand(uv, palette.RockFor(variant));
+                Assert.True(onBand, $"{kind} {variant}: uv {uv} is off its strip");
+            }
+        }
+
+        private static bool OnBand(Vector2 uv, SkyAtlasBand band) {
+            float low = Math.Min(band.Light.Y, band.Dark.Y) - 1e-6f;
+            float high = Math.Max(band.Light.Y, band.Dark.Y) + 1e-6f;
+            return Math.Abs(uv.X - band.Light.X) < 1e-6f && uv.Y >= low && uv.Y <= high;
+        }
+
+        private static BackdropPalette TestPalette() {
+            return new BackdropPalette(new SkyAtlasBand(new Vector2(0.1f, 0.9f), new Vector2(0.1f, 0.8f)), new SkyAtlasBand(new Vector2(0.2f, 0.9f), new Vector2(0.2f, 0.8f)),
+                new SkyAtlasBand(new Vector2(0.3f, 0.9f), new Vector2(0.3f, 0.8f)), new SkyAtlasBand(new Vector2(0.4f, 0.9f), new Vector2(0.4f, 0.8f)));
+        }
+
+        private static BackdropFeature[] Around(BackdropLayout layout) {
+            var features = new List<BackdropFeature>();
+            layout.AppendAround(12345.0, -6789.0, 930.0, features);
+            return features.ToArray();
+        }
+
+        private static string Describe(BackdropFeature[] features) {
+            var parts = new List<string>();
+            foreach (BackdropFeature feature in features) {
+                parts.Add($"{feature.SectorX},{feature.SectorZ},{BitConverter.DoubleToInt64Bits(feature.LocalX)},{BitConverter.DoubleToInt64Bits(feature.LocalZ)},{feature.Kind},{feature.Variant},{BitConverter.DoubleToInt64Bits(feature.Yaw)},{feature.Width},{feature.Height},{feature.Altitude}");
+            }
+            return string.Join("|", parts);
+        }
+    }
+}
