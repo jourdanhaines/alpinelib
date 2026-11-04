@@ -6,21 +6,21 @@ using AlpineLib.Procedural.Meshing;
 namespace AlpineLib.Procedural.Sky {
     /// <summary>
     /// The faceted mesh of one smoke puff variant: a round clump of overlapping level-0 blobs (<see cref="BlobCluster"/>)
-    /// about a unit diameter, centred on the origin and painted by height from one atlas strip.
+    /// about a unit diameter, centred on the origin and painted one flat colour from one point of an atlas strip.
     /// </summary>
     /// <remarks>
     /// Variant v has <see cref="BlobsOf"/> blobs (5 to 8). Faces buried inside another blob's kernel (behind all its
     /// face planes) are dropped; while still over <see cref="FaceBudget"/> the satellites are pulled in a little and the
     /// clump rebuilt, as a last resort dropping satellites (never below 5 blobs). The puff only ever scales uniformly
-    /// (never stretched after meshing). The shape depends on the variant and seed only; the strip it is painted from is
-    /// the caller's (one mesh per shape and shade).
+    /// (never stretched after meshing). The shape depends on the variant and seed only; every face shares one UV (the
+    /// strip and tone are the caller's, one mesh per shape and shade), so facet shading alone gives the puff its form.
     /// </remarks>
     public static class PuffShape {
         /// <summary>Most triangles one puff mesh may have.</summary>
         public const int FaceBudget = 120;
 
-        /// <summary>How far down its strip (from the light end) a puff's underside reaches.</summary>
-        public const double UndersideReach = 0.5;
+        /// <summary>Tone steps a shade's puffs vary over: shape v takes step v mod <see cref="ToneSteps"/>.</summary>
+        public const int ToneSteps = 3;
 
         private const int Level = 0;
         private const int MinBlobs = 5;
@@ -43,8 +43,19 @@ namespace AlpineLib.Procedural.Sky {
             return StableHash.Mix(StableHash.Mix(seed, ShapeSalt), (ulong)(uint)variant);
         }
 
-        /// <summary>Variant <paramref name="variant"/> under <paramref name="seed"/>, painted from <paramref name="band"/>.</summary>
-        public static FacetMesh Build(int variant, ulong seed, SkyAtlasBand band) {
+        /// <summary>Tone step (0..<see cref="ToneSteps"/> − 1) of shape <paramref name="variant"/>.</summary>
+        public static int ToneStepOf(int variant) {
+            return variant % ToneSteps;
+        }
+
+        /// <summary>Strip point (0 light .. 1 dark) of shape <paramref name="variant"/>: <paramref name="tone"/> moved by −, 0 or + <paramref name="jitter"/> by its step, clamped.</summary>
+        public static double ToneOf(int variant, double tone, double jitter) {
+            double stepped = tone + jitter * (ToneStepOf(variant) - (ToneSteps - 1) * 0.5);
+            return Math.Min(1.0, Math.Max(0.0, stepped));
+        }
+
+        /// <summary>Variant <paramref name="variant"/> under <paramref name="seed"/>, every face painted <paramref name="band"/> at <paramref name="tone"/> (0 light .. 1 dark).</summary>
+        public static FacetMesh Build(int variant, ulong seed, SkyAtlasBand band, double tone) {
             ulong variantSeed = VariantSeed(seed, variant);
             List<BlobPuff> blobs = Layout(BlobsOf(variant), variantSeed);
             BlobSpec spec = Spec();
@@ -60,8 +71,7 @@ namespace AlpineLib.Procedural.Sky {
             if (mesh.FaceCount > FaceBudget) throw new InvalidOperationException($"Puff variant {variant} keeps {mesh.FaceCount} faces over the budget {FaceBudget}.");
 
             FacetMesh fitted = FitUnit(mesh);
-            FacetBounds bounds = fitted.Bounds;
-            FacetUv.BandByHeight(fitted, (shade) => band.At(shade * UndersideReach), bounds.Min.Y, bounds.Max.Y);
+            FacetUv.PaintFaces(fitted, null, band.At(tone));
             return fitted;
         }
 

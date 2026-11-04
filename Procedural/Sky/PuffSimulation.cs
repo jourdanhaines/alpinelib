@@ -20,7 +20,9 @@ namespace AlpineLib.Procedural.Sky {
     /// </para>
     /// <para>
     /// Each puff's shade, thickness, life and rise come from the <see cref="Style"/> at the smoothed
-    /// <see cref="Efficiency"/> when it is emitted, so the mix of colours follows the target without popping.
+    /// <see cref="Efficiency"/> when it is emitted, so the mix of colours follows the target without popping. A burst
+    /// is styled once: its mates share shade, thickness and tone step (<see cref="MateVariant"/>), differing in shape,
+    /// heading, spin and drift only.
     /// </para>
     /// <para>A burst emitted into a full pool loses what does not fit (<see cref="Dropped"/>); live puffs never pop.</para>
     /// </remarks>
@@ -115,7 +117,7 @@ namespace AlpineLib.Procedural.Sky {
             while (_cadence >= 1.0) {
                 _cadence -= 1.0;
                 double late = Math.Min(seconds, _cadence / rate);
-                for (int emission = 0; emission < burst; emission++) Emit(late, relativeAir, (float)clampedEffort);
+                EmitBurst(burst, late, relativeAir, (float)clampedEffort);
             }
         }
 
@@ -197,7 +199,15 @@ namespace AlpineLib.Procedural.Sky {
             return puff.Moved(offset, (float)(puff.Age + seconds));
         }
 
-        private void Emit(double late, Vector3 relativeAir, float effort) {
+        // One look and tone step per burst, keyed by its first puff.
+        private void EmitBurst(int burst, double late, Vector3 relativeAir, float effort) {
+            ulong first = _emitted;
+            SmokeSample look = Style.Sample(Efficiency, StableHash.Mix(StableHash.Mix(_seed, LookSalt), first));
+            int firstVariant = ShapeFor(LatticeHash.Unit(_seed, unchecked((long)first), VariantKey), look.Thickness);
+            for (int mate = 0; mate < burst; mate++) Emit(late, relativeAir, effort, look, MateVariant(firstVariant, mate));
+        }
+
+        private void Emit(double late, Vector3 relativeAir, float effort, in SmokeSample look, int variant) {
             ulong index = _emitted++;
             if (Count >= _puffs.Length) {
                 Dropped++;
@@ -205,8 +215,6 @@ namespace AlpineLib.Procedural.Sky {
             }
 
             long key = unchecked((long)index);
-            SmokeSample look = Style.Sample(Efficiency, StableHash.Mix(StableHash.Mix(_seed, LookSalt), index));
-            int variant = ShapeFor(LatticeHash.Unit(_seed, key, VariantKey), look.Thickness);
             double yaw = LatticeHash.Unit(_seed, key, YawKey) * 2.0 * Math.PI;
             double spin = (LatticeHash.Unit(_seed, key, SpinKey) * 2.0 - 1.0) * MaxSpin;
             double driftAngle = LatticeHash.Unit(_seed, key, DriftAngleKey) * 2.0 * Math.PI;
@@ -217,6 +225,14 @@ namespace AlpineLib.Procedural.Sky {
             if (moved.Age >= LifetimeOf(moved)) return;
 
             _puffs[Count++] = moved;
+        }
+
+        /// <summary>
+        /// Shape of burst mate <paramref name="mate"/> after a first of <paramref name="firstVariant"/>: the shapes of the
+        /// same tone step in turn (the variant count is a multiple of <see cref="PuffShape.ToneSteps"/>).
+        /// </summary>
+        public static int MateVariant(int firstVariant, int mate) {
+            return (firstVariant + mate * PuffShape.ToneSteps) % PuffSettings.VariantCount;
         }
 
         /// <summary>Shape at <paramref name="roll"/> (0..1): even at thickness 1, thicker smoke leaning to the lumpier (more blobs) shapes.</summary>

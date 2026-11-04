@@ -11,7 +11,8 @@ namespace AlpineLib.Procedural.Sky {
     /// <remarks>
     /// Between stage a (pure at e_a) and stage b (pure at e_b) a puff comes from b with probability
     /// (e − e_a) / (e_b − e_a); thickness, life and rise blend linearly. <see cref="Sample"/> is a pure function of the
-    /// efficiency and the seed.
+    /// efficiency and the seed. Every puff is one flat colour: its shade's strip at <see cref="Tone"/>, stepped by
+    /// <see cref="ToneJitter"/> per shape (<see cref="PuffShape.ToneOf"/>).
     /// </remarks>
     public sealed class SmokeStyle {
         /// <summary>Most shades a style may hold (the emitter builds a mesh per shape and shade).</summary>
@@ -20,15 +21,25 @@ namespace AlpineLib.Procedural.Sky {
         public const double DefaultRiseSeconds = 2.0;
         public const double DefaultFallSeconds = 3.0;
 
+        /// <summary>Default strip point puffs are painted at (mid-strip).</summary>
+        public const double DefaultTone = 0.5;
+
+        /// <summary>Default and largest tone step between shapes of one shade.</summary>
+        public const double DefaultToneJitter = 0.1;
+        public const double MaxToneJitter = 0.15;
+
         private const long StageKey = 11;
         private const long ShadeKey = 12;
 
         public SmokeStyle(IReadOnlyList<SkyAtlasBand> shades, IReadOnlyList<SmokeStage> stages,
-            double riseSeconds = DefaultRiseSeconds, double fallSeconds = DefaultFallSeconds) {
+            double riseSeconds = DefaultRiseSeconds, double fallSeconds = DefaultFallSeconds,
+            double tone = DefaultTone, double toneJitter = DefaultToneJitter) {
             Shades = shades ?? throw new ArgumentNullException(nameof(shades));
             Stages = stages ?? throw new ArgumentNullException(nameof(stages));
             RiseSeconds = riseSeconds;
             FallSeconds = fallSeconds;
+            Tone = tone;
+            ToneJitter = toneJitter;
             Validate();
         }
 
@@ -41,6 +52,12 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Time constants (seconds) the efficiency follows its target with, going up and going down; 0 = no smoothing.</summary>
         public double RiseSeconds { get; }
         public double FallSeconds { get; }
+
+        /// <summary>Strip point (0 light .. 1 dark) every puff is painted at, before its shape's tone step.</summary>
+        public double Tone { get; }
+
+        /// <summary>Tone step between shapes of one shade (0..<see cref="MaxToneJitter"/>).</summary>
+        public double ToneJitter { get; }
 
         /// <summary>The longest life any stage gives a puff (for pool budgets).</summary>
         public double MaxLifeScale {
@@ -97,6 +114,11 @@ namespace AlpineLib.Procedural.Sky {
                 Lerp(from.RiseScale, to.RiseScale, share));
         }
 
+        /// <summary>Strip point the puff mesh of shape <paramref name="variant"/> is painted at.</summary>
+        public double ToneOf(int variant) {
+            return PuffShape.ToneOf(variant, Tone, ToneJitter);
+        }
+
         /// <summary><paramref name="current"/> moved toward <paramref name="target"/> over <paramref name="seconds"/> by the rise or fall time constant.</summary>
         public double Smooth(double current, double target, double seconds) {
             double constant = target >= current ? RiseSeconds : FallSeconds;
@@ -111,6 +133,8 @@ namespace AlpineLib.Procedural.Sky {
             if (Shades.Count < 1 || Shades.Count > MaxShades) throw new ArgumentOutOfRangeException(nameof(Shades), Shades.Count, $"Must hold 1..{MaxShades} shades.");
             if (Stages.Count < 1) throw new ArgumentOutOfRangeException(nameof(Stages), Stages.Count, "Must hold a stage.");
             if (!(RiseSeconds >= 0.0) || !(FallSeconds >= 0.0)) throw new ArgumentOutOfRangeException(nameof(RiseSeconds), RiseSeconds, "Time constants must not be negative.");
+            if (!(Tone >= 0.0 && Tone <= 1.0)) throw new ArgumentOutOfRangeException(nameof(Tone), Tone, "Must lie within the strip, 0..1.");
+            if (!(ToneJitter >= 0.0 && ToneJitter <= MaxToneJitter)) throw new ArgumentOutOfRangeException(nameof(ToneJitter), ToneJitter, $"Must lie within 0..{MaxToneJitter}.");
             double previous = double.NegativeInfinity;
             foreach (SmokeStage stage in Stages) {
                 ValidateStage(stage, previous);

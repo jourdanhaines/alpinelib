@@ -146,7 +146,7 @@ namespace AlpineLib.Server.Tests.Sky {
             var hashes = new HashSet<ulong>();
             for (ulong seed = 1; seed <= 40; seed++) {
                 for (int variant = 0; variant < PuffSettings.VariantCount; variant++) {
-                    FacetMesh mesh = PuffShape.Build(variant, seed, variant % 2 == 0 ? Light : Dark);
+                    FacetMesh mesh = PuffShape.Build(variant, seed, variant % 2 == 0 ? Light : Dark, SmokeStyle.DefaultTone);
                     Assert.InRange(PuffShape.BlobsOf(variant), 5, 8);
                     Assert.InRange(mesh.FaceCount, 40, PuffShape.FaceBudget);
                     Vector3 size = mesh.Bounds.Size;
@@ -160,7 +160,78 @@ namespace AlpineLib.Server.Tests.Sky {
             }
 
             Assert.Equal(40 * PuffSettings.VariantCount, hashes.Count);
-            Assert.Equal(PuffShape.Build(2, 7UL, Light).ComputePositionHash(), PuffShape.Build(2, 7UL, Dark).ComputePositionHash());
+            Assert.Equal(PuffShape.Build(2, 7UL, Light, 0.2).ComputePositionHash(), PuffShape.Build(2, 7UL, Dark, 0.7).ComputePositionHash());
+        }
+
+        [Fact]
+        public void EveryFaceOfAPuffSharesOneUv() {
+            SmokeStyle style = SmokeStyleTests.Staged();
+            for (ulong seed = 1; seed <= 20; seed++) {
+                for (int shade = 0; shade < style.Shades.Count; shade++) {
+                    for (int variant = 0; variant < PuffSettings.VariantCount; variant++) {
+                        FacetMesh mesh = PuffShape.Build(variant, seed, style.Shades[shade], style.ToneOf(variant));
+                        Vector2 expected = style.Shades[shade].At(style.ToneOf(variant));
+                        foreach (Vector2 uv in mesh.Uvs) Assert.Equal(expected, uv);
+                    }
+                }
+            }
+        }
+
+        [Fact]
+        public void ToneStepsStayFewAndSmall() {
+            SmokeStyle style = SmokeStyleTests.Staged();
+            var tones = new HashSet<double>();
+            for (int variant = 0; variant < PuffSettings.VariantCount; variant++) {
+                tones.Add(style.ToneOf(variant));
+                Assert.InRange(Math.Abs(style.ToneOf(variant) - style.Tone), 0.0, SmokeStyle.MaxToneJitter + 1e-12);
+            }
+
+            Assert.Equal(PuffShape.ToneSteps, tones.Count);
+            Assert.Equal(0, PuffSettings.VariantCount % PuffShape.ToneSteps);
+            Assert.Equal(0.0, PuffShape.ToneOf(0, 0.0, 0.15));
+            Assert.Equal(1.0, PuffShape.ToneOf(2, 1.0, 0.15));
+        }
+
+        [Fact]
+        public void BurstMatesShareShadeThicknessAndTone() {
+            var simulation = new PuffSimulation(new PuffSettings(), 21UL, SmokeStyleTests.Staged(0.0, 0.0));
+            int bursts = 0;
+            for (int frame = 0; frame < 600; frame++) {
+                simulation.TargetEfficiency = frame / 600.0;
+                ulong before = simulation.Emitted;
+                simulation.Step(Frame, Vector3.Zero, 3.0, 3, 0.5);
+                if (simulation.Emitted == before) continue;
+
+                bursts++;
+                AssertMatesAlike(simulation, before);
+            }
+
+            Assert.True(bursts > 20, $"only {bursts} bursts");
+        }
+
+        [Fact]
+        public void MatesKeepTheirToneStep() {
+            for (int first = 0; first < PuffSettings.VariantCount; first++) {
+                for (int mate = 0; mate < 4; mate++) Assert.Equal(PuffShape.ToneStepOf(first), PuffShape.ToneStepOf(PuffSimulation.MateVariant(first, mate)));
+                Assert.NotEqual(first, PuffSimulation.MateVariant(first, 1));
+            }
+        }
+
+        // Every puff emitted from <paramref name="first"/> on this step came from one burst.
+        private static void AssertMatesAlike(PuffSimulation simulation, ulong first) {
+            Puff? lead = null;
+            for (int index = 0; index < simulation.Count; index++) {
+                Puff puff = simulation[index];
+                if (puff.Index < first) continue;
+                if (lead == null) {
+                    lead = puff;
+                    continue;
+                }
+
+                Assert.Equal(lead.Value.Shade, puff.Shade);
+                Assert.Equal(lead.Value.Thickness, puff.Thickness);
+                Assert.Equal(PuffShape.ToneStepOf(lead.Value.Variant), PuffShape.ToneStepOf(puff.Variant));
+            }
         }
 
         private static string Run(ulong seed) {

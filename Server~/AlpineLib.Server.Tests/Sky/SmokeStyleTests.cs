@@ -189,6 +189,8 @@ namespace AlpineLib.Server.Tests.Sky {
             Assert.Throws<ArgumentOutOfRangeException>(() => new SmokeStyle(new[] { band }, new[] { new SmokeStage(0.0, new[] { new SmokeShadeWeight(1, 1.0) }) }));
             Assert.Throws<ArgumentOutOfRangeException>(() => new SmokeStyle(new[] { band }, new[] { new SmokeStage(0.0, one, 0.0) }));
             Assert.Throws<ArgumentOutOfRangeException>(() => new SmokeStyle(new[] { band }, new[] { new SmokeStage(0.0, one) }, -1.0));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new SmokeStyle(new[] { band }, new[] { new SmokeStage(0.0, one) }, tone: 1.2));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new SmokeStyle(new[] { band }, new[] { new SmokeStage(0.0, one) }, toneJitter: 0.2));
         }
 
         private static string Run(ulong seed) {

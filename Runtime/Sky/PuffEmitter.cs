@@ -285,7 +285,7 @@ namespace AlpineLib.Sky {
         private void BuildShades(int variant, ulong seed, SmokeStyle style, int capacity) {
             for (int shade = 0; shade < style.Shades.Count; shade++) {
                 int slot = Slot(variant, shade);
-                _meshes[slot] = FacetMeshUnity.ToMesh(PuffShape.Build(variant, seed, style.Shades[shade]), $"Smoke Puff {variant} Shade {shade}");
+                _meshes[slot] = FacetMeshUnity.ToMesh(PuffShape.Build(variant, seed, style.Shades[shade], style.ToneOf(variant)), $"Smoke Puff {variant} Shade {shade}");
                 _matrices[slot] ??= new List<Matrix4x4>(capacity);
             }
         }
