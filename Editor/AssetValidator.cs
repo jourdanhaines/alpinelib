@@ -10,7 +10,8 @@ namespace AlpineLib.Editor {
     /// Batch mode asset integrity check. Scans every prefab, ScriptableObject asset and build scene
     /// in the project and in the AlpineLib package for components whose script reference no longer
     /// resolves, plus a table of hand picked serialized references that must never be left empty
-    /// and every <see cref="BoneMap"/> whose rows do not resolve.
+    /// and every <see cref="BoneMap"/> whose rows do not resolve, and materials on a shader the project's
+    /// <see cref="MaterialShaderPolicy"/> forbids.
     /// Intended to be driven from a build gate:
     /// <c>-batchmode -quit -executeMethod AlpineLib.Editor.AssetValidator.ValidateAll</c>.
     /// </summary>
@@ -65,6 +66,7 @@ namespace AlpineLib.Editor {
             ValidateScriptableObjects(failures);
             SessionConfigValidator.Validate(failures);
             LocalServerConfigValidator.Validate(failures);
+            MaterialShaderValidator.Validate(failures);
             ValidateScenes(failures);
 
             Report(failures);
