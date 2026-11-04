@@ -156,6 +156,7 @@ namespace AlpineLib.Rendering {
             RenderSettings.skybox = _skyboxInstance;
         }
 
+        // Runs on unload, domain reload and editor shutdown, where RenderSettings may already be gone: only the instance is freed.
         private void OnDisable() {
             DestroySkyboxInstance();
         }
@@ -163,9 +164,7 @@ namespace AlpineLib.Rendering {
         private void DestroySkyboxInstance() {
             if (_skyboxInstance == null) return;
 
-            if (RenderSettings.skybox == _skyboxInstance) RenderSettings.skybox = skyboxMaterial;
-            if (Application.isPlaying) Destroy(_skyboxInstance);
-            else DestroyImmediate(_skyboxInstance);
+            DestroyImmediate(_skyboxInstance);
             _skyboxInstance = null;
         }
 
