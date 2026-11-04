@@ -12,6 +12,9 @@ namespace AlpineLib.Editor {
         [Tooltip("Exact shader names no material may use, e.g. 'Universal Render Pipeline/Lit'.")]
         [SerializeField] private List<string> forbiddenShaders = new List<string>();
 
+        [Tooltip("Shader name prefixes no material may use, e.g. 'Legacy Shaders/'.")]
+        [SerializeField] private List<string> forbiddenShaderPrefixes = new List<string>();
+
         [Tooltip("Asset path prefixes whose materials are exempt, e.g. 'Assets/ThirdParty/'.")]
         [SerializeField] private List<string> allowedPathPrefixes = new List<string>();
 
@@ -21,15 +24,21 @@ namespace AlpineLib.Editor {
         /// <summary>Exact shader names no material may use.</summary>
         public IReadOnlyList<string> ForbiddenShaders => forbiddenShaders;
 
+        /// <summary>Shader name prefixes no material may use.</summary>
+        public IReadOnlyList<string> ForbiddenShaderPrefixes => forbiddenShaderPrefixes;
+
         /// <summary>Asset path prefixes whose materials are exempt.</summary>
         public IReadOnlyList<string> AllowedPathPrefixes => allowedPathPrefixes;
 
         /// <summary>Exact asset paths whose materials are exempt.</summary>
         public IReadOnlyList<string> AllowedPaths => allowedPaths;
 
-        /// <summary>True when <paramref name="shader"/> is on the forbidden list.</summary>
+        /// <summary>True when <paramref name="shader"/> is forbidden by name or by name prefix.</summary>
         public bool IsForbidden(Shader shader) {
-            return shader != null && forbiddenShaders.Contains(shader.name);
+            if (shader == null) return false;
+            if (forbiddenShaders.Contains(shader.name)) return true;
+
+            return StartsWithAny(shader.name, forbiddenShaderPrefixes);
         }
 
         /// <summary>True when the asset at <paramref name="assetPath"/> is exempt.</summary>
@@ -37,8 +46,12 @@ namespace AlpineLib.Editor {
             if (string.IsNullOrEmpty(assetPath)) return false;
             if (allowedPaths.Contains(assetPath)) return true;
 
-            foreach (string prefix in allowedPathPrefixes) {
-                if (!string.IsNullOrEmpty(prefix) && assetPath.StartsWith(prefix, StringComparison.Ordinal)) return true;
+            return StartsWithAny(assetPath, allowedPathPrefixes);
+        }
+
+        private static bool StartsWithAny(string value, List<string> prefixes) {
+            foreach (string prefix in prefixes) {
+                if (!string.IsNullOrEmpty(prefix) && value.StartsWith(prefix, StringComparison.Ordinal)) return true;
             }
 
             return false;
