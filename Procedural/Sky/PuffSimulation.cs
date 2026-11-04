@@ -68,6 +68,11 @@ namespace AlpineLib.Procedural.Sky {
             Count = 0;
         }
 
+        /// <summary>Moves every live puff by <paramref name="offset"/> (a snap of the emitter the puffs must not follow).</summary>
+        public void Translate(Vector3 offset) {
+            for (int index = 0; index < Count; index++) _puffs[index] = _puffs[index].Moved(_puffs[index].Offset + offset, _puffs[index].Age);
+        }
+
         /// <summary>
         /// Advances <paramref name="seconds"/>: live puffs move in <paramref name="relativeAir"/> (wind minus the
         /// emitter's velocity, m/s) and age, then <paramref name="rate"/> bursts per second of <paramref name="burst"/>
@@ -84,7 +89,7 @@ namespace AlpineLib.Procedural.Sky {
             while (_cadence >= 1.0) {
                 _cadence -= 1.0;
                 double late = Math.Min(seconds, _cadence / rate);
-                for (int puff = 0; puff < burst; puff++) Emit(late, relativeAir, (float)clampedEffort);
+                for (int emission = 0; emission < burst; emission++) Emit(late, relativeAir, (float)clampedEffort);
             }
         }
 

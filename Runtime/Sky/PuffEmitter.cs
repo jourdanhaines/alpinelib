@@ -14,11 +14,11 @@ namespace AlpineLib.Sky {
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Puffs are kept relative to the emitter in world axes and move by rise + (wind − measured emitter velocity), so in
-    /// the world they ride the wind while the emitter leaves them behind. The velocity is measured from the transform's
-    /// motion between steps; an origin shift (<see cref="IOriginShiftListener"/>) moves the last position with the world,
-    /// so a rebase never reads as speed. A step faster than <see cref="TeleportSpeed"/> is a teleport: the puffs are
-    /// dropped instead of smeared. The wind is held at zero until it is ready (a cold join replaying).
+    /// Puffs are kept relative to the emitter in world axes and move by rise + (wind − emitter velocity), so in the world
+    /// they ride the wind while the emitter leaves them behind. The velocity is estimated from the transform's motion
+    /// (<see cref="PuffMotion"/>): a snap keeps the estimate and the live puffs in place, a teleport drops them, and an
+    /// origin shift (<see cref="IOriginShiftListener"/>) moves the last position with the world. The wind is held at
+    /// zero until it is ready (a cold join replaying).
     /// </para>
     /// <para>
     /// Cosmetic and not replicated: deterministic per seed and steps (<see cref="PuffSimulation"/>), so other players see
@@ -30,23 +30,21 @@ namespace AlpineLib.Sky {
     /// </remarks>
     [ExecuteAlways, DisallowMultipleComponent]
     public sealed class PuffEmitter : MonoBehaviour, IOriginShiftListener {
-        /// <summary>Measured speed past which a step counts as a teleport, m/s.</summary>
-        public const float TeleportSpeed = 150f;
-
         private readonly List<Matrix4x4>[] _matrices = new List<Matrix4x4>[PuffSettings.VariantCount];
         private readonly Mesh[] _meshes = new Mesh[PuffSettings.VariantCount];
+        private readonly PuffMotion _motion = new PuffMotion();
         private PuffSimulation _simulation;
         private Material _material;
         private int _layer = -1;
-        private Vector3 _lastPosition;
-        private bool _hasLastPosition;
-        private Vector3 _velocity;
+        private int _version;
+        private int _builtVersion = -1;
+        private int _builtFrame = -1;
+        private Vector3 _builtOrigin;
         private double _rate;
         private int _burst = 1;
         private double _effort;
         private bool _isSubscribed;
         private Bounds _bounds;
-        private int _teleports;
 
         /// <summary>The wind puffs ride (still air when null or not ready).</summary>
         public IWindService Wind { get; set; }
@@ -66,11 +64,15 @@ namespace AlpineLib.Sky {
         /// <summary>Puffs alive now.</summary>
         public int LiveCount => _simulation != null ? _simulation.Count : 0;
 
-        /// <summary>The emitter's velocity measured over the last step, m/s.</summary>
-        public Vector3 MeasuredVelocity => _velocity;
+        /// <summary>The emitter's estimated velocity, m/s (snaps left out).</summary>
+        public Vector3 MeasuredVelocity => ToUnity(_motion.Velocity);
 
-        /// <summary>Steps taken as teleports so far.</summary>
-        public int Teleports => _teleports;
+        /// <summary>How the emitter's motion is followed (teleport distance, speed and acceleration limits).</summary>
+        public PuffMotion Motion => _motion;
+
+        /// <summary>Steps taken as teleports, and as snaps, so far.</summary>
+        public int Teleports => _motion.Teleports;
+        public int Snaps => _motion.Snaps;
 
         /// <summary>Emission now: bursts per second, puffs per burst, effort 0..1.</summary>
         public double Rate => _rate;
@@ -79,7 +81,7 @@ namespace AlpineLib.Sky {
 
         /// <summary>Puff mesh <paramref name="variant"/>, or null before <see cref="Configure"/>.</summary>
         public Mesh MeshOf(int variant) {
-            return _meshes[variant];
+            return variant >= 0 && variant < _meshes.Length ? _meshes[variant] : null;
         }
 
         /// <summary>
@@ -103,8 +105,8 @@ namespace AlpineLib.Sky {
             _simulation = simulation;
             _material = material;
             _layer = layer;
-            _hasLastPosition = false;
-            _velocity = Vector3.zero;
+            _motion.Reset();
+            _version++;
         }
 
         /// <summary>
@@ -130,30 +132,25 @@ namespace AlpineLib.Sky {
         public void Step(float seconds) {
             if (_simulation == null || !(seconds > 0f)) return;
 
-            Vector3 position = transform.position;
-            _velocity = _hasLastPosition ? (position - _lastPosition) / seconds : Vector3.zero;
-            _lastPosition = position;
-            _hasLastPosition = true;
-            if (_velocity.magnitude > TeleportSpeed) {
-                _velocity = Vector3.zero;
-                _simulation.Clear();
-                _teleports++;
-            }
+            if (!_motion.Measure(ToNumerics(transform.position), seconds, out System.Numerics.Vector3 residual)) _simulation.Clear();
+            else if (residual != System.Numerics.Vector3.Zero) _simulation.Translate(-residual);
 
             Vector3 wind = Wind != null && Wind.IsReady ? Wind.Velocity : Vector3.zero;
-            Vector3 air = wind - _velocity;
-            _simulation.Step(seconds, new System.Numerics.Vector3(air.x, air.y, air.z), _rate, _burst, _effort);
+            _simulation.Step(seconds, ToNumerics(wind) - _motion.Velocity, _rate, _burst, _effort);
+            _version++;
         }
 
-        /// <summary>World position of live puff <paramref name="index"/>.</summary>
+        /// <summary>World position of live puff <paramref name="index"/> (0..<see cref="LiveCount"/> − 1).</summary>
         public Vector3 PuffPosition(int index) {
-            System.Numerics.Vector3 offset = _simulation[index].Offset;
-            return transform.position + new Vector3(offset.X, offset.Y, offset.Z);
+            if (index < 0 || index >= LiveCount) throw new ArgumentOutOfRangeException(nameof(index), index, "No such live puff.");
+
+            return transform.position + ToUnity(_simulation[index].Offset);
         }
 
         /// <summary>Forgets every live puff.</summary>
         public void Clear() {
             _simulation?.Clear();
+            _version++;
         }
 
         /// <summary>
@@ -195,10 +192,13 @@ namespace AlpineLib.Sky {
         }
 
         void IOriginShiftListener.OnOriginShifted(Vector3 delta) {
-            _lastPosition += delta;
+            _motion.Shift(ToNumerics(delta));
         }
 
+        // Puffs are emitter-relative: any left from before a disable would jump to wherever it comes back.
         private void OnEnable() {
+            Clear();
+            _motion.Reset();
             OriginShiftRegistry.RegisterListener(this);
             if (_isSubscribed) return;
 
@@ -208,7 +208,7 @@ namespace AlpineLib.Sky {
 
         private void OnDisable() {
             OriginShiftRegistry.UnregisterListener(this);
-            _hasLastPosition = false;
+            _motion.Reset();
             if (!_isSubscribed) return;
 
             RenderPipelineManager.beginCameraRendering -= HandleBeginCamera;
@@ -224,10 +224,16 @@ namespace AlpineLib.Sky {
             Submit(camera);
         }
 
+        // Once per frame and state: every camera that frame draws from the same matrices.
         private void Rebuild() {
+            Vector3 origin = transform.position;
+            if (_builtVersion == _version && _builtFrame == Time.frameCount && _builtOrigin == origin) return;
+
+            _builtVersion = _version;
+            _builtFrame = Time.frameCount;
+            _builtOrigin = origin;
             foreach (List<Matrix4x4> list in _matrices) list?.Clear();
 
-            Vector3 origin = transform.position;
             Vector3 min = origin;
             Vector3 max = origin;
             for (int index = 0; index < _simulation.Count; index++) {
@@ -245,6 +251,14 @@ namespace AlpineLib.Sky {
             float reach = (float)_simulation.Settings.EndSize;
             var grow = new Vector3(reach, reach, reach);
             _bounds = new Bounds((min + max) * 0.5f, max - min + grow * 2f);
+        }
+
+        private static System.Numerics.Vector3 ToNumerics(Vector3 value) {
+            return new System.Numerics.Vector3(value.x, value.y, value.z);
+        }
+
+        private static Vector3 ToUnity(System.Numerics.Vector3 value) {
+            return new Vector3(value.X, value.Y, value.Z);
         }
 
         private void DestroyMeshes() {

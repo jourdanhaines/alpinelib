@@ -42,6 +42,14 @@ namespace AlpineLib.Procedural.Sky {
         public double IdleDarkShare { get; set; } = 0.1;
         public double EffortDarkShare { get; set; } = 0.25;
 
+        /// <summary>
+        /// Most bursts per second of <paramref name="burst"/> puffs that keep the steady pool at <paramref name="share"/>
+        /// of <see cref="Capacity"/> (live ≈ rate × burst × lifetime).
+        /// </summary>
+        public double SafeBurstRate(int burst, double share) {
+            return Math.Max(0.0, share) * Capacity / (Math.Max(1, burst) * Lifetime);
+        }
+
         /// <summary>Throws when a value is out of range.</summary>
         public void Validate() {
             if (Capacity < 1 || Capacity > 1023) throw new ArgumentOutOfRangeException(nameof(Capacity), Capacity, "Must be 1..1023 (one instanced draw).");
