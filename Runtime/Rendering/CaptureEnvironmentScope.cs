@@ -7,7 +7,8 @@ using Object = UnityEngine.Object;
 namespace AlpineLib.Rendering {
     /// <summary>
     /// Swaps the global render environment for a capture and restores it on dispose: fog off, flat
-    /// ambient (colour and probe), every scene light off (point and spot lamps too) and an optional key light on.
+    /// ambient (colour and probe), stylized lighting globals neutral, every scene light off (point and spot lamps
+    /// too) and an optional key light on.
     /// Captures run between frames, so the main view never sees the swap.
     /// </summary>
     public sealed class CaptureEnvironmentScope : IDisposable {
@@ -16,6 +17,7 @@ namespace AlpineLib.Rendering {
         private readonly Color _ambientLight;
         private readonly float _ambientIntensity;
         private readonly SphericalHarmonicsL2 _ambientProbe;
+        private readonly StylizedLightingSnapshot _stylized;
         private readonly List<Light> _disabledLights = new List<Light>();
         private GameObject _keyLight;
 
@@ -26,6 +28,7 @@ namespace AlpineLib.Rendering {
             _ambientLight = RenderSettings.ambientLight;
             _ambientIntensity = RenderSettings.ambientIntensity;
             _ambientProbe = RenderSettings.ambientProbe;
+            _stylized = StylizedLightingGlobals.Snapshot();
 
             RenderSettings.fog = false;
             RenderSettings.ambientMode = AmbientMode.Flat;
@@ -34,6 +37,7 @@ namespace AlpineLib.Rendering {
             var probe = new SphericalHarmonicsL2();
             probe.AddAmbientLight(lighting.Ambient.linear);
             RenderSettings.ambientProbe = probe;
+            StylizedLightingGlobals.Neutral();
 
             DisableSceneLights();
             if (lighting.HasKey) _keyLight = CreateKeyLight(lighting, camera);
@@ -46,6 +50,7 @@ namespace AlpineLib.Rendering {
             RenderSettings.ambientLight = _ambientLight;
             RenderSettings.ambientIntensity = _ambientIntensity;
             RenderSettings.ambientProbe = _ambientProbe;
+            StylizedLightingGlobals.Restore(_stylized);
 
             foreach (Light light in _disabledLights) {
                 if (light != null) light.enabled = true;
