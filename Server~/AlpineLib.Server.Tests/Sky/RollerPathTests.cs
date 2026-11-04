@@ -7,7 +7,6 @@ using Xunit;
 
 namespace AlpineLib.Server.Tests.Sky {
     public sealed class RollerPathTests {
-        private const double HalfCell = 64.0;
         private const double Frame = 1.0 / 60.0;
         private const double StressWind = 20.0;
         private const double JumpLimit = 0.1;
@@ -19,7 +18,7 @@ namespace AlpineLib.Server.Tests.Sky {
             var prevailing = new WindVector(0.6, 0.8);
             int differing = 0;
             for (int slot = 0; slot < 40; slot++) {
-                Scene scene = Scene.Random(1000UL + (ulong)slot);
+                RollerPathScene scene = RollerPathScene.Random(1000UL + (ulong)slot);
                 RollerPath first = scene.Build(StableHash.Mix(5UL, (ulong)slot), prevailing);
                 RollerPath second = scene.Build(StableHash.Mix(5UL, (ulong)slot), prevailing);
                 RollerPath other = scene.Build(StableHash.Mix(6UL, (ulong)slot), prevailing);
@@ -33,7 +32,7 @@ namespace AlpineLib.Server.Tests.Sky {
         public void RollsStayInsideTheCellAndClearOfFootprints() {
             int built = 0;
             for (int slot = 0; slot < 400; slot++) {
-                Scene scene = Scene.Random(2000UL + (ulong)slot);
+                RollerPathScene scene = RollerPathScene.Random(2000UL + (ulong)slot);
                 RollerPath path = scene.Build(StableHash.Mix(9UL, (ulong)slot), Prevailing(slot));
                 if (path == null) continue;
 
@@ -50,7 +49,7 @@ namespace AlpineLib.Server.Tests.Sky {
         [Fact]
         public void LengthsHopsAndWobbleStayInBounds() {
             for (int slot = 0; slot < 300; slot++) {
-                Scene scene = Scene.Open(0.3 + slot % 4 * 0.1);
+                RollerPathScene scene = RollerPathScene.Open(0.3 + slot % 4 * 0.1);
                 RollerPath path = scene.Build(StableHash.Mix(11UL, (ulong)slot), Prevailing(slot), (slot % 7 - 3) * 0.05);
                 Assert.NotNull(path);
                 Assert.InRange(path.Length, Settings.MinClippedLength, Settings.MaxLength + 1e-9);
@@ -66,7 +65,7 @@ namespace AlpineLib.Server.Tests.Sky {
         [Fact]
         public void LoopsWithoutVisibleJumpsAtTwentyMetresPerSecond() {
             for (int slot = 0; slot < 60; slot++) {
-                Scene scene = Scene.Open(0.45);
+                RollerPathScene scene = RollerPathScene.Open(0.45);
                 WindVector prevailing = Prevailing(slot);
                 RollerPath path = scene.Build(StableHash.Mix(13UL, (ulong)slot), prevailing);
                 double travel = StressWind * Settings.GroundSpeedShare * Frame;
@@ -107,7 +106,7 @@ namespace AlpineLib.Server.Tests.Sky {
 
         [Fact]
         public void CycleReducesHugeDriftInDouble() {
-            Scene scene = Scene.Open(0.4);
+            RollerPathScene scene = RollerPathScene.Open(0.4);
             RollerPath path = scene.Build(21UL, new WindVector(1.0, 0.0));
             double along = 4.0e9;
             double cycle = path.CycleOf(along);
@@ -126,19 +125,70 @@ namespace AlpineLib.Server.Tests.Sky {
         }
 
         [Fact]
+        public void TheLineRunsThroughTheSlot() {
+            for (int slot = 0; slot < 50; slot++) {
+                RollerPathScene scene = RollerPathScene.Open(0.4);
+                RollerPath path = scene.Build(StableHash.Mix(23UL, (ulong)slot), Prevailing(slot));
+                Assert.Equal(0.0, path.Wobble(0.0));
+                path.GroundPoint(-path.StartOffset, out double x, out double z);
+                Assert.Equal(path.SlotX, x, 9);
+                Assert.Equal(path.SlotZ, z, 9);
+            }
+        }
+
+        [Fact]
+        public void EveryPoseStaysInsideTheBounds() {
+            for (int slot = 0; slot < 100; slot++) {
+                RollerPathScene scene = RollerPathScene.Random(3000UL + (ulong)slot);
+                RollerPath path = scene.Build(StableHash.Mix(29UL, (ulong)slot), Prevailing(slot));
+                if (path == null) continue;
+
+                path.Bounds(0.0, out double minX, out double minY, out double minZ, out double maxX, out double maxY, out double maxZ);
+                for (double cycle = 0.0; cycle < path.Cycle; cycle += 0.1) {
+                    RollerPose pose = RollerPose.At(path, cycle);
+                    Assert.True(pose.X >= minX - 1e-9 && pose.X <= maxX + 1e-9 && pose.Z >= minZ - 1e-9 && pose.Z <= maxZ + 1e-9, $"slot {slot}: ({pose.X:0.00}, {pose.Z:0.00}) outside x {minX:0.00}..{maxX:0.00} z {minZ:0.00}..{maxZ:0.00}");
+                    Assert.InRange(pose.Y, minY - 1e-9, maxY + 1e-9);
+                }
+            }
+        }
+
+        [Fact]
+        public void JitterAndWanderStayUnderTheOffWindLimit() {
+            Assert.Equal(10.0, RollerPathSettings.JitterWithin(10.0, 35.0));
+            Assert.Equal(RollerPathSettings.MaxOffWindDegrees - 75.0, RollerPathSettings.JitterWithin(10.0, 75.0));
+            Assert.Equal(0.0, RollerPathSettings.JitterWithin(10.0, 85.0));
+            Assert.Equal(0.0, RollerPathSettings.JitterWithin(-4.0, 10.0));
+            for (double wander = 0.0; wander <= 90.0; wander += 5.0) {
+                Assert.True(RollerPathSettings.JitterWithin(80.0, wander) + wander <= Math.Max(wander, RollerPathSettings.MaxOffWindDegrees) + 1e-9);
+            }
+        }
+
+        [Fact]
+        public void ScaleDistanceFitsTheRestAndTheShortestRoll() {
+            var settings = new RollerPathSettings { MinRestGap = 6.0, MaxRestGap = 6.0, MinClippedLength = 8.0, ScaleDistance = 3.0 };
+            settings.Validate();
+            Assert.Equal(3.0, settings.MaxScaleDistance);
+            settings.ScaleDistance = 3.01;
+            Assert.Throws<ArgumentException>(() => settings.Validate());
+            settings = new RollerPathSettings { MinClippedLength = 2.0, ScaleDistance = 2.5 };
+            Assert.Equal(2.0, settings.MaxScaleDistance);
+            Assert.Throws<ArgumentException>(() => settings.Validate());
+        }
+
+        [Fact]
         public void PrevailingForMatchesTheField() {
             for (ulong seed = 1; seed < 20; seed++) {
                 Assert.Equal(new WindField(seed, WindSettings.Default).Prevailing, WindField.PrevailingFor(seed));
             }
         }
 
-        private static void CheckPoses(RollerPath path, Scene scene) {
+        private static void CheckPoses(RollerPath path, RollerPathScene scene) {
             for (double cycle = 0.0; cycle < path.Cycle; cycle += 0.1) {
                 RollerPose pose = RollerPose.At(path, cycle);
                 double lift = pose.Y - path.GroundHeight(pose.Distance) - path.Radius;
                 Assert.InRange(lift, -1e-9, Settings.MaxHopHeight + 1e-9);
                 double side = path.Wobble(path.StartOffset + pose.Distance);
-                Assert.InRange(Math.Abs(side), 0.0, Settings.WobbleAmplitude + 1e-9);
+                Assert.InRange(Math.Abs(side), 0.0, 2.0 * Settings.WobbleAmplitude + 1e-9);
                 Assert.InRange(pose.Scale, 0.0, 1.0);
                 double norm = pose.RotationX * pose.RotationX + pose.RotationY * pose.RotationY + pose.RotationZ * pose.RotationZ + pose.RotationW * pose.RotationW;
                 Assert.InRange(norm, 1.0 - 1e-9, 1.0 + 1e-9);
@@ -208,59 +258,6 @@ namespace AlpineLib.Server.Tests.Sky {
                     .Append(BitConverter.DoubleToInt64Bits(pose.Z)).Append(',').Append(BitConverter.DoubleToInt64Bits(pose.RotationW)).Append(' ');
             }
             return text.ToString();
-        }
-
-        // A 128 m cell with blocking discs and a gently rolling ground.
-        private sealed class Scene {
-            private readonly List<double[]> _discs = new List<double[]>();
-            private readonly double _radius;
-
-            private Scene(double radius) {
-                _radius = radius;
-            }
-
-            public static Scene Open(double radius) {
-                return new Scene(radius);
-            }
-
-            public static Scene Random(ulong seed) {
-                var random = new SplitMix64(seed);
-                var scene = new Scene(0.3 + random.NextDouble() * 0.3);
-                int count = random.NextInt(10, 60);
-                for (int index = 0; index < count; index++) {
-                    scene._discs.Add(new[] { random.NextDouble() * 128.0 - 64.0, random.NextDouble() * 128.0 - 64.0, 0.7 + random.NextDouble() * 3.0 });
-                }
-                return scene;
-            }
-
-            public RollerPath Build(ulong seed, WindVector prevailing, double slotShift = 0.0) {
-                var random = new SplitMix64(StableHash.Mix(seed, 77UL));
-                double slotX = (random.NextDouble() * 2.0 - 1.0) * 50.0 + slotShift;
-                double slotZ = (random.NextDouble() * 2.0 - 1.0) * 50.0;
-                if (_discs.Count == 0) {
-                    slotX = -prevailing.X * 40.0;
-                    slotZ = -prevailing.Z * 40.0;
-                }
-                return RollerPath.Build(seed, slotX, slotZ, _radius, prevailing, Settings, IsClear, Height);
-            }
-
-            public double Penetration(double x, double z) {
-                double worst = Math.Max(Math.Abs(x), Math.Abs(z)) - (HalfCell - _radius);
-                foreach (double[] disc in _discs) {
-                    double dx = x - disc[0];
-                    double dz = z - disc[1];
-                    worst = Math.Max(worst, disc[2] + _radius - Math.Sqrt(dx * dx + dz * dz));
-                }
-                return worst;
-            }
-
-            private bool IsClear(double x, double z) {
-                return Penetration(x, z) <= 0.0;
-            }
-
-            private static double Height(double x, double z) {
-                return 0.15 * Math.Sin(x / 9.0) * Math.Cos(z / 13.0);
-            }
         }
     }
 }

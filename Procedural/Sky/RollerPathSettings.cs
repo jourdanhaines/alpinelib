@@ -16,7 +16,11 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Most the start is pulled upwind of its slot (still clear), so props tend to reappear at the spawn area's upwind edge.</summary>
         public double UpwindReach { get; set; } = 24.0;
 
-        /// <summary>Most a path's direction strays from the prevailing wind, degrees.</summary>
+        /// <summary>
+        /// Most a path's direction strays from the prevailing wind, degrees. With the wind's own heading wander on top a
+        /// prop rolls up to their sum off the instantaneous wind (45° for 10 + 35); <see cref="JitterWithin"/> keeps that
+        /// sum within <see cref="MaxOffWindDegrees"/> so the drift along every path keeps rolling it forward.
+        /// </summary>
         public double DirectionJitterDegrees { get; set; } = 10.0;
 
         public double MinHopSpacing { get; set; } = 6.0;
@@ -46,11 +50,25 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Cycle metres of one rock back and forth while resting.</summary>
         public double RockPeriod { get; set; } = 6.0;
 
-        /// <summary>Step the ground profile is sampled at, metres: fine enough to ride over rails.</summary>
-        public double ProfileStep { get; set; } = 0.25;
+        /// <summary>Step the ground profile is sampled at, metres: a ball crossing a rail head sags under 1 cm between samples.</summary>
+        public double ProfileStep { get; set; } = 0.05;
 
         /// <summary>Step the path is clipped against the caller's clear test at, metres.</summary>
         public double ClipStep { get; set; } = 0.25;
+
+        /// <summary>Most a path may head off the instantaneous wind (jitter plus the wind's wander), degrees.</summary>
+        public const double MaxOffWindDegrees = 80.0;
+
+        /// <summary>Longest <see cref="ScaleDistance"/> the ranges allow: half the shortest rest, at most the shortest clipped roll.</summary>
+        public double MaxScaleDistance => Math.Min(MinRestGap * 0.5, MinClippedLength);
+
+        /// <summary>
+        /// <paramref name="jitterDegrees"/> cut so it plus a wind wandering <paramref name="wanderDegrees"/> either side of
+        /// its prevailing heading stays within <see cref="MaxOffWindDegrees"/> (0 when the wander alone reaches it).
+        /// </summary>
+        public static double JitterWithin(double jitterDegrees, double wanderDegrees) {
+            return Math.Max(0.0, Math.Min(jitterDegrees, MaxOffWindDegrees - Math.Max(0.0, wanderDegrees)));
+        }
 
         /// <summary>The shipped rollers.</summary>
         public static RollerPathSettings Default => new RollerPathSettings();
@@ -69,10 +87,9 @@ namespace AlpineLib.Procedural.Sky {
             RequirePositive(ScaleDistance, nameof(ScaleDistance));
             RequirePositive(RockPeriod, nameof(RockPeriod));
             RequirePositive(WobblePeriod, nameof(WobblePeriod));
-            if (MinRestGap < 2.0 * ScaleDistance) throw new ArgumentException($"{nameof(MinRestGap)} must leave room to scale out ({2.0 * ScaleDistance}).");
-            if (MinClippedLength < ScaleDistance) throw new ArgumentException($"{nameof(MinClippedLength)} must be at least {nameof(ScaleDistance)}.");
+            if (ScaleDistance > MaxScaleDistance) throw new ArgumentException($"{nameof(ScaleDistance)} {ScaleDistance} must fit half the shortest rest and the shortest roll ({MaxScaleDistance}).");
             if (WobbleAmplitude < 0.0 || MinHopHeight < 0.0 || UpwindReach < 0.0 || RockAngle < 0.0) throw new ArgumentException("Wobble, hop height, upwind reach and rock angle must not be negative.");
-            if (DirectionJitterDegrees < 0.0 || DirectionJitterDegrees >= 80.0) throw new ArgumentException($"{nameof(DirectionJitterDegrees)} must be in [0, 80).");
+            if (DirectionJitterDegrees < 0.0 || DirectionJitterDegrees > MaxOffWindDegrees) throw new ArgumentException($"{nameof(DirectionJitterDegrees)} must be in [0, {MaxOffWindDegrees}].");
         }
 
         private static void RequireRange(double min, double max, string name) {

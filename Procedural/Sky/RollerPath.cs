@@ -23,6 +23,7 @@ namespace AlpineLib.Procedural.Sky {
         private readonly ulong _hopSeed;
         private readonly FbmSettings _wobbleNoise;
         private readonly double _wobbleAmplitude;
+        private readonly double _wobbleOrigin;
         private double[] _heights;
 
         private RollerPath(ulong seed, double slotX, double slotZ, double directionX, double directionZ, double radius, RollerPathSettings settings) {
@@ -41,6 +42,7 @@ namespace AlpineLib.Procedural.Sky {
             _wobbleSeed = StableHash.Mix(seed, 0x574F42UL);
             _hopSeed = StableHash.Mix(seed, 0x484F50UL);
             _wobbleNoise = new FbmSettings(WobbleOctaves, 1.0 / settings.WobblePeriod);
+            _wobbleOrigin = _wobbleAmplitude * Fbm.Sample1(_wobbleSeed, 0.0, _wobbleNoise);
             _heights = Array.Empty<double>();
         }
 
@@ -87,7 +89,7 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Metres of one hop.</summary>
         public double HopSpacing => Length / HopCount;
 
-        /// <summary>Most the roll strays sideways from its line, metres.</summary>
+        /// <summary>Most the wobble swings either side of its mean, metres; the roll strays up to twice this from its line.</summary>
         public double WobbleAmplitude => _wobbleAmplitude;
 
         /// <summary>Length of one roll-and-rest cycle, metres.</summary>
@@ -155,9 +157,9 @@ namespace AlpineLib.Procedural.Sky {
             return reduced >= cycle || reduced < 0.0 ? 0.0 : reduced;
         }
 
-        /// <summary>Sideways offset of the line at <paramref name="lineOffset"/> metres from the slot.</summary>
+        /// <summary>Sideways offset from the line at <paramref name="lineOffset"/> metres from the slot: 0 at the slot, within 2 × amplitude.</summary>
         public double Wobble(double lineOffset) {
-            return _wobbleAmplitude * Fbm.Sample1(_wobbleSeed, lineOffset, _wobbleNoise);
+            return _wobbleAmplitude * Fbm.Sample1(_wobbleSeed, lineOffset, _wobbleNoise) - _wobbleOrigin;
         }
 
         /// <summary>Slope of the wobble (sideways metres per metre) at <paramref name="lineOffset"/>.</summary>
@@ -196,6 +198,36 @@ namespace AlpineLib.Procedural.Sky {
             return height * 4.0 * share * (1.0 - share);
         }
 
+        /// <summary>
+        /// Box (x, y, z, metres) every pose's centre stays in at scale 1, padded by <paramref name="pad"/> on every
+        /// side: the line's ends widened by the wobble, the ground profile's range lifted by the radius and highest hop.
+        /// </summary>
+        public void Bounds(double pad, out double minX, out double minY, out double minZ, out double maxX, out double maxY, out double maxZ) {
+            double side = 2.0 * _wobbleAmplitude + pad;
+            GroundEnds(out double startX, out double startZ, out double endX, out double endZ);
+            minX = Math.Min(startX, endX) - side;
+            maxX = Math.Max(startX, endX) + side;
+            minZ = Math.Min(startZ, endZ) - side;
+            maxZ = Math.Max(startZ, endZ) + side;
+            double low = double.PositiveInfinity;
+            double high = double.NegativeInfinity;
+            foreach (double height in _heights) {
+                low = Math.Min(low, height);
+                high = Math.Max(high, height);
+            }
+            if (_heights.Length == 0) low = high = 0.0;
+            minY = low + Radius - pad;
+            maxY = high + Radius + HopHeight + pad;
+        }
+
+        // The straight line's points at the roll's start and end (no wobble).
+        private void GroundEnds(out double startX, out double startZ, out double endX, out double endZ) {
+            startX = SlotX + DirectionX * StartOffset;
+            startZ = SlotZ + DirectionZ * StartOffset;
+            endX = SlotX + DirectionX * (StartOffset + Length);
+            endZ = SlotZ + DirectionZ * (StartOffset + Length);
+        }
+
         private void PointOnLine(double lineOffset, out double x, out double z) {
             double side = Wobble(lineOffset);
             x = SlotX + DirectionX * lineOffset + DirectionZ * side;
@@ -207,7 +239,8 @@ namespace AlpineLib.Procedural.Sky {
             return isClear(x, z);
         }
 
-        // The farthest offset from `from` toward `limit` in `step` strides whose every sample is clear.
+        // The farthest offset from `from` toward `limit` in `step` strides whose every sample is clear. The last partial
+        // stride is tested at its end like every stride, so a footprint can only be grazed between samples (the gates' slack).
         private double WalkClear(double from, double step, double limit, Func<double, double, bool> isClear) {
             double reached = from;
             int strides = (int)Math.Floor(Math.Abs(limit - from) / Math.Abs(step) + 1e-9);
