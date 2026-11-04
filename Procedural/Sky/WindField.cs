@@ -69,7 +69,7 @@ namespace AlpineLib.Procedural.Sky {
         public WindField(ulong seed, WindSettings settings) {
             Seed = seed;
             Settings = settings;
-            _prevailing = PrevailingDirection(StableHash.Mix(seed, PrevailingSalt));
+            _prevailing = PrevailingFor(seed);
             _headingSeed = StableHash.Mix(seed, HeadingSalt);
             _gustSeed = StableHash.Mix(seed, GustSalt);
             _gustDetailSeed = StableHash.Mix(seed, GustDetailSalt);
@@ -84,6 +84,11 @@ namespace AlpineLib.Procedural.Sky {
 
         /// <summary>Unit direction the wander centres on.</summary>
         public WindVector Prevailing => _prevailing;
+
+        /// <summary>The <see cref="Prevailing"/> direction of a wind seeded with <paramref name="seed"/>, whatever its settings (worker-safe).</summary>
+        public static WindVector PrevailingFor(ulong seed) {
+            return PrevailingDirection(StableHash.Mix(seed, PrevailingSalt));
+        }
 
         /// <summary>The heading the wander centres on, radians clockwise from +z (diagnostic; the drift never reads it).</summary>
         public double PrevailingHeading => Math.Atan2(_prevailing.X, _prevailing.Z);
