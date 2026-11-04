@@ -87,8 +87,8 @@ namespace AlpineLib.Procedural.Sky {
             int variant = looks.NextInt(BackdropSettings.VariantsPerKind);
             double yaw = looks.NextDouble() * 2.0 * Math.PI;
             if (kind != BackdropFeatureKind.CloudBank) {
-                double width = Lerp(Settings.MinWidth, Settings.MaxWidth, widthRoll);
                 double height = Lerp(Settings.MinHeight, Settings.MaxHeight, heightRoll);
+                double width = Math.Min(Lerp(Settings.MinWidth, Settings.MaxWidth, widthRoll), height * Settings.MaxRockAspect);
                 return new BackdropFeature(sectorX, sectorZ, localX, localZ, kind, variant, yaw, width, height, width, 0.0);
             }
 

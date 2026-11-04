@@ -9,7 +9,7 @@ using Xunit;
 namespace AlpineLib.Server.Tests.Sky {
     public sealed class BackdropLayoutTests {
         private const int RockGoldenCount = 24;
-        private const ulong RockGoldenHash = 11005644601313286035UL;
+        private const ulong RockGoldenHash = 2965748000915924096UL;
         private static readonly BackdropSettings Settings = BackdropSettings.Default;
 
         [Fact]
@@ -276,6 +276,7 @@ namespace AlpineLib.Server.Tests.Sky {
                 return;
             }
             Assert.InRange(feature.Width, Settings.MinWidth, Settings.MaxWidth);
+            Assert.True(feature.Width <= feature.Height * Settings.MaxRockAspect + 1e-9, $"rock {feature.Width:0.0} m wide on {feature.Height:0.0} m is a plank");
             Assert.Equal(feature.Width, feature.Depth);
             Assert.Equal(0.0, feature.Altitude);
             Assert.InRange(feature.Height, Settings.MinHeight, Settings.MaxHeight);

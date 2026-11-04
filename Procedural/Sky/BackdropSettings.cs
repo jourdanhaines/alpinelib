@@ -42,6 +42,9 @@ namespace AlpineLib.Procedural.Sky {
         public double MinHeight { get; set; } = 40.0;
         public double MaxHeight { get; set; } = 120.0;
 
+        /// <summary>Widest a rock silhouette may be, in heights: low wide rolls are narrowed so none reads as a thin plank on the horizon.</summary>
+        public double MaxRockAspect { get; set; } = 2.5;
+
         /// <summary>Share of the base a rock silhouette is sunk into the ground, so its foot never shows.</summary>
         public double BaseSink { get; set; } = 0.04;
 
@@ -135,6 +138,7 @@ namespace AlpineLib.Procedural.Sky {
             if (GroundDrop < 0.0) throw new ArgumentOutOfRangeException(nameof(GroundDrop), GroundDrop, "Must not be negative.");
             RequirePositive(MinWidth, nameof(MinWidth));
             RequirePositive(MinHeight, nameof(MinHeight));
+            RequirePositive(MaxRockAspect, nameof(MaxRockAspect));
             RequirePositive(CloudBankMinHeight, nameof(CloudBankMinHeight));
             if (FadeBand < 0.0) throw new ArgumentOutOfRangeException(nameof(FadeBand), FadeBand, "Must not be negative.");
             if (MinFeaturesPerSector < 0 || MaxFeaturesPerSector < MinFeaturesPerSector) {
