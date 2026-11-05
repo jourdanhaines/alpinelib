@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System;
 using AlpineLib.Procedural.Sky;
 
@@ -27,6 +28,13 @@ namespace AlpineLib.Server.Tests.Sky {
 
         public double SurfaceAt(double x, double z) {
             return 0.0;
+        }
+
+        public void StopsNear(double x, double z, double radius, double reach, List<RollerDisc> into) {
+            if (double.IsNaN(_x)) return;
+
+            var stop = new RollerDisc(_x, _z, _radius);
+            if (stop.ClearanceOf(x, z, radius) <= reach) into.Add(stop);
         }
     }
 }

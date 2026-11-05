@@ -108,6 +108,19 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Chance this path's seeded bump spots fire.</summary>
         public double BumpChance { get; private set; }
 
+        /// <summary>Looks ahead that steered the roll around a round stop (<see cref="RollerSteering"/>).</summary>
+        public int Steers { get; private set; }
+
+        /// <summary>Looks ahead that found no clear turn within the limit (the roll may end blocked soon after).</summary>
+        public int Boxed { get; private set; }
+
+        /// <summary>
+        /// True when the roll looked into a part of the world that was not loaded (a neighbour's stops may be missing):
+        /// it then ends there as at the <see cref="RollerEnd.Edge"/>, so everything before is final and a wider world
+        /// carries it on unchanged.
+        /// </summary>
+        public bool IsProvisional { get; private set; }
+
         /// <summary>Highest rise of any jump's arc over its line, metres.</summary>
         public double HighestJump { get; private set; }
 
@@ -143,6 +156,29 @@ namespace AlpineLib.Procedural.Sky {
         /// </summary>
         public static RollerPath Build(ulong seed, double startX, double startZ, double radius, double size, double life, WindVector prevailing,
                 RollerPathSettings settings, IRollerWorld world, RollerShape outline) {
+            return Build(seed, startX, startZ, radius, size, life, prevailing, null, 0.0, settings, world, outline);
+        }
+
+        /// <summary>The roll of <paramref name="spawn"/> from absolute (<paramref name="x"/>, <paramref name="z"/>), its size, life and seed taken from the spawn.</summary>
+        public static RollerPath Build(RollerSpawn spawn, double x, double z, double radius, WindVector prevailing, RollerPathSettings settings, IRollerWorld world,
+                RollerShape outline) {
+            return Build(spawn.Id, x, z, radius, spawn.Size, spawn.Life, prevailing, null, 0.0, settings, world, outline);
+        }
+
+        /// <summary>
+        /// The roll of <paramref name="spawn"/> from absolute (<paramref name="x"/>, <paramref name="z"/>) for
+        /// <paramref name="life"/> metres (its own life, or more), heading along the live wind: each metre follows the
+        /// wind's direction at the moment the prop rolls it (<paramref name="clock"/> maps its drift to time).
+        /// </summary>
+        public static RollerPath Build(RollerSpawn spawn, double x, double z, double radius, double life, RollerWindClock clock, RollerPathSettings settings,
+                IRollerWorld world, RollerShape outline) {
+            if (clock == null) throw new ArgumentNullException(nameof(clock));
+
+            return Build(spawn.Id, x, z, radius, spawn.Size, life, clock.Field.Prevailing, clock, spawn.Drift, settings, world, outline);
+        }
+
+        private static RollerPath Build(ulong seed, double startX, double startZ, double radius, double size, double life, WindVector prevailing,
+                RollerWindClock clock, double spawnDrift, RollerPathSettings settings, IRollerWorld world, RollerShape outline) {
             if (settings == null) throw new ArgumentNullException(nameof(settings));
             if (world == null) throw new ArgumentNullException(nameof(world));
             if (!(radius > 0.0)) throw new ArgumentOutOfRangeException(nameof(radius), radius, "Must be positive.");
@@ -150,7 +186,8 @@ namespace AlpineLib.Procedural.Sky {
             if (!(life > 0.0)) throw new ArgumentOutOfRangeException(nameof(life), life, "Must be positive.");
             if (!(prevailing.Length > 0.0)) throw new ArgumentException("The prevailing direction must not be zero.", nameof(prevailing));
             settings.Validate();
-            if (world.BlockAt(startX, startZ, radius) != RollerBlock.None) return null;
+            if (world.BlockAt(startX, startZ, radius) != RollerBlock.None || IsCrowded(world, startX, startZ, radius, settings)) return null;
+            if (world.SupportAt(startX, startZ, radius).Obstacle == RollerObstacle.Obstacle) return null;
 
             var traits = new SplitMix64(StableHash.Mix(seed, TraitStream));
             double heft = HeftOf(size, settings);
@@ -159,7 +196,7 @@ namespace AlpineLib.Procedural.Sky {
             var shape = new RollerPath(seed, startX, startZ, radius, size, heft, share, settings, walk) {
                 Spin = new SplitMix64(seed).NextDouble() * 2.0 * Math.PI,
             };
-            shape.WalkClear(world, life, settings.ClipStep);
+            shape.WalkClear(world, life, settings, new RollerWind(prevailing, clock, spawnDrift, share));
             if (shape.Length < settings.ProfileStep || (shape.End != RollerEnd.Edge && shape.Length < settings.MinClippedLength)) return null;
 
             shape.DrawShape(traits, settings);
@@ -176,12 +213,6 @@ namespace AlpineLib.Procedural.Sky {
             foreach (RollerJump jump in shape._jumps) shape.HighestJump = Math.Max(shape.HighestJump, jump.Height);
             shape.FadeLength = Math.Min(share * settings.FadeDrift, shape.Length * 0.5);
             return shape;
-        }
-
-        /// <summary>The roll of <paramref name="spawn"/> from absolute (<paramref name="x"/>, <paramref name="z"/>), its size, life and seed taken from the spawn.</summary>
-        public static RollerPath Build(RollerSpawn spawn, double x, double z, double radius, WindVector prevailing, RollerPathSettings settings, IRollerWorld world,
-                RollerShape outline) {
-            return Build(spawn.Id, x, z, radius, spawn.Size, spawn.Life, prevailing, settings, world, outline);
         }
 
         /// <summary>Ground position of the centre after rolling <paramref name="distance"/> metres from the start (clamped to the roll).</summary>
@@ -296,25 +327,41 @@ namespace AlpineLib.Procedural.Sky {
             maxY = high + HighestJump + pad;
         }
 
-        // Walks from the start in profile steps, testing the ball against the world every clip step, until the life is
-        // rolled or a test fails; the roll then ends at the last clear test.
-        private void WalkClear(IRollerWorld world, double life, double clipStep) {
+        // Walks from the start in profile steps along the wind, wander and steering, testing the ball against the world
+        // every clip step, until the life is rolled or a test fails; the roll then ends at the last clear test.
+        private void WalkClear(IRollerWorld world, double life, RollerPathSettings settings, RollerWind wind) {
             double step = ProfileStep;
-            int every = Math.Max(1, (int)Math.Round(clipStep / step));
+            double limit = RollerPathSettings.MaxOffWindDegrees * Math.PI / 180.0;
+            int every = Math.Max(1, (int)Math.Round(settings.ClipStep / step));
             int most = Math.Max(1, (int)Math.Floor(life / step + 1e-9));
+            var steering = new RollerSteering(Seed, Radius, settings);
             var xs = new List<double>(Math.Min(most, 8192) + 1) { StartX };
             var zs = new List<double>(xs.Capacity) { StartZ };
-            Walk.DirectionAt(0.0, out double firstX, out double firstZ);
+            wind.At(0.0, out double windX, out double windZ);
+            double turn = steering.Advance(world, 0.0, 0.0, StartX, StartZ, windX, windZ, Walk.OffsetAt(0.0));
+            RollerWalk.Bend(windX, windZ, Clamp(Walk.OffsetAt(0.0) + turn, limit), out double firstX, out double firstZ);
             var hxs = new List<double>(xs.Capacity) { firstX };
             var hzs = new List<double>(xs.Capacity) { firstZ };
             int clear = 0;
             End = RollerEnd.Life;
             double x = StartX, z = StartZ;
             for (int index = 1; index <= most; index++) {
-                Walk.DirectionAt((index - 0.5) * step, out double midX, out double midZ);
+                double distance = index * step;
+                wind.At(distance, out double nextX, out double nextZ);
+                double before = turn;
+                double offset = Walk.OffsetAt(distance);
+                turn = steering.Advance(world, distance, step, x, z, nextX, nextZ, offset);
+                if (steering.TouchedUnloaded) {
+                    End = RollerEnd.Edge;
+                    break;
+                }
+                Midway(windX, windZ, nextX, nextZ, out double midWindX, out double midWindZ);
+                RollerWalk.Bend(midWindX, midWindZ, Clamp(Walk.OffsetAt(distance - step * 0.5) + (before + turn) * 0.5, limit), out double midX, out double midZ);
                 x += midX * step;
                 z += midZ * step;
-                Walk.DirectionAt(index * step, out double headingX, out double headingZ);
+                RollerWalk.Bend(nextX, nextZ, Clamp(offset + turn, limit), out double headingX, out double headingZ);
+                windX = nextX;
+                windZ = nextZ;
                 xs.Add(x);
                 zs.Add(z);
                 hxs.Add(headingX);
@@ -334,6 +381,29 @@ namespace AlpineLib.Procedural.Sky {
             _headingX = Trimmed(hxs, count);
             _headingZ = Trimmed(hzs, count);
             Length = clear * step;
+            Steers = steering.Steers;
+            Boxed = steering.Boxed;
+            IsProvisional = steering.TouchedUnloaded;
+        }
+
+        private static void Midway(double fromX, double fromZ, double toX, double toZ, out double x, out double z) {
+            double sumX = fromX + toX, sumZ = fromZ + toZ;
+            double length = Math.Sqrt(sumX * sumX + sumZ * sumZ);
+            x = length > 0.0 ? sumX / length : toX;
+            z = length > 0.0 ? sumZ / length : toZ;
+        }
+
+        private static double Clamp(double value, double limit) {
+            return Math.Max(-limit, Math.Min(limit, value));
+        }
+
+        // A steering roll starts clear of every round stop by its clearance.
+        private static bool IsCrowded(IRollerWorld world, double x, double z, double radius, RollerPathSettings settings) {
+            if (!(settings.SteerLookahead > 0.0)) return false;
+
+            var near = new List<RollerDisc>();
+            world.StopsNear(x, z, radius, settings.SteerClearance, near);
+            return near.Count > 0;
         }
 
         private static double[] Trimmed(List<double> values, int count) {

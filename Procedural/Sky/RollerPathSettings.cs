@@ -3,7 +3,7 @@ using System;
 namespace AlpineLib.Procedural.Sky {
     /// <summary>
     /// Tunables of wind-rolled props (tumbleweeds): how far one rolls before it breaks up, how its heading wanders off
-    /// the prevailing wind (noise wander plus seeded course changes), when it jumps (obstacles, crests, seeded bumps),
+    /// the wind (noise wander plus seeded course changes) and steers around round stops ahead, when it jumps (obstacles, crests, seeded bumps),
     /// how fast it rolls for the wind's drift, how long it fades in and out, and how much props vary in size, speed and
     /// shape (small ones common and fast, big ones rare and slow).
     /// </summary>
@@ -13,8 +13,8 @@ namespace AlpineLib.Procedural.Sky {
         public const double MaxOffWindDegrees = 80.0;
 
         /// <summary>Range of how far a prop rolls before it breaks up (fades out), metres.</summary>
-        public double MinLife { get; set; } = 60.0;
-        public double MaxLife { get; set; } = 180.0;
+        public double MinLife { get; set; } = 250.0;
+        public double MaxLife { get; set; } = 600.0;
 
         /// <summary>Shortest roll kept; a spawn blocked sooner gets no roller.</summary>
         public double MinClippedLength { get; set; } = 8.0;
@@ -37,6 +37,25 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Most a course change turns the roll's mean heading off the wind, degrees, eased in over <see cref="CourseBlend"/> metres.</summary>
         public double CourseDegrees { get; set; } = 20.0;
         public double CourseBlend { get; set; } = 10.0;
+
+        /// <summary>
+        /// Metres ahead a roll looks for round stops (<see cref="IRollerWorld.StopsNear"/>) and steers around them by the
+        /// smallest turn that clears them, held within <see cref="MaxOffWindDegrees"/> of the wind.
+        /// </summary>
+        public double SteerLookahead { get; set; } = 12.0;
+
+        /// <summary>Gap a steered roll keeps from a round stop (and its spawn point starts clear by), metres.</summary>
+        public double SteerClearance { get; set; } = 0.4;
+
+        /// <summary>Metres rolled between looks ahead.</summary>
+        public double SteerStep { get; set; } = 0.5;
+
+        /// <summary>Fastest the heading turns toward a needed steer, and back to the wander once clear, degrees per metre rolled.</summary>
+        public double SteerTurnRate { get; set; } = 20.0;
+        public double SteerReturnRate { get; set; } = 6.0;
+
+        /// <summary>Extra turn a steer to the other side than the one already taken must save to be taken, degrees.</summary>
+        public double SteerSidePenalty { get; set; } = 15.0;
 
         /// <summary>Range of a prop's size over its kind's mesh; size = lerp(min, max, u^<see cref="SizeBias"/>).</summary>
         public double MinSize { get; set; } = 0.65;
@@ -137,6 +156,10 @@ namespace AlpineLib.Procedural.Sky {
             RequirePositive(MinGroundSpeedShare, nameof(MinGroundSpeedShare));
             RequirePositive(FadeDrift, nameof(FadeDrift));
             RequirePositive(CourseBlend, nameof(CourseBlend));
+            RequirePositive(SteerStep, nameof(SteerStep));
+            RequirePositive(SteerTurnRate, nameof(SteerTurnRate));
+            RequirePositive(SteerReturnRate, nameof(SteerReturnRate));
+            if (SteerLookahead < 0.0 || SteerClearance < 0.0 || SteerSidePenalty < 0.0) throw new ArgumentException("The steering look-ahead, clearance and side penalty must not be negative.");
             if (MinClippedLength < 0.0) throw new ArgumentException($"{nameof(MinClippedLength)} must not be negative.");
             if (MinObstacleJump < 0.0 || MinCrestJump < 0.0 || MinBumpJump < 0.0 || JumpLead < 0.0 || JumpClearance < 0.0) throw new ArgumentException("Jump heights, lead and clearance must not be negative.");
             if (!InUnit(SpeedJitter) || !InUnit(CourseChance)) throw new ArgumentException("Speed jitter and course chance must be in [0, 1].");

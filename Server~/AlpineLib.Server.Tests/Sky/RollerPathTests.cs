@@ -35,7 +35,7 @@ namespace AlpineLib.Server.Tests.Sky {
 
         [Fact]
         public void RollsStayClearOfWhatStopsThem() {
-            int built = 0, blocked = 0;
+            int built = 0, blocked = 0, steers = 0;
             for (int slot = 0; slot < 300; slot++) {
                 RollerTestWorld world = RollerTestWorld.Scattered(2000UL + (ulong)slot, 160);
                 RollerPath path = Build(world, StableHash.Mix(9UL, (ulong)slot), Prevailing(slot), slot);
@@ -43,6 +43,7 @@ namespace AlpineLib.Server.Tests.Sky {
 
                 built++;
                 blocked += path.End == RollerEnd.Blocked ? 1 : 0;
+                steers += path.Steers;
                 for (double distance = 0.0; distance <= path.Length; distance += 0.05) {
                     path.GroundPoint(distance, out double x, out double z);
                     double penetration = world.Penetration(x, z, path.Radius);
@@ -55,7 +56,7 @@ namespace AlpineLib.Server.Tests.Sky {
                 double ahead = world.Penetration(endX + headingX * Settings.ClipStep * 1.5, endZ + headingZ * Settings.ClipStep * 1.5, path.Radius);
                 Assert.True(ahead > -Settings.ClipStep, $"slot {slot}: blocked at {path.Length:0.00} m with nothing just ahead ({ahead:0.000})");
             }
-            Assert.True(built > 200 && blocked > 40, $"{built} of 300 spawns rolled, {blocked} blocked");
+            Assert.True(built > 200 && steers > 200, $"{built} of 300 spawns rolled, {steers} steers, {blocked} blocked");
         }
 
         [Fact]
@@ -145,8 +146,7 @@ namespace AlpineLib.Server.Tests.Sky {
             int blocked = 0;
             for (int slot = 0; slot < 24; slot++) {
                 ulong seed = StableHash.Mix(25UL, (ulong)slot);
-                var world = RollerTestWorld.Open();
-                world.AddStop(prevailing.X * (20.0 + slot), prevailing.Z * (20.0 + slot), 4.0);
+                RollerTestWorld world = Wall(prevailing, 20.0 + slot);
                 double size = RollerPath.SizeOf(seed, settings);
                 RollerPath path = RollerPath.Build(seed, 0.0, 0.0, 0.45 * size, size, settings.MaxLife, prevailing, settings, world, null);
                 if (path == null || path.End != RollerEnd.Blocked) continue;
@@ -193,8 +193,8 @@ namespace AlpineLib.Server.Tests.Sky {
         [Fact]
         public void RollsCrossCellBordersWithoutAJump() {
             var cells = new Dictionary<(long X, long Z), IRollerCell>();
-            for (long cellX = -3; cellX <= 3; cellX++) {
-                for (long cellZ = -3; cellZ <= 3; cellZ++) cells[(cellX, cellZ)] = new RollerHeightCell(cellX, cellZ, CellSize);
+            for (long cellX = -6; cellX <= 6; cellX++) {
+                for (long cellZ = -6; cellZ <= 6; cellZ++) cells[(cellX, cellZ)] = new RollerHeightCell(cellX, cellZ, CellSize);
             }
             var world = new RollerCellWorld(CellSize, cells);
             int borders = 0;
@@ -312,6 +312,15 @@ namespace AlpineLib.Server.Tests.Sky {
                 startZ = -prevailing.Z * 60.0 + (slot % 7 - 3) * 2.3;
             }
             return RollerPath.Build(seed, startX, startZ, 0.45 * size, size, life > 0.0 ? life : Settings.MaxLife, prevailing, Settings, world, null);
+        }
+
+        // A wall of stop discs across the wind, `ahead` metres downwind of the origin and far wider than any steer clears.
+        private static RollerTestWorld Wall(WindVector prevailing, double ahead) {
+            var world = RollerTestWorld.Open();
+            for (double across = -400.0; across <= 400.0; across += 6.0) {
+                world.AddStop(prevailing.X * ahead + prevailing.Z * across, prevailing.Z * ahead - prevailing.X * across, 4.0);
+            }
+            return world;
         }
 
         private static long CellOf(double value) {

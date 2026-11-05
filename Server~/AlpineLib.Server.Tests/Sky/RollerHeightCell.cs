@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using AlpineLib.Procedural.Sky;
 
 namespace AlpineLib.Server.Tests.Sky {
@@ -21,6 +22,9 @@ namespace AlpineLib.Server.Tests.Sky {
 
         public double SurfaceAt(double x, double z) {
             return RollerTestWorld.Height(x + _originX, z + _originZ);
+        }
+
+        public void StopsNear(double x, double z, double radius, double reach, List<RollerDisc> into) {
         }
     }
 }

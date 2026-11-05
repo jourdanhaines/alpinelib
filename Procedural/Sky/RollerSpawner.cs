@@ -4,37 +4,46 @@ using System.Collections.Generic;
 namespace AlpineLib.Procedural.Sky {
     /// <summary>
     /// When and where wind-rolled props appear: per cell and per bucket of <see cref="RollerSpawnSettings.BucketDrift"/>
-    /// drift metres a seeded Poisson count of spawns at seeded drifts inside the bucket, each at a seeded point inside the
-    /// cell biased to its upwind side. Drift is the wind's travel along its prevailing direction (never decreasing), so
-    /// spawns are a pure function of the world seed, the cell and the session clock: every client agrees without sync.
+    /// drift metres a seeded Poisson count of spawns at seeded drifts inside the bucket, each at seeded points uniform
+    /// over the cell. Each cell's buckets are shifted by a seeded phase, so neighbouring cells never roll into a new
+    /// bucket on the same frame. Drift is the wind's travel along its prevailing direction (never decreasing), so spawns
+    /// are a pure function of the world seed, the cell and the session clock: every client agrees without sync.
     /// </summary>
     /// <remarks>
     /// The count's mean is <see cref="RollerSpawnSettings.PerCellPerMinute"/> over a minute of the wind's mean drift
-    /// (<see cref="AlongSpeed"/>), so windier spells bring more props. A spawn is admitted only while fewer than
-    /// <see cref="RollerSpawnSettings.MaxPerCell"/> earlier candidates of its cell are still out (alive by their whole
-    /// life, blocked or not): a rule over candidates alone, so it never depends on the world or on earlier admissions.
-    /// Candidates are cached per cell and bucket; not thread safe, except <see cref="PointOf"/> and the static helpers.
+    /// (<see cref="AlongSpeed"/>), so windier spells bring more props. A candidate is admitted while fewer than
+    /// <see cref="RollerSpawnSettings.MaxPerCell"/> admitted ones of its cell are still out (by their whole life): one
+    /// ordered pass per bucket carries the cell's admitted ones still out on to the next (<see cref="RollerSpawnChain"/>),
+    /// from the session's first bucket, so the rule reads candidates alone, never the world or the join time, and is the
+    /// same everywhere. Admissions are cached per cell and bucket (<see cref="Prefetch"/> works the next bucket out early,
+    /// <see cref="Prune"/> drops old ones and unloaded cells). Not thread safe, except <see cref="PointOf"/>,
+    /// <see cref="Clock"/> and the static helpers.
     /// </remarks>
     public sealed class RollerSpawner {
         private const ulong CellSalt = 0x43454C4CUL;
         private const ulong BucketSalt = 0x4255434BUL;
         private const ulong LifeSalt = 0x4C494645UL;
         private const ulong PointSalt = 0x504F494EUL;
+        private const ulong PhaseSalt = 0x50484153UL;
 
         private readonly double _meanPerBucket;
         private readonly double _exponent;
-        private const int MostCachedBuckets = 4096;
-
-        private readonly List<RollerSpawn> _scratch = new List<RollerSpawn>();
+        private readonly int _backBuckets;
+        private readonly List<RollerSpawn> _kept = new List<RollerSpawn>();
+        private readonly List<(long X, long Z, long Bucket)> _stale = new List<(long X, long Z, long Bucket)>();
+        private readonly List<(long X, long Z)> _staleChains = new List<(long X, long Z)>();
+        private readonly Dictionary<(long X, long Z), RollerSpawnChain> _chains = new Dictionary<(long X, long Z), RollerSpawnChain>();
         private readonly Dictionary<(long X, long Z, long Bucket), RollerSpawn[]> _cache = new Dictionary<(long X, long Z, long Bucket), RollerSpawn[]>();
         private readonly Dictionary<(long X, long Z, long Bucket), RollerSpawn[]> _admitted = new Dictionary<(long X, long Z, long Bucket), RollerSpawn[]>();
 
         /// <summary>
         /// Spawns of world seed <paramref name="seed"/> in cells of <paramref name="cellSize"/> metres for a wind
         /// blowing toward <paramref name="prevailing"/> at a mean drift of <paramref name="alongSpeed"/> metres per second
-        /// (<see cref="AlongSpeedOf"/>). Throws when the settings do not validate.
+        /// (<see cref="AlongSpeedOf"/>), their rolls following <paramref name="clock"/>'s live wind (null: the prevailing
+        /// direction). Throws when the settings do not validate.
         /// </summary>
-        public RollerSpawner(ulong seed, double cellSize, WindVector prevailing, double alongSpeed, RollerSpawnSettings spawn, RollerPathSettings paths) {
+        public RollerSpawner(ulong seed, double cellSize, WindVector prevailing, double alongSpeed, RollerSpawnSettings spawn, RollerPathSettings paths,
+                RollerWindClock clock = null) {
             if (!(cellSize > 0.0)) throw new ArgumentOutOfRangeException(nameof(cellSize), cellSize, "Must be positive.");
             if (!(alongSpeed > 0.0)) throw new ArgumentOutOfRangeException(nameof(alongSpeed), alongSpeed, "Must be positive.");
             if (!(prevailing.Length > 0.0)) throw new ArgumentException("The prevailing direction must not be zero.", nameof(prevailing));
@@ -47,8 +56,10 @@ namespace AlpineLib.Procedural.Sky {
             CellSize = cellSize;
             Prevailing = prevailing * (1.0 / prevailing.Length);
             AlongSpeed = alongSpeed;
+            Clock = clock;
             _meanPerBucket = spawn.PerCellPerMinute / 60.0 / alongSpeed * spawn.BucketDrift;
             _exponent = Math.Exp(-_meanPerBucket);
+            _backBuckets = (int)Math.Ceiling(paths.MostLifeDrift / spawn.BucketDrift) + 1;
         }
 
         public ulong Seed { get; }
@@ -60,11 +71,20 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Mean drift metres per second the rate is set for.</summary>
         public double AlongSpeed { get; }
 
+        /// <summary>The live wind rolls follow, or null (they follow <see cref="Prevailing"/>).</summary>
+        public RollerWindClock Clock { get; }
+
         public RollerSpawnSettings Spawn { get; }
         public RollerPathSettings Paths { get; }
 
         /// <summary>Mean candidates per cell and bucket.</summary>
         public double MeanPerBucket => _meanPerBucket;
+
+        /// <summary>Cell buckets cached (candidates and admissions).</summary>
+        public int CachedBuckets => _cache.Count + _admitted.Count;
+
+        /// <summary>Cells whose admission pass is carried (see <see cref="RollerSpawnChain"/>).</summary>
+        public int ChainCount => _chains.Count;
 
         /// <summary>
         /// Mean drift metres per second of <paramref name="wind"/> along its prevailing direction over its first
@@ -93,8 +113,14 @@ namespace AlpineLib.Procedural.Sky {
             return displacement.X * Prevailing.X + displacement.Z * Prevailing.Z;
         }
 
-        public long BucketOf(double drift) {
-            return (long)Math.Floor(drift / Spawn.BucketDrift);
+        /// <summary>The seeded shift of the cell's buckets, drift metres in [0, <see cref="RollerSpawnSettings.BucketDrift"/>).</summary>
+        public double PhaseOf(long cellX, long cellZ) {
+            return new SplitMix64(StableHash.Mix(CellSeed(cellX, cellZ), PhaseSalt)).NextDouble() * Spawn.BucketDrift;
+        }
+
+        /// <summary>The cell's bucket holding <paramref name="drift"/>.</summary>
+        public long BucketOf(long cellX, long cellZ, double drift) {
+            return (long)Math.Floor((drift + PhaseOf(cellX, cellZ)) / Spawn.BucketDrift);
         }
 
         /// <summary>Every candidate of cell (<paramref name="cellX"/>, <paramref name="cellZ"/>) in <paramref name="bucket"/>, in index order (admitted or not).</summary>
@@ -102,21 +128,109 @@ namespace AlpineLib.Procedural.Sky {
             if (into == null) throw new ArgumentNullException(nameof(into));
             if (bucket < 0) return;
 
-            if (!_cache.TryGetValue((cellX, cellZ, bucket), out RollerSpawn[] spawns)) {
-                if (_cache.Count >= MostCachedBuckets) ClearCache();
-                spawns = DrawBucket(cellX, cellZ, bucket);
-                _cache[(cellX, cellZ, bucket)] = spawns;
-            }
-            into.AddRange(spawns);
+            into.AddRange(Candidates(cellX, cellZ, bucket));
         }
 
-        // The bucket's seeded Poisson count of spawns at seeded drifts inside it, each with its traits.
+        /// <summary>Admitted spawns of the cell out at <paramref name="drift"/> (appeared, whole life not yet rolled), in spawn order.</summary>
+        public void AliveAt(long cellX, long cellZ, double drift, List<RollerSpawn> into) {
+            if (into == null) throw new ArgumentNullException(nameof(into));
+
+            double phase = PhaseOf(cellX, cellZ);
+            long lastBucket = (long)Math.Floor((drift + phase) / Spawn.BucketDrift);
+            long firstBucket = Math.Max(0, (long)Math.Floor((drift - Paths.MostLifeDrift + phase) / Spawn.BucketDrift));
+            for (long bucket = firstBucket; bucket <= lastBucket; bucket++) AddAlive(AdmittedIn(cellX, cellZ, bucket), drift, into);
+        }
+
+        /// <summary>
+        /// Admitted spawns of the cell that appeared after drift <paramref name="after"/> and are out at
+        /// <paramref name="drift"/>, in spawn order: what a refresh that saw <paramref name="after"/> has not seen yet.
+        /// </summary>
+        public void AppearedBetween(long cellX, long cellZ, double after, double drift, List<RollerSpawn> into) {
+            if (into == null) throw new ArgumentNullException(nameof(into));
+
+            double phase = PhaseOf(cellX, cellZ);
+            long lastBucket = (long)Math.Floor((drift + phase) / Spawn.BucketDrift);
+            long firstBucket = Math.Max(0, (long)Math.Floor((after + phase) / Spawn.BucketDrift));
+            for (long bucket = firstBucket; bucket <= lastBucket; bucket++) {
+                foreach (RollerSpawn spawn in AdmittedIn(cellX, cellZ, bucket)) {
+                    if (spawn.Drift > after && spawn.IsAliveAt(drift)) into.Add(spawn);
+                }
+            }
+        }
+
+        /// <summary>The cell's admitted spawns of <paramref name="bucket"/> in spawn order (worked out once, then cached).</summary>
+        public IReadOnlyList<RollerSpawn> AdmittedOf(long cellX, long cellZ, long bucket) {
+            return bucket < 0 ? Array.Empty<RollerSpawn>() : AdmittedIn(cellX, cellZ, bucket);
+        }
+
+        /// <summary>True when the spawn passed its bucket's admission pass.</summary>
+        public bool IsAdmitted(RollerSpawn spawn) {
+            foreach (RollerSpawn admitted in AdmittedIn(spawn.CellX, spawn.CellZ, spawn.Bucket)) {
+                if (admitted.Id == spawn.Id) return true;
+            }
+            return false;
+        }
+
+        /// <summary>Works out the cell's bucket of drift <paramref name="drift"/> ahead of time (a refresh then finds it cached).</summary>
+        public void Prefetch(long cellX, long cellZ, double drift) {
+            long bucket = BucketOf(cellX, cellZ, drift);
+            if (bucket >= 0) AdmittedIn(cellX, cellZ, bucket);
+        }
+
+        /// <summary>
+        /// Forgets the buckets no prop out at <paramref name="drift"/> or later can need, and every bucket of a cell
+        /// <paramref name="isKept"/> rejects (an unloaded one).
+        /// </summary>
+        public void Prune(double drift, Func<long, long, bool> isKept) {
+            if (isKept == null) throw new ArgumentNullException(nameof(isKept));
+
+            PruneFrom(_cache, drift, isKept, _backBuckets);
+            PruneFrom(_admitted, drift, isKept, _backBuckets);
+            _staleChains.Clear();
+            foreach ((long X, long Z) cell in _chains.Keys) {
+                if (!isKept(cell.X, cell.Z)) _staleChains.Add(cell);
+            }
+            foreach ((long X, long Z) cell in _staleChains) _chains.Remove(cell);
+        }
+
+        /// <summary>
+        /// Absolute point of the spawn's try <paramref name="attempt"/> (0 first): uniform inside its cell, clear of the
+        /// edge margin.
+        /// </summary>
+        public void PointOf(RollerSpawn spawn, int attempt, out double x, out double z) {
+            var random = new SplitMix64(StableHash.Mix(spawn.Id, StableHash.Mix(PointSalt, (ulong)attempt)));
+            double half = Math.Max(0.0, CellSize * 0.5 - Spawn.EdgeMargin);
+            x = RollerCellWorld.CentreOf(spawn.CellX, CellSize) + (random.NextDouble() * 2.0 - 1.0) * half;
+            z = RollerCellWorld.CentreOf(spawn.CellZ, CellSize) + (random.NextDouble() * 2.0 - 1.0) * half;
+        }
+
+        /// <summary>Sort comparison in spawn order (<see cref="RollerSpawn.IsBefore"/>).</summary>
+        public static int CompareSpawnOrder(RollerSpawn first, RollerSpawn second) {
+            return first.IsBefore(second) ? -1 : second.IsBefore(first) ? 1 : 0;
+        }
+
+        private static void AddAlive(RollerSpawn[] spawns, double drift, List<RollerSpawn> into) {
+            foreach (RollerSpawn spawn in spawns) {
+                if (spawn.IsAliveAt(drift)) into.Add(spawn);
+            }
+        }
+
+        private RollerSpawn[] Candidates(long cellX, long cellZ, long bucket) {
+            if (_cache.TryGetValue((cellX, cellZ, bucket), out RollerSpawn[] spawns)) return spawns;
+
+            spawns = DrawBucket(cellX, cellZ, bucket);
+            _cache[(cellX, cellZ, bucket)] = spawns;
+            return spawns;
+        }
+
+        // The bucket's seeded Poisson count of spawns at seeded drifts inside it (shifted by the cell's phase), each with its traits.
         private RollerSpawn[] DrawBucket(long cellX, long cellZ, long bucket) {
             ulong bucketSeed = StableHash.Mix(CellSeed(cellX, cellZ), StableHash.Mix(BucketSalt, (ulong)bucket));
             var random = new SplitMix64(bucketSeed);
             var spawns = new RollerSpawn[PoissonCount(random)];
+            double phase = PhaseOf(cellX, cellZ);
             for (int index = 0; index < spawns.Length; index++) {
-                double drift = (bucket + random.NextDouble()) * Spawn.BucketDrift;
+                double drift = (bucket + random.NextDouble()) * Spawn.BucketDrift - phase;
                 ulong id = StableHash.Mix(bucketSeed, (ulong)index + 1UL);
                 double size = RollerPath.SizeOf(id, Paths);
                 double share = RollerPath.GroundSpeedShareOf(id, size, Paths);
@@ -126,88 +240,32 @@ namespace AlpineLib.Procedural.Sky {
             return spawns;
         }
 
-        /// <summary>Admitted spawns of the cell out at <paramref name="drift"/> (appeared, whole life not yet rolled), in spawn order.</summary>
-        public void AliveAt(long cellX, long cellZ, double drift, List<RollerSpawn> into) {
-            if (into == null) throw new ArgumentNullException(nameof(into));
-
-            long lastBucket = BucketOf(drift);
-            for (long bucket = Math.Max(0, BucketOf(drift - Paths.MostLifeDrift)); bucket <= lastBucket; bucket++) AddAlive(AdmittedIn(cellX, cellZ, bucket), drift, into);
-        }
-
-        private static void AddAlive(RollerSpawn[] spawns, double drift, List<RollerSpawn> into) {
-            foreach (RollerSpawn spawn in spawns) {
-                if (spawn.IsAliveAt(drift)) into.Add(spawn);
-            }
-        }
-
-        // The bucket's admitted spawns in spawn order, worked out once per bucket.
+        // The bucket's admitted spawns: the cell's pass carried on bucket by bucket up to it (from the first bucket again
+        // when it was pruned past).
         private RollerSpawn[] AdmittedIn(long cellX, long cellZ, long bucket) {
             if (_admitted.TryGetValue((cellX, cellZ, bucket), out RollerSpawn[] admitted)) return admitted;
 
-            var candidates = new List<RollerSpawn>();
-            CandidatesIn(cellX, cellZ, bucket, candidates);
-            candidates.Sort(CompareSpawnOrder);
-            candidates.RemoveAll((spawn) => !IsAdmitted(spawn));
-            admitted = candidates.ToArray();
-            _admitted[(cellX, cellZ, bucket)] = admitted;
-            return admitted;
-        }
-
-        private void ClearCache() {
-            _cache.Clear();
-            _admitted.Clear();
-        }
-
-        /// <summary>True when fewer than the cap of earlier candidates of the spawn's cell are still out when it appears.</summary>
-        public bool IsAdmitted(RollerSpawn spawn) {
-            CollectBack(spawn.CellX, spawn.CellZ, spawn.Drift, Paths.MostLifeDrift);
-            return IsAdmittedAmong(spawn, _scratch);
-        }
-
-        /// <summary>
-        /// Absolute point of the spawn's try <paramref name="attempt"/> (0 first): the most upwind of
-        /// <see cref="RollerSpawnSettings.UpwindPicks"/> uniform points inside its cell, clear of the edge margin.
-        /// </summary>
-        public void PointOf(RollerSpawn spawn, int attempt, out double x, out double z) {
-            var random = new SplitMix64(StableHash.Mix(spawn.Id, StableHash.Mix(PointSalt, (ulong)attempt)));
-            double half = Math.Max(0.0, CellSize * 0.5 - Spawn.EdgeMargin);
-            double bestX = 0.0, bestZ = 0.0, bestAlong = double.PositiveInfinity;
-            for (int pick = 0; pick < Spawn.UpwindPicks; pick++) {
-                double localX = (random.NextDouble() * 2.0 - 1.0) * half;
-                double localZ = (random.NextDouble() * 2.0 - 1.0) * half;
-                double along = localX * Prevailing.X + localZ * Prevailing.Z;
-                if (along >= bestAlong) continue;
-
-                bestAlong = along;
-                bestX = localX;
-                bestZ = localZ;
+            if (!_chains.TryGetValue((cellX, cellZ), out RollerSpawnChain chain)) {
+                chain = new RollerSpawnChain();
+                _chains.Add((cellX, cellZ), chain);
             }
-            x = RollerCellWorld.CentreOf(spawn.CellX, CellSize) + bestX;
-            z = RollerCellWorld.CentreOf(spawn.CellZ, CellSize) + bestZ;
-        }
-
-        // Every candidate of the cell from `reach` drift metres before `drift` up to its bucket, in spawn order.
-        private void CollectBack(long cellX, long cellZ, double drift, double reach) {
-            _scratch.Clear();
-            long lastBucket = BucketOf(drift);
-            long firstBucket = Math.Max(0, BucketOf(drift - reach));
-            for (long bucket = firstBucket; bucket <= lastBucket; bucket++) CandidatesIn(cellX, cellZ, bucket, _scratch);
-
-            _scratch.Sort(CompareSpawnOrder);
-        }
-
-        private bool IsAdmittedAmong(RollerSpawn spawn, List<RollerSpawn> candidates) {
-            int stillOut = 0;
-            foreach (RollerSpawn earlier in candidates) {
-                if (!earlier.IsBefore(spawn)) break;
-                if (earlier.EndDrift > spawn.Drift) stillOut++;
+            if (bucket < chain.NextBucket) chain.Restart();
+            while (chain.NextBucket <= bucket) {
+                long next = chain.NextBucket;
+                _kept.Clear();
+                chain.Admit(DrawBucket(cellX, cellZ, next), Spawn.MaxPerCell, _kept);
+                _admitted[(cellX, cellZ, next)] = _kept.ToArray();
             }
-            return stillOut < Spawn.MaxPerCell;
+            return _admitted[(cellX, cellZ, bucket)];
         }
 
-        /// <summary>Sort comparison in spawn order (<see cref="RollerSpawn.IsBefore"/>).</summary>
-        public static int CompareSpawnOrder(RollerSpawn first, RollerSpawn second) {
-            return first.IsBefore(second) ? -1 : second.IsBefore(first) ? 1 : 0;
+        // Drops a cache's buckets older than `keep` buckets before the drift's, or of cells no longer kept.
+        private void PruneFrom(Dictionary<(long X, long Z, long Bucket), RollerSpawn[]> cache, double drift, Func<long, long, bool> isKept, int keep) {
+            _stale.Clear();
+            foreach ((long X, long Z, long Bucket) key in cache.Keys) {
+                if (!isKept(key.X, key.Z) || key.Bucket < BucketOf(key.X, key.Z, drift) - keep) _stale.Add(key);
+            }
+            foreach ((long X, long Z, long Bucket) key in _stale) cache.Remove(key);
         }
 
         private ulong CellSeed(long cellX, long cellZ) {

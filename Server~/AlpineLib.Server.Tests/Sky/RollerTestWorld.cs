@@ -49,6 +49,19 @@ namespace AlpineLib.Server.Tests.Sky {
             return Surface(x, z);
         }
 
+        public bool StopsNear(double x, double z, double radius, double reach, List<RollerDisc> into) {
+            foreach (double[] disc in _stops) {
+                var stop = new RollerDisc(disc[0], disc[1], disc[2]);
+                if (stop.ClearanceOf(x, z, radius) <= reach) into.Add(stop);
+            }
+            return x + reach + radius <= EdgeX;
+        }
+
+        /// <summary>Least gap between a ball of <paramref name="radius"/> at (x, z) and any stop disc (positive infinity: none).</summary>
+        public double Clearance(double x, double z, double radius) {
+            return -Penetration(x, z, radius);
+        }
+
         /// <summary>How far a ball of <paramref name="radius"/> at (x, z) reaches into the nearest stop disc (negative: clear).</summary>
         public double Penetration(double x, double z, double radius) {
             double worst = double.NegativeInfinity;

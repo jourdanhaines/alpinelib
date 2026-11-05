@@ -4,10 +4,11 @@ using AlpineLib.Procedural.Noise;
 
 namespace AlpineLib.Procedural.Sky {
     /// <summary>
-    /// The heading of a wind-rolled prop along its roll: the prevailing wind turned by a seeded noise wander (its
-    /// wavelength drawn per prop) plus seeded course changes eased in over a few metres, the sum held within
-    /// ±<see cref="RollerPathSettings.WanderDegrees"/>. The direction bends the prevailing unit vector by the offset's
-    /// tangent (a fixed series), so the walk is IEEE-exact on every client. Pure data per prop, any thread.
+    /// The heading of a wind-rolled prop along its roll: the wind (the prevailing direction, or the live one a
+    /// <see cref="RollerPath"/> follows) turned by a seeded noise wander (its wavelength drawn per prop) plus seeded
+    /// course changes eased in over a few metres, the sum held within ±<see cref="RollerPathSettings.WanderDegrees"/>.
+    /// The direction bends the wind's unit vector by the offset's tangent (a fixed series), so the walk is IEEE-exact on
+    /// every client. Pure data per prop, any thread.
     /// </summary>
     /// <remarks>Offsets are radians clockwise from the prevailing direction seen from above (x East, z North).</remarks>
     public sealed class RollerWalk {
@@ -58,9 +59,17 @@ namespace AlpineLib.Procedural.Sky {
 
         /// <summary>Unit heading after <paramref name="distance"/> rolled metres.</summary>
         public void DirectionAt(double distance, out double x, out double z) {
-            double bend = WindField.SeriesTangent(OffsetAt(distance));
-            double bentX = _prevailingX + _prevailingZ * bend;
-            double bentZ = _prevailingZ - _prevailingX * bend;
+            Bend(_prevailingX, _prevailingZ, OffsetAt(distance), out x, out z);
+        }
+
+        /// <summary>
+        /// Unit direction <paramref name="offset"/> radians clockwise (seen from above) of the unit direction
+        /// (<paramref name="baseX"/>, <paramref name="baseZ"/>), through the tangent series so it is IEEE-exact; |offset| under 90°.
+        /// </summary>
+        public static void Bend(double baseX, double baseZ, double offset, out double x, out double z) {
+            double bend = WindField.SeriesTangent(offset);
+            double bentX = baseX + baseZ * bend;
+            double bentZ = baseZ - baseX * bend;
             double length = Math.Sqrt(bentX * bentX + bentZ * bentZ);
             x = bentX / length;
             z = bentZ / length;

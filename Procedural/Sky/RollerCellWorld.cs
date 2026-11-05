@@ -68,19 +68,49 @@ namespace AlpineLib.Procedural.Sky {
             if (stepX == 0 && stepZ == 0) return false;
 
             CellOf(x, z, CellSize, out long cellX, out long cellZ);
-            for (int dx = Math.Min(0, stepX); dx <= Math.Max(0, stepX); dx++) {
-                if (IsBlockedInColumn(x, z, radius, cellX + dx, cellZ, dx == 0, stepZ)) return true;
+            for (int column = Math.Min(0, stepX); column <= Math.Max(0, stepX); column++) {
+                if (IsBlockedInColumn(x, z, radius, cellX + column, cellZ, column == 0, stepZ)) return true;
             }
             return false;
         }
 
         // The neighbours in one column of cells (the point's own cell skipped) that stop the ball.
         private bool IsBlockedInColumn(double x, double z, double radius, long cellX, long cellZ, bool isOwnColumn, int stepZ) {
-            for (int dz = Math.Min(0, stepZ); dz <= Math.Max(0, stepZ); dz++) {
-                if ((isOwnColumn && dz == 0) || !_cells.TryGetValue((cellX, cellZ + dz), out IRollerCell neighbour)) continue;
-                if (neighbour.BlockAt(x - CentreOf(cellX, CellSize), z - CentreOf(cellZ + dz, CellSize), radius) == RollerBlock.Stop) return true;
+            for (int row = Math.Min(0, stepZ); row <= Math.Max(0, stepZ); row++) {
+                if ((isOwnColumn && row == 0) || !_cells.TryGetValue((cellX, cellZ + row), out IRollerCell neighbour)) continue;
+                if (neighbour.BlockAt(x - CentreOf(cellX, CellSize), z - CentreOf(cellZ + row, CellSize), radius) == RollerBlock.Stop) return true;
             }
             return false;
+        }
+
+        /// <summary>
+        /// The round stops of every cell whose stops may reach within <paramref name="reach"/> of the point (its own and
+        /// the neighbours within <paramref name="reach"/> plus <see cref="BlockReach"/>), in absolute coordinates; false
+        /// when one of those cells is not loaded.
+        /// </summary>
+        public bool StopsNear(double x, double z, double radius, double reach, List<RollerDisc> into) {
+            if (into == null) throw new ArgumentNullException(nameof(into));
+
+            double span = Math.Max(0.0, reach) + BlockReach + radius;
+            CellOf(x - span, z - span, CellSize, out long fromX, out long fromZ);
+            CellOf(x + span, z + span, CellSize, out long toX, out long toZ);
+            bool isComplete = true;
+            for (long cellX = fromX; cellX <= toX; cellX++) {
+                for (long cellZ = fromZ; cellZ <= toZ; cellZ++) isComplete &= AddStopsOf(cellX, cellZ, x, z, radius, reach, into);
+            }
+            return isComplete;
+        }
+
+        // One cell's round stops near absolute (x, z), moved into the world's plane; false when the cell is not loaded.
+        private bool AddStopsOf(long cellX, long cellZ, double x, double z, double radius, double reach, List<RollerDisc> into) {
+            if (!_cells.TryGetValue((cellX, cellZ), out IRollerCell cell)) return false;
+
+            double centreX = CentreOf(cellX, CellSize), centreZ = CentreOf(cellZ, CellSize);
+            int first = into.Count;
+            cell.StopsNear(x - centreX, z - centreZ, radius, reach, into);
+            for (int index = first; index < into.Count; index++) into[index] = into[index].Moved(centreX, centreZ);
+
+            return true;
         }
 
         public RollerSupport SupportAt(double x, double z, double radius) {
