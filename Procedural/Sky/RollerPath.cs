@@ -1,27 +1,23 @@
 using System;
-using AlpineLib.Procedural.Noise;
+using System.Collections.Generic;
 
 namespace AlpineLib.Procedural.Sky {
     /// <summary>
-    /// One wind-rolled prop's track: a near-straight line along the prevailing wind through its scattered slot, wobbling
-    /// sideways, clipped where it would leave the caller's clear area, with the caller's support (height, contact normal,
-    /// obstacles) sampled along it. The prop rolls in contact, its outline (<see cref="Profile"/>) bumping it up and down,
-    /// and leaves the ground only at events (<see cref="Jumps"/>): obstacle and crest runs of the support and seeded bumps,
-    /// each with one small bounce. Pure data built once per prop (worker-safe); <see cref="RollerPose"/> places the prop
-    /// on it from the wind's drift.
+    /// One wind-rolled prop's roll from its spawn point: a seeded walk (<see cref="RollerWalk"/>) along the prevailing
+    /// wind across the caller's world (<see cref="IRollerWorld"/>), run until the prop has rolled its life, meets
+    /// something too big to hop or reaches the edge of the loaded world (<see cref="End"/>), with the world's support
+    /// (height, contact normal, obstacles) sampled along it. The prop rolls in contact, its outline (<see cref="Profile"/>)
+    /// bumping it up and down, and leaves the ground only at events (<see cref="Jumps"/>): obstacle and crest runs of the
+    /// support (rail heads, low rocks, embankment shoulders) and seeded bumps, each with one small bounce. It scales in
+    /// over its first <see cref="FadeLength"/> metres and out over its last. Pure data built once per prop (worker-safe);
+    /// <see cref="RollerPose"/> places the prop on it from the rolled distance.
     /// </summary>
     /// <remarks>
-    /// Coordinates are the caller's plane (x, z), metres, with the wind's x East and z North. A roll cycles forever:
-    /// <see cref="Length"/> metres of rolling (a heavy prop may sit <see cref="StallGap"/> cycle metres at one landing on
-    /// the way), then <see cref="RestGap"/> cycle metres settled at the end, then it scales in again at the start. The
-    /// cycle position is the wind's drift along the path × the prop's own ground speed share plus a seeded phase, reduced
-    /// modulo the cycle in double (<see cref="CycleOf"/>), so every client agrees without sync. Size, speed, wobble, stall,
-    /// squash and tilt are drawn from their own seeded stream (<see cref="SizeOf"/>), so they never move the roll's line.
+    /// Coordinates are the world's plane (x, z), metres, x East and z North. Size, speed, squash and tilt are drawn from
+    /// their own seeded stream (<see cref="SizeOf"/>, <see cref="GroundSpeedShareOf"/>), so a spawner knows them before
+    /// any world does, and they never move the walk.
     /// </remarks>
     public sealed class RollerPath {
-        private const double DegreesToRadians = Math.PI / 180.0;
-        private const double SlopeStep = 0.25;
-        private const int WobbleOctaves = 2;
         private const ulong SizeStream = 0x53495A45UL;
         private const ulong TraitStream = 0x54524149UL;
         private const ulong JumpStream = 0x4A554D50UL;
@@ -29,10 +25,10 @@ namespace AlpineLib.Procedural.Sky {
         // Steepest contact normal the outline is leaned to (a ball touching a rail head's side): 50° off up.
         private const double LeastNormalUp = 0.6428;
 
-        private readonly ulong _wobbleSeed;
-        private readonly FbmSettings _wobbleNoise;
-        private readonly double _wobbleAmplitude;
-        private readonly double _wobbleOrigin;
+        private double[] _x;
+        private double[] _z;
+        private double[] _headingX;
+        private double[] _headingZ;
         private double[] _heights;
         private double[] _pitch;
         private double[] _side;
@@ -44,23 +40,17 @@ namespace AlpineLib.Procedural.Sky {
         private double[] _detail;
         private RollerJump[] _jumps;
 
-        private RollerPath(ulong seed, double slotX, double slotZ, double directionX, double directionZ, double radius, double wobbleAmplitude,
-                double groundSpeedShare, RollerPathSettings settings) {
+        private RollerPath(ulong seed, double startX, double startZ, double radius, double size, double heft, double groundSpeedShare, RollerPathSettings settings, RollerWalk walk) {
             Seed = seed;
-            SlotX = slotX;
-            SlotZ = slotZ;
-            DirectionX = directionX;
-            DirectionZ = directionZ;
+            StartX = startX;
+            StartZ = startZ;
             Radius = radius;
+            Size = size;
+            Heft = heft;
             GroundSpeedShare = groundSpeedShare;
-            ScaleDistance = settings.ScaleDistance;
-            RockAngle = settings.RockAngle;
-            RockPeriod = settings.RockPeriod;
             ProfileStep = settings.ProfileStep;
-            _wobbleAmplitude = wobbleAmplitude;
-            _wobbleSeed = StableHash.Mix(seed, 0x574F42UL);
-            _wobbleNoise = new FbmSettings(WobbleOctaves, 1.0 / settings.WobblePeriod);
-            _wobbleOrigin = _wobbleAmplitude * Fbm.Sample1(_wobbleSeed, 0.0, _wobbleNoise);
+            Walk = walk;
+            _x = _z = _headingX = _headingZ = Array.Empty<double>();
             _heights = _pitch = _side = _inverseUp = Array.Empty<double>();
             _besideHeights = _besidePitch = _besideSide = _besideInverseUp = _detail = Array.Empty<double>();
             _jumps = Array.Empty<RollerJump>();
@@ -70,15 +60,11 @@ namespace AlpineLib.Procedural.Sky {
 
         public ulong Seed { get; }
 
-        /// <summary>The scattered slot the line runs through.</summary>
-        public double SlotX { get; }
-        public double SlotZ { get; }
+        /// <summary>Where the roll starts (its spawn point).</summary>
+        public double StartX { get; }
+        public double StartZ { get; }
 
-        /// <summary>Unit direction of the roll (downwind).</summary>
-        public double DirectionX { get; }
-        public double DirectionZ { get; }
-
-        /// <summary>Ball radius, metres (the caller's radius, already sized): the support and the clipping are for this ball.</summary>
+        /// <summary>Ball radius, metres (the caller's radius, already sized): the support and the blocking are for this ball.</summary>
         public double Radius { get; }
 
         /// <summary>The prop's outline as it rolls (a ball of <see cref="Radius"/> without a shape).</summary>
@@ -88,19 +74,16 @@ namespace AlpineLib.Procedural.Sky {
         public double RollRadius { get; private set; }
 
         /// <summary>The prop's leaps in rolled order, never overlapping; between them it rolls in contact.</summary>
-        public System.Collections.Generic.IReadOnlyList<RollerJump> Jumps => _jumps;
+        public IReadOnlyList<RollerJump> Jumps => _jumps;
+
+        /// <summary>The heading the roll follows.</summary>
+        public RollerWalk Walk { get; }
 
         /// <summary>The prop's size over its kind's mesh (the mesh scale; <see cref="Radius"/> includes it).</summary>
-        public double Size { get; private set; } = 1.0;
+        public double Size { get; }
 
         /// <summary>Where the size sits in the settings' range, 0 smallest .. 1 biggest; heavier props roll slower.</summary>
-        public double Heft { get; private set; }
-
-        /// <summary>Rolled metres from the start where the prop stalls (in contact, clear of every jump), or -1 when it never does.</summary>
-        public double StallAt { get; private set; } = -1.0;
-
-        /// <summary>Cycle metres the stall lasts (0 without one).</summary>
-        public double StallGap { get; private set; }
+        public double Heft { get; }
 
         /// <summary>Mesh scale per local axis, each in [1 - max squash, 1] with the widest at 1.</summary>
         public double SquashX { get; private set; } = 1.0;
@@ -110,20 +93,17 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Seeded tip of the mesh about its local x before the spin, radians.</summary>
         public double Tilt { get; private set; }
 
-        /// <summary>True when the prop stalls once mid-roll.</summary>
-        public bool HasStall => StallAt >= 0.0;
+        /// <summary>Seeded yaw of the prop about up before it rolls, radians.</summary>
+        public double Spin { get; private set; }
 
-        /// <summary>Where the roll starts along the line from the slot, metres (≤ 0: upwind of it).</summary>
-        public double StartOffset { get; private set; }
-
-        /// <summary>Rolled metres from the start to the rest point.</summary>
+        /// <summary>Rolled metres from the start to the end.</summary>
         public double Length { get; private set; }
 
-        /// <summary>Cycle metres spent settled at the end before reappearing at the start.</summary>
-        public double RestGap { get; private set; }
+        /// <summary>Why the roll ends there.</summary>
+        public RollerEnd End { get; private set; }
 
-        /// <summary>Seeded cycle offset, metres in [0, <see cref="Cycle"/>).</summary>
-        public double Phase { get; private set; }
+        /// <summary>Rolled metres the prop scales in over at the start and out over before the end.</summary>
+        public double FadeLength { get; private set; }
 
         /// <summary>Chance this path's seeded bump spots fire.</summary>
         public double BumpChance { get; private set; }
@@ -131,24 +111,14 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Highest rise of any jump's arc over its line, metres.</summary>
         public double HighestJump { get; private set; }
 
-        /// <summary>Seeded yaw of the prop about up before it rolls, radians.</summary>
-        public double Spin { get; private set; }
-
+        /// <summary>Share of the wind's drift along the prevailing direction the prop rolls.</summary>
         public double GroundSpeedShare { get; }
-        public double ScaleDistance { get; }
-        public double RockAngle { get; }
-        public double RockPeriod { get; }
+
         public double ProfileStep { get; }
-
-        /// <summary>Most the wobble swings either side of its mean, metres; the roll strays up to twice this from its line.</summary>
-        public double WobbleAmplitude => _wobbleAmplitude;
-
-        /// <summary>Length of one roll, stall and rest cycle, metres.</summary>
-        public double Cycle => Length + StallGap + RestGap;
 
         /// <summary>
         /// Size of the prop seeded <paramref name="seed"/>: lerp(min, max, u^bias) from its own stream, so a caller can size
-        /// the ball (radius = mesh radius × size) before <see cref="Build"/> clips its roll for that radius.
+        /// the ball (radius = mesh radius × size) before <see cref="Build"/> rolls it for that radius.
         /// </summary>
         public static double SizeOf(ulong seed, RollerPathSettings settings) {
             if (settings == null) throw new ArgumentNullException(nameof(settings));
@@ -157,140 +127,86 @@ namespace AlpineLib.Procedural.Sky {
             return Lerp(settings.MinSize, settings.MaxSize, Math.Pow(share, settings.SizeBias));
         }
 
-        /// <summary>
-        /// <see cref="Build(ulong, double, double, double, double, WindVector, RollerPathSettings, Func{double, double, bool}, Func{double, double, RollerSupport}, RollerShape)"/>
-        /// for a ball of size 1 (the caller's radius as it is) on the height field <paramref name="groundHeight"/>.
-        /// </summary>
-        public static RollerPath Build(ulong seed, double slotX, double slotZ, double radius, WindVector prevailing, RollerPathSettings settings,
-                Func<double, double, bool> isClear, Func<double, double, double> groundHeight) {
-            return Build(seed, slotX, slotZ, radius, 1.0, prevailing, settings, isClear, groundHeight);
-        }
-
-        /// <summary>
-        /// <see cref="Build(ulong, double, double, double, double, WindVector, RollerPathSettings, Func{double, double, bool}, Func{double, double, RollerSupport}, RollerShape)"/>
-        /// for a ball on the height field <paramref name="groundHeight"/> (<see cref="RollerSupport.BallOnHeights"/>, no obstacles).
-        /// </summary>
-        public static RollerPath Build(ulong seed, double slotX, double slotZ, double radius, double size, WindVector prevailing, RollerPathSettings settings,
-                Func<double, double, bool> isClear, Func<double, double, double> groundHeight) {
-            if (groundHeight == null) throw new ArgumentNullException(nameof(groundHeight));
-
-            return Build(seed, slotX, slotZ, radius, size, prevailing, settings, isClear, (x, z) => RollerSupport.BallOnHeights(groundHeight, x, z, radius), null);
-        }
-
-        /// <summary>
-        /// The roll of the prop seeded <paramref name="seed"/> at slot (<paramref name="slotX"/>, <paramref name="slotZ"/>) of
-        /// ball <paramref name="radius"/> (sized: the mesh radius × <paramref name="size"/>, see <see cref="SizeOf"/>) and outline
-        /// <paramref name="outline"/> at size 1 (null: a plain ball), heading along <paramref name="prevailing"/> bent by up to the
-        /// settings' jitter, clipped where <paramref name="isClear"/> says the centre may not go and resting on
-        /// <paramref name="support"/> (a ball of <paramref name="radius"/> over each point); null when the slot is blocked
-        /// or the clear roll is shorter than <see cref="RollerPathSettings.MinClippedLength"/>.
-        /// </summary>
-        public static RollerPath Build(ulong seed, double slotX, double slotZ, double radius, double size, WindVector prevailing, RollerPathSettings settings,
-                Func<double, double, bool> isClear, Func<double, double, RollerSupport> support, RollerShape outline) {
-            return Build(seed, slotX, slotZ, radius, size, prevailing, settings, isClear, support, outline, null);
-        }
-
-        /// <summary>
-        /// <see cref="Build(ulong, double, double, double, double, WindVector, RollerPathSettings, Func{double, double, bool}, Func{double, double, RollerSupport}, RollerShape)"/>
-        /// that, where <paramref name="support"/> is rough, drops the posed outline onto <paramref name="surface"/> (the
-        /// caller's height under a point, null: none) and keeps the difference to the contact model as a correction.
-        /// </summary>
-        public static RollerPath Build(ulong seed, double slotX, double slotZ, double radius, double size, WindVector prevailing, RollerPathSettings settings,
-                Func<double, double, bool> isClear, Func<double, double, RollerSupport> support, RollerShape outline, Func<double, double, double> surface) {
+        /// <summary>Ground speed share of the prop seeded <paramref name="seed"/> at <paramref name="size"/>: heavier props slower, jittered.</summary>
+        public static double GroundSpeedShareOf(ulong seed, double size, RollerPathSettings settings) {
             if (settings == null) throw new ArgumentNullException(nameof(settings));
-            if (isClear == null) throw new ArgumentNullException(nameof(isClear));
-            if (support == null) throw new ArgumentNullException(nameof(support));
+
+            return ShareOf(new SplitMix64(StableHash.Mix(seed, TraitStream)).NextDouble(), HeftOf(size, settings), settings);
+        }
+
+        /// <summary>
+        /// The roll of the prop seeded <paramref name="seed"/> from (<paramref name="startX"/>, <paramref name="startZ"/>) of
+        /// ball <paramref name="radius"/> (sized: the mesh radius × <paramref name="size"/>, see <see cref="SizeOf"/>) and
+        /// outline <paramref name="outline"/> at size 1 (null: a plain ball), walking along <paramref name="prevailing"/> for
+        /// at most <paramref name="life"/> metres over <paramref name="world"/>; null when the start is blocked or the roll
+        /// stops sooner than <see cref="RollerPathSettings.MinClippedLength"/> (a roll cut by the world's edge is kept).
+        /// </summary>
+        public static RollerPath Build(ulong seed, double startX, double startZ, double radius, double size, double life, WindVector prevailing,
+                RollerPathSettings settings, IRollerWorld world, RollerShape outline) {
+            if (settings == null) throw new ArgumentNullException(nameof(settings));
+            if (world == null) throw new ArgumentNullException(nameof(world));
             if (!(radius > 0.0)) throw new ArgumentOutOfRangeException(nameof(radius), radius, "Must be positive.");
             if (!(size > 0.0)) throw new ArgumentOutOfRangeException(nameof(size), size, "Must be positive.");
+            if (!(life > 0.0)) throw new ArgumentOutOfRangeException(nameof(life), life, "Must be positive.");
             if (!(prevailing.Length > 0.0)) throw new ArgumentException("The prevailing direction must not be zero.", nameof(prevailing));
             settings.Validate();
+            if (world.BlockAt(startX, startZ, radius) != RollerBlock.None) return null;
 
-            var random = new SplitMix64(seed);
-            double bend = WindField.SeriesTangent(settings.DirectionJitterDegrees * DegreesToRadians) * (random.NextDouble() * 2.0 - 1.0);
-            double baseX = prevailing.X / prevailing.Length;
-            double baseZ = prevailing.Z / prevailing.Length;
-            double x = baseX + baseZ * bend;
-            double z = baseZ - baseX * bend;
-            double norm = Math.Sqrt(x * x + z * z);
             var traits = new SplitMix64(StableHash.Mix(seed, TraitStream));
             double heft = HeftOf(size, settings);
-            double speedShare = Clamp01(heft * (1.0 - settings.SpeedJitter) + traits.NextDouble() * settings.SpeedJitter);
-            double groundSpeedShare = Lerp(settings.MaxGroundSpeedShare, settings.MinGroundSpeedShare, speedShare);
-            double wobble = settings.WobbleAmplitude * Lerp(settings.MinWobbleShare, 1.0, traits.NextDouble());
-            var shape = new RollerPath(seed, slotX, slotZ, x / norm, z / norm, radius, wobble, groundSpeedShare, settings);
+            double share = ShareOf(traits.NextDouble(), heft, settings);
+            var walk = new RollerWalk(seed, prevailing, settings, life);
+            var shape = new RollerPath(seed, startX, startZ, radius, size, heft, share, settings, walk) {
+                Spin = new SplitMix64(seed).NextDouble() * 2.0 * Math.PI,
+            };
+            shape.WalkClear(world, life, settings.ClipStep);
+            if (shape.Length < settings.ProfileStep || (shape.End != RollerEnd.Edge && shape.Length < settings.MinClippedLength)) return null;
 
-            double target = Lerp(settings.MinLength, settings.MaxLength, random.NextDouble());
-            double restGap = Lerp(settings.MinRestGap, settings.MaxRestGap, random.NextDouble());
-            double phaseShare = random.NextDouble();
-            double spin = random.NextDouble() * 2.0 * Math.PI;
-            if (!shape.IsClearAt(0.0, isClear)) return null;
-
-            double clipStep = settings.ClipStep;
-            double start = shape.WalkClear(0.0, -clipStep, -settings.UpwindReach, isClear);
-            double end = shape.WalkClear(start, clipStep, start + target, isClear);
-            double length = end - start;
-            if (length < settings.MinClippedLength) return null;
-
-            shape.StartOffset = start;
-            shape.Length = length;
-            shape.RestGap = restGap;
-            shape.Size = size;
-            shape.Heft = heft;
-            shape.Spin = spin;
             shape.DrawShape(traits, settings);
-            shape.Profile = outline != null ? RollerProfile.Of(outline, size, shape.SquashX, shape.SquashY, shape.SquashZ, spin, shape.Tilt) : RollerProfile.Ball(radius);
+            shape.Profile = outline != null ? RollerProfile.Of(outline, size, shape.SquashX, shape.SquashY, shape.SquashZ, shape.Spin, shape.Tilt) : RollerProfile.Ball(radius);
             shape.RollRadius = shape.Profile.MeanExtent;
-            RollerObstacle[] obstacles = shape.SampleSupport(support, out bool[] rough);
-            if (surface != null) shape.DropOnRough(rough, surface);
+            RollerObstacle[] obstacles = shape.SampleSupport(world, out bool[] rough);
+            shape.DropOnRough(rough, world);
             var planner = new RollerJumpPlanner(shape, settings, new SplitMix64(StableHash.Mix(seed, JumpStream)));
             shape.BumpChance = planner.BumpChance;
-            double kept = planner.Plan(obstacles, out shape._jumps);
-            if (kept < settings.MinClippedLength) return null;
+            shape.Length = planner.Plan(obstacles, out shape._jumps);
+            if (shape.End != RollerEnd.Edge && shape.Length < settings.MinClippedLength) return null;
+            if (shape.Length < settings.ProfileStep) return null;
 
-            shape.Length = kept;
-            shape.HighestJump = 0.0;
             foreach (RollerJump jump in shape._jumps) shape.HighestJump = Math.Max(shape.HighestJump, jump.Height);
-            shape.DrawStall(traits, settings);
-            shape.Phase = phaseShare * shape.Cycle;
+            shape.FadeLength = Math.Min(share * settings.FadeDrift, shape.Length * 0.5);
             return shape;
         }
 
-        /// <summary>
-        /// Rolled metres at cycle position <paramref name="cycle"/>: the cycle itself up to the stall, held at the stall's
-        /// spot through it, the cycle less the stall after; past <see cref="Length"/> once resting. Never decreases.
-        /// </summary>
-        public double RolledAt(double cycle) {
-            if (!HasStall || cycle <= StallAt) return cycle;
-
-            return cycle < StallAt + StallGap ? StallAt : cycle - StallGap;
+        /// <summary>The roll of <paramref name="spawn"/> from absolute (<paramref name="x"/>, <paramref name="z"/>), its size, life and seed taken from the spawn.</summary>
+        public static RollerPath Build(RollerSpawn spawn, double x, double z, double radius, WindVector prevailing, RollerPathSettings settings, IRollerWorld world,
+                RollerShape outline) {
+            return Build(spawn.Id, x, z, radius, spawn.Size, spawn.Life, prevailing, settings, world, outline);
         }
 
-        /// <summary>The wind's drift (metres, x East z North) along the roll's direction.</summary>
-        public double AlongOf(WindVector displacement) {
-            return displacement.X * DirectionX + displacement.Z * DirectionZ;
-        }
-
-        /// <summary>Cycle position for drift <paramref name="along"/> metres down the path: (along × share + phase) mod cycle, in double.</summary>
-        public double CycleOf(double along) {
-            double cycle = Cycle;
-            double value = along * GroundSpeedShare + Phase;
-            double reduced = value - Math.Floor(value / cycle) * cycle;
-            return reduced >= cycle || reduced < 0.0 ? 0.0 : reduced;
-        }
-
-        /// <summary>Sideways offset from the line at <paramref name="lineOffset"/> metres from the slot: 0 at the slot, within 2 × amplitude.</summary>
-        public double Wobble(double lineOffset) {
-            return _wobbleAmplitude * Fbm.Sample1(_wobbleSeed, lineOffset, _wobbleNoise) - _wobbleOrigin;
-        }
-
-        /// <summary>Slope of the wobble (sideways metres per metre) at <paramref name="lineOffset"/>.</summary>
-        public double WobbleSlope(double lineOffset) {
-            return (Wobble(lineOffset + SlopeStep) - Wobble(lineOffset - SlopeStep)) / (2.0 * SlopeStep);
-        }
-
-        /// <summary>Ground position of the centre after rolling <paramref name="distance"/> metres from the start.</summary>
+        /// <summary>Ground position of the centre after rolling <paramref name="distance"/> metres from the start (clamped to the roll).</summary>
         public void GroundPoint(double distance, out double x, out double z) {
-            PointOnLine(StartOffset + distance, out x, out z);
+            Locate(distance, out int index, out double share);
+            x = _x[index] + (_x[index + 1] - _x[index]) * share;
+            z = _z[index] + (_z[index + 1] - _z[index]) * share;
+        }
+
+        /// <summary>Unit heading of the roll after <paramref name="distance"/> metres.</summary>
+        public void HeadingAt(double distance, out double x, out double z) {
+            Locate(distance, out int index, out double share);
+            double headingX = _headingX[index] + (_headingX[index + 1] - _headingX[index]) * share;
+            double headingZ = _headingZ[index] + (_headingZ[index + 1] - _headingZ[index]) * share;
+            double length = Math.Sqrt(headingX * headingX + headingZ * headingZ);
+            x = headingX / length;
+            z = headingZ / length;
+        }
+
+        /// <summary>Visible share of the prop's size at <paramref name="distance"/>: scaling in over the first fade, out over the last, 0 off the roll.</summary>
+        public double FadeAt(double distance) {
+            if (distance < 0.0 || distance > Length) return 0.0;
+            if (!(FadeLength > 0.0)) return 1.0;
+
+            return Math.Min(SmoothStep(distance / FadeLength), SmoothStep((Length - distance) / FadeLength));
         }
 
         /// <summary>The ball's support height (centre less <see cref="Radius"/>) under the centre at <paramref name="distance"/>, linear between samples.</summary>
@@ -298,7 +214,7 @@ namespace AlpineLib.Procedural.Sky {
             return Sampled(_heights, distance);
         }
 
-        /// <summary>Roll angle at <paramref name="distance"/> rolled metres, radians (before any rocking).</summary>
+        /// <summary>Roll angle at <paramref name="distance"/> rolled metres, radians.</summary>
         public double AngleAt(double distance) {
             return distance / RollRadius;
         }
@@ -312,7 +228,7 @@ namespace AlpineLib.Procedural.Sky {
             return ContactHeight(distance, angle, 1.0);
         }
 
-        /// <summary><see cref="ContactHeight(double, double)"/> for the prop drawn at <paramref name="scale"/> of its size (scaling in or out), still touching.</summary>
+        /// <summary><see cref="ContactHeight(double, double)"/> for the prop drawn at <paramref name="scale"/> of its size (fading in or out), still touching.</summary>
         public double ContactHeight(double distance, double angle, double scale) {
             double onSupport = OnSurface(_heights, _pitch, _side, _inverseUp, distance, angle, scale);
             double model = Math.Max(onSupport, OnSurface(_besideHeights, _besidePitch, _besideSide, _besideInverseUp, distance, angle, scale));
@@ -352,82 +268,98 @@ namespace AlpineLib.Procedural.Sky {
         }
 
         /// <summary>
-        /// Box (x, y, z, metres) every pose's centre stays in at scale 1, padded by <paramref name="pad"/> on every
-        /// side: the line's ends widened by the wobble, the contact heights' range (down to the ground itself, for a prop
-        /// scaled to nothing) and lifted by the highest jump.
+        /// Box (x, y, z, metres) every pose's centre stays in at scale 1, padded by <paramref name="pad"/> on every side:
+        /// the walk's extent, the contact heights' range (down to the ground itself, for a prop scaled to nothing) and
+        /// lifted by the highest jump.
         /// </summary>
         public void Bounds(double pad, out double minX, out double minY, out double minZ, out double maxX, out double maxY, out double maxZ) {
-            double side = 2.0 * _wobbleAmplitude + pad;
-            GroundEnds(out double startX, out double startZ, out double endX, out double endZ);
-            minX = Math.Min(startX, endX) - side;
-            maxX = Math.Max(startX, endX) + side;
-            minZ = Math.Min(startZ, endZ) - side;
-            maxZ = Math.Max(startZ, endZ) + side;
+            int last = LastSample();
+            minX = minZ = double.PositiveInfinity;
+            maxX = maxZ = double.NegativeInfinity;
             double low = double.PositiveInfinity;
             double high = double.NegativeInfinity;
-            for (int index = 0; index < _heights.Length; index++) {
+            for (int index = 0; index <= last; index++) {
+                minX = Math.Min(minX, _x[index]);
+                maxX = Math.Max(maxX, _x[index]);
+                minZ = Math.Min(minZ, _z[index]);
+                maxZ = Math.Max(maxZ, _z[index]);
                 double centre = _heights[index] + Radius;
                 low = Math.Min(low, centre - Radius * _inverseUp[index]);
                 high = Math.Max(high, centre + (Profile.MaxSupport - Radius) * _inverseUp[index]);
                 high = Math.Max(high, _besideHeights[index] + Radius + (Profile.MaxSupport - Radius) * _besideInverseUp[index]);
             }
-            if (_heights.Length == 0) low = high = Radius;
+            minX -= pad;
+            minZ -= pad;
+            maxX += pad;
+            maxZ += pad;
             minY = low - pad;
             maxY = high + HighestJump + pad;
         }
 
-        // The straight line's points at the roll's start and end (no wobble).
-        private void GroundEnds(out double startX, out double startZ, out double endX, out double endZ) {
-            startX = SlotX + DirectionX * StartOffset;
-            startZ = SlotZ + DirectionZ * StartOffset;
-            endX = SlotX + DirectionX * (StartOffset + Length);
-            endZ = SlotZ + DirectionZ * (StartOffset + Length);
-        }
+        // Walks from the start in profile steps, testing the ball against the world every clip step, until the life is
+        // rolled or a test fails; the roll then ends at the last clear test.
+        private void WalkClear(IRollerWorld world, double life, double clipStep) {
+            double step = ProfileStep;
+            int every = Math.Max(1, (int)Math.Round(clipStep / step));
+            int most = Math.Max(1, (int)Math.Floor(life / step + 1e-9));
+            var xs = new List<double>(Math.Min(most, 8192) + 1) { StartX };
+            var zs = new List<double>(xs.Capacity) { StartZ };
+            Walk.DirectionAt(0.0, out double firstX, out double firstZ);
+            var hxs = new List<double>(xs.Capacity) { firstX };
+            var hzs = new List<double>(xs.Capacity) { firstZ };
+            int clear = 0;
+            End = RollerEnd.Life;
+            double x = StartX, z = StartZ;
+            for (int index = 1; index <= most; index++) {
+                Walk.DirectionAt((index - 0.5) * step, out double midX, out double midZ);
+                x += midX * step;
+                z += midZ * step;
+                Walk.DirectionAt(index * step, out double headingX, out double headingZ);
+                xs.Add(x);
+                zs.Add(z);
+                hxs.Add(headingX);
+                hzs.Add(headingZ);
+                if (index % every != 0 && index != most) continue;
 
-        private void PointOnLine(double lineOffset, out double x, out double z) {
-            double side = Wobble(lineOffset);
-            x = SlotX + DirectionX * lineOffset + DirectionZ * side;
-            z = SlotZ + DirectionZ * lineOffset - DirectionX * side;
-        }
-
-        private bool IsClearAt(double lineOffset, Func<double, double, bool> isClear) {
-            PointOnLine(lineOffset, out double x, out double z);
-            return isClear(x, z);
-        }
-
-        // The farthest offset from `from` toward `limit` in `step` strides whose every sample is clear. The last partial
-        // stride is tested at its end like every stride, so a footprint can only be grazed between samples (the gates' slack).
-        private double WalkClear(double from, double step, double limit, Func<double, double, bool> isClear) {
-            double reached = from;
-            int strides = (int)Math.Floor(Math.Abs(limit - from) / Math.Abs(step) + 1e-9);
-            for (int stride = 1; stride <= strides; stride++) {
-                double next = from + stride * step;
-                if (!IsClearAt(next, isClear)) return reached;
-
-                reached = next;
+                RollerBlock block = world.BlockAt(x, z, Radius);
+                if (block != RollerBlock.None) {
+                    End = block == RollerBlock.Edge ? RollerEnd.Edge : RollerEnd.Blocked;
+                    break;
+                }
+                clear = index;
             }
-            return reached != limit && IsClearAt(limit, isClear) ? limit : reached;
+            int count = clear + 1;
+            _x = Trimmed(xs, count);
+            _z = Trimmed(zs, count);
+            _headingX = Trimmed(hxs, count);
+            _headingZ = Trimmed(hzs, count);
+            Length = clear * step;
+        }
+
+        private static double[] Trimmed(List<double> values, int count) {
+            var array = new double[Math.Max(2, count)];
+            for (int index = 0; index < array.Length; index++) array[index] = values[Math.Min(index, values.Count - 1)];
+
+            return array;
         }
 
         // Support height, contact normal in the heading's frame (pitch about the roll axis, sideways sine, 1 / up share)
-        // and obstacle kind every profile step from the start to the end.
-        private RollerObstacle[] SampleSupport(Func<double, double, RollerSupport> support, out bool[] rough) {
-            int intervals = Math.Max(1, (int)Math.Ceiling(Length / ProfileStep - 1e-9));
-            _heights = new double[intervals + 1];
-            _pitch = new double[intervals + 1];
-            _side = new double[intervals + 1];
-            _inverseUp = new double[intervals + 1];
-            _besideHeights = new double[intervals + 1];
-            _besidePitch = new double[intervals + 1];
-            _besideSide = new double[intervals + 1];
-            _besideInverseUp = new double[intervals + 1];
-            var obstacles = new RollerObstacle[intervals + 1];
-            rough = new bool[intervals + 1];
-            for (int index = 0; index <= intervals; index++) {
-                double lineOffset = StartOffset + Math.Min(Length, index * ProfileStep);
-                PointOnLine(lineOffset, out double x, out double z);
-                RollerSupport sample = support(x, z);
-                RollerPose.Heading(this, WobbleSlope(lineOffset), out double headingX, out double headingZ);
+        // and obstacle kind at every walk sample from the start to the end.
+        private RollerObstacle[] SampleSupport(IRollerWorld world, out bool[] rough) {
+            int count = LastSample() + 1;
+            _heights = new double[count];
+            _pitch = new double[count];
+            _side = new double[count];
+            _inverseUp = new double[count];
+            _besideHeights = new double[count];
+            _besidePitch = new double[count];
+            _besideSide = new double[count];
+            _besideInverseUp = new double[count];
+            var obstacles = new RollerObstacle[count];
+            rough = new bool[count];
+            for (int index = 0; index < count; index++) {
+                RollerSupport sample = world.SupportAt(_x[index], _z[index], Radius);
+                double headingX = _headingX[index], headingZ = _headingZ[index];
                 FrameNormal(sample.NormalX, sample.NormalY, sample.NormalZ, headingX, headingZ, out _pitch[index], out _side[index], out _inverseUp[index]);
                 _heights[index] = sample.Height;
                 _besideHeights[index] = sample.HasBeside ? sample.BesideHeight : sample.Height;
@@ -441,7 +373,7 @@ namespace AlpineLib.Procedural.Sky {
 
         // At every rough sample, the posed outline's lower points dropped onto the point heights: the correction from the
         // contact model to the height where the first of them touches.
-        private void DropOnRough(bool[] rough, Func<double, double, double> surface) {
+        private void DropOnRough(bool[] rough, IRollerWorld world) {
             if (Profile.IsBall || Array.IndexOf(rough, true) < 0) return;
 
             _detail = new double[rough.Length];
@@ -451,16 +383,15 @@ namespace AlpineLib.Procedural.Sky {
                 double distance = Math.Min(Length, index * ProfileStep);
                 double angle = AngleAt(distance);
                 double model = ContactHeight(distance, angle);
-                double dropped = Dropped(distance, angle, surface);
+                double dropped = Dropped(index, angle, world);
                 if (!double.IsNegativeInfinity(dropped)) _detail[index] = dropped - model;
             }
         }
 
-        // Centre height at which the outline turned to `angle` over `distance` first touches the point heights below it.
-        private double Dropped(double distance, double angle, Func<double, double, double> surface) {
-            double lineOffset = StartOffset + distance;
-            PointOnLine(lineOffset, out double x, out double z);
-            RollerPose.Heading(this, WobbleSlope(lineOffset), out double headingX, out double headingZ);
+        // Centre height at which the outline turned to `angle` over sample `index` first touches the point heights below it.
+        private double Dropped(int index, double angle, IRollerWorld world) {
+            double x = _x[index], z = _z[index];
+            double headingX = _headingX[index], headingZ = _headingZ[index];
             double cos = Math.Cos(angle), sin = Math.Sin(angle);
             double lowest = -0.25 * RollRadius;
             double best = double.NegativeInfinity;
@@ -472,7 +403,7 @@ namespace AlpineLib.Procedural.Sky {
                 double ahead = py * sin + pz * cos;
                 double worldX = x + px * headingZ + ahead * headingX;
                 double worldZ = z - px * headingX + ahead * headingZ;
-                best = Math.Max(best, surface(worldX, worldZ) - up);
+                best = Math.Max(best, world.SurfaceAt(worldX, worldZ) - up);
             }
             return best;
         }
@@ -494,6 +425,19 @@ namespace AlpineLib.Procedural.Sky {
             inverseUp = 1.0 / y;
         }
 
+        // The walk sample at or after the end (the last one any query reads).
+        private int LastSample() {
+            return Math.Min(_x.Length - 1, (int)Math.Ceiling(Length / ProfileStep - 1e-9));
+        }
+
+        // The sample interval holding `distance` (clamped to the roll) and the share across it.
+        private void Locate(double distance, out int index, out double share) {
+            double clamped = Math.Max(0.0, Math.Min(Length, distance));
+            int last = _x.Length - 1;
+            index = Math.Max(0, Math.Min(last - 1, (int)Math.Floor(clamped / ProfileStep)));
+            share = Math.Max(0.0, Math.Min(1.0, (clamped - index * ProfileStep) / ProfileStep));
+        }
+
         // A profile sampled every step, linear between samples, clamped to the roll.
         private double Sampled(double[] values, double distance) {
             if (values.Length == 0) return 0.0;
@@ -502,13 +446,11 @@ namespace AlpineLib.Procedural.Sky {
             double clamped = Math.Max(0.0, Math.Min(Length, distance));
             int last = values.Length - 1;
             int index = Math.Min(last - 1, (int)Math.Floor(clamped / ProfileStep));
-            double from = index * ProfileStep;
-            double to = Math.Min(Length, (index + 1) * ProfileStep);
-            double share = to > from ? (clamped - from) / (to - from) : 0.0;
+            double share = (clamped - index * ProfileStep) / ProfileStep;
             return values[index] + (values[index + 1] - values[index]) * Math.Max(0.0, Math.Min(1.0, share));
         }
 
-        // Squash and tilt from the trait stream (drawn before the outline is built from them).
+        // Squash and tilt from the trait stream (drawn after the speed share, before the outline is built from them).
         private void DrawShape(SplitMix64 traits, RollerPathSettings settings) {
             double squashX = 1.0 - settings.MaxSquash * traits.NextDouble();
             double squashY = 1.0 - settings.MaxSquash * traits.NextDouble();
@@ -517,29 +459,22 @@ namespace AlpineLib.Procedural.Sky {
             SquashX = squashX / widest;
             SquashY = squashY / widest;
             SquashZ = squashZ / widest;
-            Tilt = (traits.NextDouble() * 2.0 - 1.0) * settings.MaxTiltDegrees * DegreesToRadians;
+            Tilt = (traits.NextDouble() * 2.0 - 1.0) * settings.MaxTiltDegrees * Math.PI / 180.0;
         }
 
-        // Stall (heavy props only): a seeded spot in the middle of the roll, moved past any jump (and its bounce) it falls in.
-        private void DrawStall(SplitMix64 traits, RollerPathSettings settings) {
-            double stallRoll = traits.NextDouble();
-            double stallSpot = traits.NextDouble();
-            double stallLength = traits.NextDouble();
-            if (Heft < settings.StallHeft || stallRoll >= settings.StallChance) return;
-
-            double spot = Length * (0.25 + 0.5 * stallSpot);
-            foreach (RollerJump jump in _jumps) {
-                if (spot > jump.Takeoff && spot < jump.Landing) spot = jump.Landing;
-            }
-            if (spot >= Length - ProfileStep) return;
-
-            StallAt = spot;
-            StallGap = Lerp(settings.MinStall, settings.MaxStall, stallLength);
+        private static double ShareOf(double jitter, double heft, RollerPathSettings settings) {
+            double speedShare = Clamp01(heft * (1.0 - settings.SpeedJitter) + jitter * settings.SpeedJitter);
+            return Lerp(settings.MaxGroundSpeedShare, settings.MinGroundSpeedShare, speedShare);
         }
 
         private static double HeftOf(double size, RollerPathSettings settings) {
             double range = settings.MaxSize - settings.MinSize;
             return range > 0.0 ? Clamp01((size - settings.MinSize) / range) : 0.5;
+        }
+
+        private static double SmoothStep(double share) {
+            double clamped = Clamp01(share);
+            return clamped * clamped * (3.0 - 2.0 * clamped);
         }
 
         private static double Clamp01(double value) {

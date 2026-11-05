@@ -2,10 +2,11 @@ using System;
 
 namespace AlpineLib.Procedural.Sky {
     /// <summary>
-    /// Where a wind-rolled prop is and how it is turned at one point of its <see cref="RollerPath"/> cycle: the centre
+    /// Where a wind-rolled prop is and how it is turned at one rolled distance of its <see cref="RollerPath"/>: the centre
     /// in contact (its outline touching the support at its roll angle) or on a jump's arc, rolled by distance / roll
-    /// radius about the axis right of its heading (which follows the wobble) after its seeded tilt and spin, turning on
-    /// through the air, teetering through a stall, and scaled in at the start and out at the end of its rest.
+    /// radius about the axis right of its heading (which follows the walk) after its seeded tilt and spin, turning on
+    /// through the air, and scaled in after its spawn and out before its end. It never rests: the rolled distance only
+    /// grows with the wind's drift, and off the roll the prop is not drawn at all.
     /// </summary>
     /// <remarks>
     /// The rotation is a unit quaternion (x, y, z, w) in the plane's own axes (y up, right-hand rule on the components),
@@ -13,7 +14,7 @@ namespace AlpineLib.Procedural.Sky {
     /// </remarks>
     public readonly struct RollerPose {
         private RollerPose(double x, double y, double z, double rotationX, double rotationY, double rotationZ, double rotationW,
-                double scale, double distance, double rollAngle, bool isResting, bool isStalled, bool isAirborne) {
+                double scale, double distance, double rollAngle, bool isAirborne, bool isOut) {
             X = x;
             Y = y;
             Z = z;
@@ -24,12 +25,11 @@ namespace AlpineLib.Procedural.Sky {
             Scale = scale;
             Distance = distance;
             RollAngle = rollAngle;
-            IsResting = isResting;
-            IsStalled = isStalled;
             IsAirborne = isAirborne;
+            IsOut = isOut;
         }
 
-        /// <summary>Centre of the prop in the path's plane, y over the path's ground datum.</summary>
+        /// <summary>Centre of the prop in the path's plane.</summary>
         public double X { get; }
         public double Y { get; }
         public double Z { get; }
@@ -39,71 +39,48 @@ namespace AlpineLib.Procedural.Sky {
         public double RotationZ { get; }
         public double RotationW { get; }
 
-        /// <summary>Visible share of the prop's size: 0 while it reappears at the start or vanishes after its rest.</summary>
+        /// <summary>Visible share of the prop's size: 0 before its spawn and after its end, easing at both.</summary>
         public double Scale { get; }
 
-        /// <summary>Rolled metres from the start, at most the path's length.</summary>
+        /// <summary>Rolled metres from the start, clamped to the roll.</summary>
         public double Distance { get; }
 
-        /// <summary>Roll about the axis, radians: distance / radius, plus the rocking while resting.</summary>
+        /// <summary>Roll about the axis, radians: distance / radius.</summary>
         public double RollAngle { get; }
-
-        /// <summary>True while settled at the end of the roll.</summary>
-        public bool IsResting { get; }
-
-        /// <summary>True while sitting out the stall mid-roll.</summary>
-        public bool IsStalled { get; }
 
         /// <summary>True while on a jump's arc (off the ground).</summary>
         public bool IsAirborne { get; }
 
-        /// <summary>The pose of <paramref name="path"/> after the wind drifted <paramref name="displacement"/> metres since the session began.</summary>
-        public static RollerPose Of(RollerPath path, WindVector displacement) {
+        /// <summary>True between the spawn and the end of the roll (it may still be scaled to nothing at either end).</summary>
+        public bool IsOut { get; }
+
+        /// <summary>The pose of <paramref name="path"/> spawned at drift <paramref name="spawnDrift"/> once the wind's drift reaches <paramref name="drift"/>.</summary>
+        public static RollerPose Of(RollerPath path, double spawnDrift, double drift) {
             if (path == null) throw new ArgumentNullException(nameof(path));
 
-            return At(path, path.CycleOf(path.AlongOf(displacement)));
+            return At(path, (drift - spawnDrift) * path.GroundSpeedShare);
         }
 
-        /// <summary>The pose of <paramref name="path"/> at cycle position <paramref name="cycle"/> metres (see <see cref="RollerPath.CycleOf"/>).</summary>
-        public static RollerPose At(RollerPath path, double cycle) {
+        /// <summary>The pose of <paramref name="path"/> after rolling <paramref name="rolled"/> metres (negative: not out yet).</summary>
+        public static RollerPose At(RollerPath path, double rolled) {
             if (path == null) throw new ArgumentNullException(nameof(path));
 
-            double length = path.Length;
-            double rolled = path.RolledAt(cycle);
-            bool isResting = rolled > length;
-            bool isStalled = path.HasStall && cycle > path.StallAt && cycle < path.StallAt + path.StallGap;
-            double distance = Math.Max(0.0, Math.Min(length, rolled));
-            double lineOffset = path.StartOffset + distance;
+            bool isOut = rolled >= 0.0 && rolled <= path.Length;
+            double distance = Math.Max(0.0, Math.Min(path.Length, rolled));
             path.GroundPoint(distance, out double x, out double z);
             double angle = path.AngleAt(distance);
-            if (isResting) angle += path.RockAngle * Math.Sin(2.0 * Math.PI * (rolled - length) / path.RockPeriod);
-            if (isStalled) angle += StallRock(path) * Math.Sin(Math.PI * (cycle - path.StallAt) / path.StallGap);
-            double scale = Math.Min(SmoothStep(cycle / path.ScaleDistance), SmoothStep((path.Cycle - cycle) / path.ScaleDistance));
+            double scale = isOut ? path.FadeAt(distance) : 0.0;
             bool isAirborne = path.TryGetJump(distance, out RollerJump jump);
             double y = isAirborne ? jump.HeightAt(distance) : path.ContactHeight(distance, angle, scale);
-            Rotation(path, path.WobbleSlope(lineOffset), angle, out double rotationX, out double rotationY, out double rotationZ, out double rotationW);
-            return new RollerPose(x, y, z, rotationX, rotationY, rotationZ, rotationW, scale, distance, angle, isResting, isStalled, isAirborne);
-        }
-
-        /// <summary>Unit heading of the roll at <paramref name="path"/>'s line offset with wobble slope <paramref name="slope"/>.</summary>
-        public static void Heading(RollerPath path, double slope, out double x, out double z) {
-            double headingX = path.DirectionX + path.DirectionZ * slope;
-            double headingZ = path.DirectionZ - path.DirectionX * slope;
-            double length = Math.Sqrt(headingX * headingX + headingZ * headingZ);
-            x = headingX / length;
-            z = headingZ / length;
-        }
-
-        // One teeter forward and back over a stall, no faster than the rest's rocking.
-        private static double StallRock(RollerPath path) {
-            return path.RockAngle * Math.Min(1.0, 2.0 * path.StallGap / path.RockPeriod);
+            path.HeadingAt(distance, out double headingX, out double headingZ);
+            Rotation(path, headingX, headingZ, angle, out double rotationX, out double rotationY, out double rotationZ, out double rotationW);
+            return new RollerPose(x, y, z, rotationX, rotationY, rotationZ, rotationW, scale, distance, angle, isAirborne, isOut);
         }
 
         // Yaw to the heading, roll about the mesh's x by `angle`, after the seeded spin about up and tilt about x:
         // yaw ⊗ roll ⊗ spin ⊗ tilt. The roll axis is up × heading, and the outline below the centre depends only on the
         // roll angle (the heading's yaw turns it about up), so RollerProfile can tabulate it once per prop.
-        private static void Rotation(RollerPath path, double slope, double angle, out double x, out double y, out double z, out double w) {
-            Heading(path, slope, out double headingX, out double headingZ);
+        private static void Rotation(RollerPath path, double headingX, double headingZ, double angle, out double x, out double y, out double z, out double w) {
             double yaw = Math.Atan2(headingX, headingZ);
             double yawY = Math.Sin(yaw * 0.5);
             double yawW = Math.Cos(yaw * 0.5);
@@ -130,11 +107,6 @@ namespace AlpineLib.Procedural.Sky {
             y = aw * by - ax * bz + ay * bw + az * bx;
             z = aw * bz + ax * by - ay * bx + az * bw;
             w = aw * bw - ax * bx - ay * by - az * bz;
-        }
-
-        private static double SmoothStep(double share) {
-            double clamped = Math.Max(0.0, Math.Min(1.0, share));
-            return clamped * clamped * (3.0 - 2.0 * clamped);
         }
     }
 }

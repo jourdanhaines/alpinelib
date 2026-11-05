@@ -15,6 +15,7 @@ namespace AlpineLib.Server.Tests.Sky {
         private const double RailHalfGauge = 0.75;
         private const double CrestInner = 1.45;
         private const double CrestOuter = 1.72;
+        private const double Life = 60.0;
         private static readonly RollerPathSettings Settings = RollerPathSettings.Default;
 
         [Fact]
@@ -71,10 +72,10 @@ namespace AlpineLib.Server.Tests.Sky {
                     double[] positions = RollerCage.Positions(seed, CageRadius);
                     double size = RollerPath.SizeOf(seed, Settings);
                     double radius = CageRadius * size;
-                    RollerPath path = RollerPath.Build(seed, -30.0, 0.0, radius, size, new WindVector(0.8, 0.6), Settings, (x, z) => true,
-                        (x, z) => RollerSupport.BallOnHeights(plane, x, z, radius), RollerShape.FromPositions(positions));
-                    for (double cycle = 0.1; cycle < path.Length; cycle += 0.37) {
-                        RollerPose pose = RollerPose.At(path, cycle);
+                    var world = new RollerTestWorld { Surface = plane };
+                    RollerPath path = RollerPath.Build(seed, -30.0, 0.0, radius, size, Life, new WindVector(0.8, 0.6), Settings, world, RollerShape.FromPositions(positions));
+                    for (double rolled = 0.1; rolled < path.Length; rolled += 0.37) {
+                        RollerPose pose = RollerPose.At(path, rolled);
                         if (pose.IsAirborne) continue;
 
                         double gap = LowestGap(pose, path, positions, size * pose.Scale, plane);
@@ -93,10 +94,10 @@ namespace AlpineLib.Server.Tests.Sky {
                 double[] positions = RollerCage.Positions(seed, CageRadius);
                 double size = RollerPath.SizeOf(seed, Settings);
                 double radius = CageRadius * size;
-                RollerPath path = RollerPath.Build(seed, -30.0, 0.0, radius, size, new WindVector(1.0, 0.0), Settings, (x, z) => true,
-                    (x, z) => RollerSupport.Level(0.06).AsRough(), RollerShape.FromPositions(positions), sleepers);
+                var world = new RollerTestWorld { Surface = sleepers, Support = (x, z, r) => RollerSupport.Level(0.06).AsRough() };
+                RollerPath path = RollerPath.Build(seed, -30.0, 0.0, radius, size, Life, new WindVector(1.0, 0.0), Settings, world, RollerShape.FromPositions(positions));
                 for (double distance = path.ProfileStep * 40; distance < path.Length; distance += path.ProfileStep * 7) {
-                    RollerPose pose = RollerPose.At(path, path.HasStall && distance > path.StallAt ? distance + path.StallGap : distance);
+                    RollerPose pose = RollerPose.At(path, distance);
                     if (pose.IsAirborne || pose.Scale < 1.0) continue;
 
                     double gap = LowestGap(pose, path, positions, size, sleepers);
@@ -134,15 +135,40 @@ namespace AlpineLib.Server.Tests.Sky {
         }
 
         [Fact]
+        public void LowPropsAreHoppedClear() {
+            const double rockHeight = 0.6, rockRadius = 0.5;
+            int hopped = 0;
+            for (int slot = 0; slot < 40; slot++) {
+                ulong seed = StableHash.Mix(67UL, (ulong)slot);
+                double rockX = 6.0 + slot % 5, rockZ = 0.0;
+                RollerPath path = Build(seed, 0.0, 0.0, new WindVector(1.0, 0.0), (x, z) => Rock(x, z, rockX, rockZ, rockRadius, rockHeight, CageRadius * RollerPath.SizeOf(seed, Settings)));
+                Assert.NotNull(path);
+                for (double distance = 0.0; distance <= path.Length; distance += path.ProfileStep) {
+                    path.GroundPoint(distance, out double x, out double z);
+                    double dx = x - rockX, dz = z - rockZ;
+                    if (dx * dx + dz * dz > rockRadius * rockRadius) continue;
+
+                    Assert.True(InLeap(path, distance), $"slot {slot}: rolls into the rock at {distance:0.00} m");
+                    RollerPose pose = RollerPose.At(path, distance);
+                    double top = rockHeight * Math.Sqrt(Math.Max(0.0, 1.0 - (dx * dx + dz * dz) / (rockRadius * rockRadius)));
+                    double lowest = pose.Y - path.Profile.Extent(pose.RollAngle);
+                    Assert.True(lowest >= top - 0.03, $"slot {slot}: the cage clips the rock at {distance:0.00} m ({lowest:0.000} under {top:0.000})");
+                    hopped++;
+                }
+            }
+            Assert.True(hopped > 20, $"only {hopped} samples over a rock");
+        }
+
+        [Fact]
         public void TheSameSeedGivesTheSameOutlinedRoll() {
             for (int slot = 0; slot < 10; slot++) {
                 ulong seed = StableHash.Mix(59UL, (ulong)slot);
                 RollerPath first = Build(seed, -25.0, slot * 2.0, new WindVector(1.0, 0.1), null);
                 RollerPath second = Build(seed, -25.0, slot * 2.0, new WindVector(1.0, 0.1), null);
                 Assert.Equal(first.Jumps.Count, second.Jumps.Count);
-                for (double cycle = 0.0; cycle < first.Cycle; cycle += 0.9) {
-                    RollerPose one = RollerPose.At(first, cycle);
-                    RollerPose two = RollerPose.At(second, cycle);
+                for (double rolled = 0.0; rolled < first.Length; rolled += 0.9) {
+                    RollerPose one = RollerPose.At(first, rolled);
+                    RollerPose two = RollerPose.At(second, rolled);
                     Assert.Equal(BitConverter.DoubleToInt64Bits(one.Y), BitConverter.DoubleToInt64Bits(two.Y));
                     Assert.Equal(BitConverter.DoubleToInt64Bits(one.RotationW), BitConverter.DoubleToInt64Bits(two.RotationW));
                 }
@@ -175,11 +201,12 @@ namespace AlpineLib.Server.Tests.Sky {
             return false;
         }
 
-        private static RollerPath Build(ulong seed, double slotX, double slotZ, WindVector prevailing, Func<double, double, RollerSupport> support) {
+        private static RollerPath Build(ulong seed, double startX, double startZ, WindVector prevailing, Func<double, double, RollerSupport> support) {
             double size = RollerPath.SizeOf(seed, Settings);
             double radius = CageRadius * size;
             support ??= (x, z) => TrackSupport(x, z, radius);
-            return RollerPath.Build(seed, slotX, slotZ, radius, size, prevailing, Settings, (x, z) => true, support, RollerCage.Shape(seed, CageRadius));
+            var world = new RollerTestWorld { Support = (x, z, r) => support(x, z) };
+            return RollerPath.Build(seed, startX, startZ, radius, size, Life, prevailing, Settings, world, RollerCage.Shape(seed, CageRadius));
         }
 
         // Level ground with a track along z at x 0: two rail heads (points at rail top) a ball touching them jumps,
@@ -198,6 +225,16 @@ namespace AlpineLib.Server.Tests.Sky {
                 if (height > best.Height) best = new RollerSupport(height, offset / radius, up / radius, 0.0, RollerObstacle.Obstacle);
             }
             return best;
+        }
+
+        // A dome of `height` over a disc, inflated by the ball's radius, as an obstacle the prop jumps.
+        private static RollerSupport Rock(double x, double z, double rockX, double rockZ, double rockRadius, double height, double radius) {
+            double dx = x - rockX, dz = z - rockZ;
+            double reach = rockRadius + radius;
+            double share = Math.Sqrt(dx * dx + dz * dz) / reach;
+            if (share >= 1.0) return RollerSupport.Level(0.0);
+
+            return new RollerSupport(height * Math.Sqrt(1.0 - share * share), 0.0, 1.0, 0.0, RollerObstacle.Obstacle);
         }
 
         // Least height of any cage point over the ground beneath it, the cage posed as the field draws it.

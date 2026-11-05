@@ -2,27 +2,41 @@ using System;
 
 namespace AlpineLib.Procedural.Sky {
     /// <summary>
-    /// Tunables of wind-rolled props (tumbleweeds): how long a roll runs, when it jumps (obstacles, crests, seeded bumps) and how it wobbles, how long a prop rests
-    /// at the end before it reappears at the start, how fast it rolls for the wind's drift, and how much props vary in
-    /// size, speed, wobble and shape (small ones common and fast, big ones rare, slow and prone to stalling).
+    /// Tunables of wind-rolled props (tumbleweeds): how far one rolls before it breaks up, how its heading wanders off
+    /// the prevailing wind (noise wander plus seeded course changes), when it jumps (obstacles, crests, seeded bumps),
+    /// how fast it rolls for the wind's drift, how long it fades in and out, and how much props vary in size, speed and
+    /// shape (small ones common and fast, big ones rare and slow).
     /// </summary>
-    /// <remarks>Distances are ground metres along the path unless named otherwise.</remarks>
+    /// <remarks>Distances are ground metres along the roll unless named otherwise.</remarks>
     public sealed class RollerPathSettings {
-        public double MinLength { get; set; } = 30.0;
-        public double MaxLength { get; set; } = 90.0;
+        /// <summary>Most a roll's heading may stray off the prevailing wind, degrees (wander and course changes together).</summary>
+        public const double MaxOffWindDegrees = 80.0;
 
-        /// <summary>Shortest clipped roll kept; a slot hemmed in tighter gets no roller.</summary>
+        /// <summary>Range of how far a prop rolls before it breaks up (fades out), metres.</summary>
+        public double MinLife { get; set; } = 60.0;
+        public double MaxLife { get; set; } = 180.0;
+
+        /// <summary>Shortest roll kept; a spawn blocked sooner gets no roller.</summary>
         public double MinClippedLength { get; set; } = 8.0;
 
-        /// <summary>Most the start is pulled upwind of its slot (still clear), so props tend to reappear at the spawn area's upwind edge.</summary>
-        public double UpwindReach { get; set; } = 24.0;
+        /// <summary>Most the heading strays either side of the prevailing wind, degrees: the noise wander and course changes are clamped to it.</summary>
+        public double WanderDegrees { get; set; } = 35.0;
 
-        /// <summary>
-        /// Most a path's direction strays from the prevailing wind, degrees. With the wind's own heading wander on top a
-        /// prop rolls up to their sum off the instantaneous wind (45° for 10 + 35); <see cref="JitterWithin"/> keeps that
-        /// sum within <see cref="MaxOffWindDegrees"/> so the drift along every path keeps rolling it forward.
-        /// </summary>
-        public double DirectionJitterDegrees { get; set; } = 10.0;
+        /// <summary>Gain on the wander noise (fBm rarely reaches ±1), so the wander fills its range.</summary>
+        public double WanderGain { get; set; } = 1.6;
+
+        /// <summary>Range of the wander's wavelength along the roll, metres, drawn once per prop.</summary>
+        public double MinWanderPeriod { get; set; } = 20.0;
+        public double MaxWanderPeriod { get; set; } = 60.0;
+
+        /// <summary>Range of the gap between seeded course change spots, metres; each fires with <see cref="CourseChance"/>.</summary>
+        public double MinCourseSpacing { get; set; } = 30.0;
+        public double MaxCourseSpacing { get; set; } = 90.0;
+        public double CourseChance { get; set; } = 0.35;
+
+        /// <summary>Most a course change turns the roll's mean heading off the wind, degrees, eased in over <see cref="CourseBlend"/> metres.</summary>
+        public double CourseDegrees { get; set; } = 20.0;
+        public double CourseBlend { get; set; } = 10.0;
 
         /// <summary>Range of a prop's size over its kind's mesh; size = lerp(min, max, u^<see cref="SizeBias"/>).</summary>
         public double MinSize { get; set; } = 0.65;
@@ -31,7 +45,7 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Power on the size draw: above 1 makes small props common and big ones rare.</summary>
         public double SizeBias { get; set; } = 2.0;
 
-        /// <summary>Range of the jump over an obstacle run of the support (a rail head) at size 1, metres; it scales with the prop's size.</summary>
+        /// <summary>Range of the jump over an obstacle run of the support (a rail head, a low rock) at size 1, metres; it scales with the prop's size.</summary>
         public double MinObstacleJump { get; set; } = 0.2;
         public double MaxObstacleJump { get; set; } = 0.5;
 
@@ -66,34 +80,13 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Least clearance of a jump's arc over the prop's contact height at its middle, metres.</summary>
         public double JumpClearance { get; set; } = 0.03;
 
-        /// <summary>Most the roll strays sideways from its straight line, metres.</summary>
-        public double WobbleAmplitude { get; set; } = 1.2;
-
-        /// <summary>Least share of <see cref="WobbleAmplitude"/> a prop wobbles with (each draws its own share up to 1).</summary>
-        public double MinWobbleShare { get; set; } = 0.35;
-
-        /// <summary>Wavelength of the sideways wobble along the path, metres.</summary>
-        public double WobblePeriod { get; set; } = 24.0;
-
-        /// <summary>Range of the rest at the end of a roll, in cycle metres (ground metres of drift spent settled).</summary>
-        public double MinRestGap { get; set; } = 20.0;
-        public double MaxRestGap { get; set; } = 60.0;
-
         /// <summary>
-        /// Range of the share of the wind's drift along the path a prop rolls: the lightest props roll near the maximum,
-        /// the heaviest near the minimum, each jittered by <see cref="SpeedJitter"/> of the range.
+        /// Range of the share of the wind's drift along the prevailing wind a prop rolls: the lightest props roll near the
+        /// maximum, the heaviest near the minimum, each jittered by <see cref="SpeedJitter"/> of the range.
         /// </summary>
         public double MinGroundSpeedShare { get; set; } = 0.4;
         public double MaxGroundSpeedShare { get; set; } = 0.85;
         public double SpeedJitter { get; set; } = 0.3;
-
-        /// <summary>Props at least this heavy (0 smallest .. 1 biggest size) may stall once mid-roll, with this chance.</summary>
-        public double StallHeft { get; set; } = 0.55;
-        public double StallChance { get; set; } = 0.5;
-
-        /// <summary>Range of a stall, cycle metres spent sitting at a landing before rolling on.</summary>
-        public double MinStall { get; set; } = 2.0;
-        public double MaxStall { get; set; } = 6.0;
 
         /// <summary>Most a prop's mesh is squashed along any of its axes (its widest axis keeps full size).</summary>
         public double MaxSquash { get; set; } = 0.08;
@@ -101,69 +94,56 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Most a prop's mesh is tipped off its roll axis, degrees, so no two spin alike.</summary>
         public double MaxTiltDegrees { get; set; } = 10.0;
 
-        /// <summary>Cycle metres a prop takes to scale in at the start and out at the end of its rest (about a second of the base wind).</summary>
-        public double ScaleDistance { get; set; } = 1.8;
-
-        /// <summary>Most a resting prop rocks back and forth about its roll axis, radians.</summary>
-        public double RockAngle { get; set; } = 0.08;
-
-        /// <summary>Cycle metres of one rock back and forth while resting.</summary>
-        public double RockPeriod { get; set; } = 6.0;
+        /// <summary>
+        /// Drift metres (wind travel along the prevailing direction) a prop scales in over after its spawn and out over
+        /// before its end; the caller sets it to a second of the slowest wind so a fade never takes longer than that.
+        /// </summary>
+        public double FadeDrift { get; set; } = 1.4;
 
         /// <summary>Step the ground profile is sampled at, metres: a ball crossing a rail head sags under 1 cm between samples.</summary>
         public double ProfileStep { get; set; } = 0.05;
 
-        /// <summary>Step the path is clipped against the caller's clear test at, metres.</summary>
+        /// <summary>Step the roll is tested against the caller's blockers at, metres.</summary>
         public double ClipStep { get; set; } = 0.25;
-
-        /// <summary>Most a path may head off the instantaneous wind (jitter plus the wind's wander), degrees.</summary>
-        public const double MaxOffWindDegrees = 80.0;
-
-        /// <summary>Longest <see cref="ScaleDistance"/> the ranges allow: half the shortest rest, at most the shortest clipped roll.</summary>
-        public double MaxScaleDistance => Math.Min(MinRestGap * 0.5, MinClippedLength);
-
-        /// <summary>
-        /// <paramref name="jitterDegrees"/> cut so it plus a wind wandering <paramref name="wanderDegrees"/> either side of
-        /// its prevailing heading stays within <see cref="MaxOffWindDegrees"/> (0 when the wander alone reaches it).
-        /// </summary>
-        public static double JitterWithin(double jitterDegrees, double wanderDegrees) {
-            return Math.Max(0.0, Math.Min(jitterDegrees, MaxOffWindDegrees - Math.Max(0.0, wanderDegrees)));
-        }
 
         /// <summary>The shipped rollers.</summary>
         public static RollerPathSettings Default => new RollerPathSettings();
 
+        /// <summary>Most drift metres any prop lives: its longest roll at the slowest share.</summary>
+        public double MostLifeDrift => MaxLife / MinGroundSpeedShare;
+
         /// <summary>Throws when a range is inverted or a length, step or share is not positive.</summary>
         public void Validate() {
-            RequireRange(MinLength, MaxLength, nameof(MinLength));
+            RequireRange(MinLife, MaxLife, nameof(MinLife));
+            RequireRange(MinWanderPeriod, MaxWanderPeriod, nameof(MinWanderPeriod));
+            RequireRange(MinCourseSpacing, MaxCourseSpacing, nameof(MinCourseSpacing));
             RequireRange(MinObstacleJump, MaxObstacleJump, nameof(MinObstacleJump));
             RequireRange(MinCrestJump, MaxCrestJump, nameof(MinCrestJump));
             RequireRange(MinBumpSpacing, MaxBumpSpacing, nameof(MinBumpSpacing));
             RequireRange(MinBumpChance, MaxBumpChance, nameof(MinBumpChance));
             RequireRange(MinBumpJump, MaxBumpJump, nameof(MinBumpJump));
-            RequireRange(MinRestGap, MaxRestGap, nameof(MinRestGap));
             RequireRange(MinSize, MaxSize, nameof(MinSize));
             RequireRange(MinGroundSpeedShare, MaxGroundSpeedShare, nameof(MinGroundSpeedShare));
-            RequireRange(MinStall, MaxStall, nameof(MinStall));
+            RequirePositive(MinLife, nameof(MinLife));
             RequirePositive(MinSize, nameof(MinSize));
             RequirePositive(SizeBias, nameof(SizeBias));
-            RequirePositive(MinLength, nameof(MinLength));
+            RequirePositive(MinWanderPeriod, nameof(MinWanderPeriod));
+            RequirePositive(MinCourseSpacing, nameof(MinCourseSpacing));
             RequirePositive(MinBumpSpacing, nameof(MinBumpSpacing));
             RequirePositive(JumpWindSpeed, nameof(JumpWindSpeed));
             RequirePositive(MaxJumpSlope, nameof(MaxJumpSlope));
             RequirePositive(ProfileStep, nameof(ProfileStep));
             RequirePositive(ClipStep, nameof(ClipStep));
             RequirePositive(MinGroundSpeedShare, nameof(MinGroundSpeedShare));
-            RequirePositive(ScaleDistance, nameof(ScaleDistance));
-            RequirePositive(RockPeriod, nameof(RockPeriod));
-            RequirePositive(WobblePeriod, nameof(WobblePeriod));
-            if (ScaleDistance > MaxScaleDistance) throw new ArgumentException($"{nameof(ScaleDistance)} {ScaleDistance} must fit half the shortest rest and the shortest roll ({MaxScaleDistance}).");
-            if (WobbleAmplitude < 0.0 || UpwindReach < 0.0 || RockAngle < 0.0) throw new ArgumentException("Wobble, upwind reach and rock angle must not be negative.");
+            RequirePositive(FadeDrift, nameof(FadeDrift));
+            RequirePositive(CourseBlend, nameof(CourseBlend));
+            if (MinClippedLength < 0.0) throw new ArgumentException($"{nameof(MinClippedLength)} must not be negative.");
             if (MinObstacleJump < 0.0 || MinCrestJump < 0.0 || MinBumpJump < 0.0 || JumpLead < 0.0 || JumpClearance < 0.0) throw new ArgumentException("Jump heights, lead and clearance must not be negative.");
-            if (!InUnit(SpeedJitter) || !InUnit(MinWobbleShare) || !InUnit(StallHeft) || !InUnit(StallChance)) throw new ArgumentException("Speed jitter, wobble share, stall heft and stall chance must be in [0, 1].");
+            if (!InUnit(SpeedJitter) || !InUnit(CourseChance)) throw new ArgumentException("Speed jitter and course chance must be in [0, 1].");
             if (!InUnit(MinBumpChance) || !InUnit(MaxBumpChance) || !InUnit(BounceShare)) throw new ArgumentException("Bump chances and the bounce share must be in [0, 1].");
-            if (MinStall < 0.0 || MaxSquash < 0.0 || MaxSquash >= 1.0 || MaxTiltDegrees < 0.0 || MaxTiltDegrees > 90.0) throw new ArgumentException("Stalls must not be negative, squash must be in [0, 1) and tilt in [0, 90] degrees.");
-            if (DirectionJitterDegrees < 0.0 || DirectionJitterDegrees > MaxOffWindDegrees) throw new ArgumentException($"{nameof(DirectionJitterDegrees)} must be in [0, {MaxOffWindDegrees}].");
+            if (MaxSquash < 0.0 || MaxSquash >= 1.0 || MaxTiltDegrees < 0.0 || MaxTiltDegrees > 90.0) throw new ArgumentException("Squash must be in [0, 1) and tilt in [0, 90] degrees.");
+            if (WanderDegrees < 0.0 || WanderDegrees > MaxOffWindDegrees || WanderGain < 0.0) throw new ArgumentException($"{nameof(WanderDegrees)} must be in [0, {MaxOffWindDegrees}] and the gain not negative.");
+            if (CourseDegrees < 0.0 || CourseDegrees > MaxOffWindDegrees) throw new ArgumentException($"{nameof(CourseDegrees)} must be in [0, {MaxOffWindDegrees}].");
         }
 
         private static bool InUnit(double value) {

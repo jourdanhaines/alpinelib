@@ -6,12 +6,16 @@ using AlpineLib.Procedural.Sky;
 using Xunit;
 
 namespace AlpineLib.Server.Tests.Sky {
+    // Rolls walk from their spawn along the wind: deterministic, clear of what stops them, centred on the wind within
+    // the wander, never parked (moving whenever drawn), faded out within a second when blocked, cut at the loaded
+    // world's edge and continuous across cell borders.
     public sealed class RollerPathTests {
         private const double Frame = 1.0 / 60.0;
         private const double StressWind = 20.0;
         private const double JumpLimit = 0.1;
         private const double ClearSlack = 0.02;
         private const double SteepestClimb = 4.0;
+        private const double CellSize = 128.0;
         private static readonly RollerPathSettings Settings = RollerPathSettings.Default;
 
         [Fact]
@@ -19,10 +23,10 @@ namespace AlpineLib.Server.Tests.Sky {
             var prevailing = new WindVector(0.6, 0.8);
             int differing = 0;
             for (int slot = 0; slot < 40; slot++) {
-                RollerPathScene scene = RollerPathScene.Random(1000UL + (ulong)slot);
-                RollerPath first = scene.Build(StableHash.Mix(5UL, (ulong)slot), prevailing);
-                RollerPath second = scene.Build(StableHash.Mix(5UL, (ulong)slot), prevailing);
-                RollerPath other = scene.Build(StableHash.Mix(6UL, (ulong)slot), prevailing);
+                RollerTestWorld world = RollerTestWorld.Scattered(1000UL + (ulong)slot, 40);
+                RollerPath first = Build(world, StableHash.Mix(5UL, (ulong)slot), prevailing, slot);
+                RollerPath second = Build(world, StableHash.Mix(5UL, (ulong)slot), prevailing, slot);
+                RollerPath other = Build(world, StableHash.Mix(6UL, (ulong)slot), prevailing, slot);
                 Assert.Equal(Describe(first), Describe(second));
                 differing += Describe(first) != Describe(other) ? 1 : 0;
             }
@@ -30,221 +34,268 @@ namespace AlpineLib.Server.Tests.Sky {
         }
 
         [Fact]
-        public void RollsStayInsideTheCellAndClearOfFootprints() {
-            int built = 0;
-            for (int slot = 0; slot < 400; slot++) {
-                RollerPathScene scene = RollerPathScene.Random(2000UL + (ulong)slot);
-                RollerPath path = scene.Build(StableHash.Mix(9UL, (ulong)slot), Prevailing(slot));
+        public void RollsStayClearOfWhatStopsThem() {
+            int built = 0, blocked = 0;
+            for (int slot = 0; slot < 300; slot++) {
+                RollerTestWorld world = RollerTestWorld.Scattered(2000UL + (ulong)slot, 160);
+                RollerPath path = Build(world, StableHash.Mix(9UL, (ulong)slot), Prevailing(slot), slot);
                 if (path == null) continue;
 
                 built++;
+                blocked += path.End == RollerEnd.Blocked ? 1 : 0;
                 for (double distance = 0.0; distance <= path.Length; distance += 0.05) {
                     path.GroundPoint(distance, out double x, out double z);
-                    double penetration = scene.Penetration(x, z, path.Radius);
-                    Assert.True(penetration <= ClearSlack, $"slot {slot} at {distance:0.00} m: {penetration:0.000} m into a footprint or past the cell");
+                    double penetration = world.Penetration(x, z, path.Radius);
+                    Assert.True(penetration <= ClearSlack, $"slot {slot} at {distance:0.00} m: {penetration:0.000} m into a stop");
                 }
+                if (path.End != RollerEnd.Blocked) continue;
+
+                path.GroundPoint(path.Length, out double endX, out double endZ);
+                path.HeadingAt(path.Length, out double headingX, out double headingZ);
+                double ahead = world.Penetration(endX + headingX * Settings.ClipStep * 1.5, endZ + headingZ * Settings.ClipStep * 1.5, path.Radius);
+                Assert.True(ahead > -Settings.ClipStep, $"slot {slot}: blocked at {path.Length:0.00} m with nothing just ahead ({ahead:0.000})");
             }
-            Assert.True(built > 200, $"only {built} of 400 slots got a roll");
+            Assert.True(built > 200 && blocked > 40, $"{built} of 300 spawns rolled, {blocked} blocked");
         }
 
         [Fact]
-        public void LengthsJumpsAndWobbleStayInBounds() {
-            for (int slot = 0; slot < 300; slot++) {
-                RollerPathScene scene = RollerPathScene.Open(0.3 + slot % 4 * 0.1);
-                RollerPath path = scene.Build(StableHash.Mix(11UL, (ulong)slot), Prevailing(slot), (slot % 7 - 3) * 0.05);
+        public void LifeJumpsAndFadesStayInBounds() {
+            for (int slot = 0; slot < 200; slot++) {
+                RollerTestWorld world = RollerTestWorld.Open();
+                ulong seed = StableHash.Mix(11UL, (ulong)slot);
+                double life = Settings.MinLife + slot % 5 * 25.0;
+                RollerPath path = Build(world, seed, Prevailing(slot), slot, life);
                 Assert.NotNull(path);
-                Assert.InRange(path.Length, Settings.MinClippedLength, Settings.MaxLength + 1e-9);
-                Assert.InRange(path.RestGap, Settings.MinRestGap, Settings.MaxRestGap);
-                Assert.InRange(path.StartOffset, -Settings.UpwindReach - 1e-9, 0.0);
+                Assert.Equal(RollerEnd.Life, path.End);
+                Assert.InRange(path.Length, life - Settings.ClipStep - 2.0, life + 1e-9);
+                Assert.Equal(Math.Min(path.GroundSpeedShare * Settings.FadeDrift, path.Length * 0.5), path.FadeLength, 12);
                 Assert.InRange(path.BumpChance, Settings.MinBumpChance, Settings.MaxBumpChance);
                 CheckJumps(path, $"slot {slot}");
-                CheckPoses(path, scene);
+                CheckPoses(path);
+                Assert.Equal(0.0, RollerPose.At(path, -0.01).Scale);
+                Assert.Equal(0.0, RollerPose.At(path, path.Length + 0.01).Scale);
+                Assert.False(RollerPose.At(path, path.Length + 0.01).IsOut);
             }
         }
 
         [Fact]
-        public void LoopsWithoutVisibleJumpsAtTwentyMetresPerSecond() {
-            double fastest = 0.0;
-            int stalls = 0;
-            for (int slot = 0; slot < 60; slot++) {
-                RollerPathScene scene = RollerPathScene.Open(0.45);
+        public void HeadingsCentreOnTheWindWithinTheWander() {
+            double sum = 0.0, squares = 0.0, widest = 0.0;
+            int samples = 0, changes = 0;
+            for (int slot = 0; slot < 300; slot++) {
                 WindVector prevailing = Prevailing(slot);
-                RollerPath path = scene.Build(StableHash.Mix(13UL, (ulong)slot), prevailing);
-                fastest = Math.Max(fastest, path.GroundSpeedShare);
-                stalls += path.HasStall ? 1 : 0;
-                double travel = StressWind * path.GroundSpeedShare * Frame;
-                int frames = (int)Math.Ceiling(path.Cycle * 1.2 / travel);
-                int wraps = 0;
-                RollerPose previous = RollerPose.Of(path, WindAt(prevailing, 0.0));
-                for (int frame = 1; frame <= frames; frame++) {
-                    RollerPose next = RollerPose.Of(path, WindAt(prevailing, frame * Frame));
-                    if (next.Distance < previous.Distance - 1.0) {
-                        wraps++;
-                        // A wrap pops at most half the jump limit of ball radius: at the fastest share a frame covers ~1/6 of the scale-out.
-                        double pop = Math.Max(previous.Scale, next.Scale) * path.Radius;
-                        Assert.True(pop < JumpLimit * 0.5, $"slot {slot}: wrapped at visible scale {previous.Scale:0.000} -> {next.Scale:0.000} ({pop:0.000} m)");
-                    } else {
-                        CheckStep(path, previous, next, travel, slot);
-                        CheckSubSteps(path, prevailing, frame, travel, slot);
-                    }
+                var walk = new RollerWalk(StableHash.Mix(21UL, (ulong)slot), prevailing, Settings, Settings.MaxLife);
+                Assert.InRange(walk.WanderPeriod, Settings.MinWanderPeriod, Settings.MaxWanderPeriod);
+                changes += walk.CourseChanges;
+                for (double distance = 0.0; distance <= Settings.MaxLife; distance += 1.0) {
+                    walk.DirectionAt(distance, out double x, out double z);
+                    double offset = Math.Atan2(x * prevailing.Z - z * prevailing.X, x * prevailing.X + z * prevailing.Z) * 180.0 / Math.PI;
+                    Assert.True(Math.Abs(offset) <= Settings.WanderDegrees + 1e-6, $"slot {slot} at {distance} m: {offset:0.00} deg off the wind");
+                    Assert.Equal(walk.OffsetAt(distance) * 180.0 / Math.PI, offset, 6);
+                    sum += offset;
+                    squares += offset * offset;
+                    widest = Math.Max(widest, Math.Abs(offset));
+                    samples++;
+                }
+            }
+            double mean = sum / samples;
+            double spread = Math.Sqrt(squares / samples - mean * mean);
+            Assert.True(Math.Abs(mean) < 3.0, $"headings centre {mean:0.00} deg off the wind");
+            Assert.InRange(spread, 8.0, Settings.WanderDegrees);
+            Assert.True(widest > 30.0, $"the wander never reaches past {widest:0.0} deg");
+            Assert.True(changes > 150, $"only {changes} course changes over 300 walks");
+        }
+
+        [Fact]
+        public void NeverParkedWhileDrawn() {
+            var wind = new WindField(77UL, WindSettings.Default);
+            WindVector prevailing = wind.Prevailing;
+            int checkedRolls = 0;
+            for (int slot = 0; slot < 16; slot++) {
+                RollerTestWorld world = RollerTestWorld.Scattered(3000UL + (ulong)slot, 120);
+                RollerPath path = Build(world, StableHash.Mix(23UL, (ulong)slot), prevailing, slot);
+                if (path == null) continue;
+
+                checkedRolls++;
+                double spawnTime = 30.0 + slot * 37.0;
+                double spawnDrift = DriftAt(wind, spawnTime);
+                double still = 0.0;
+                RollerPose previous = RollerPose.Of(path, spawnDrift, spawnDrift);
+                for (double time = spawnTime + Frame; ; time += Frame) {
+                    RollerPose next = RollerPose.Of(path, spawnDrift, DriftAt(wind, time));
+                    if (!next.IsOut) break;
+
+                    CheckStep(path, previous, next, StressWind * path.GroundSpeedShare * Frame, slot, true);
+                    double dx = next.X - previous.X, dz = next.Z - previous.Z;
+                    double speed = Math.Sqrt(dx * dx + dz * dz) / Frame;
+                    still = next.Scale > 0.0 && speed < 1e-3 ? still + Frame : 0.0;
+                    Assert.True(still < Frame * 1.5, $"slot {slot}: parked at {next.Distance:0.00} m while drawn at scale {next.Scale:0.000}");
                     previous = next;
                 }
-                Assert.True(wraps >= 1, $"slot {slot} never looped");
             }
-            Assert.True(fastest > Settings.MaxGroundSpeedShare - 0.15, $"the fastest of 60 rolls only reaches share {fastest:0.000}");
-            Assert.True(stalls >= 1, "no roll of 60 stalls, so the stall was never looped through");
+            Assert.True(checkedRolls > 10);
+        }
+
+        [Fact]
+        public void ABlockedRollFadesOutWithinASecond() {
+            var settings = new RollerPathSettings { FadeDrift = RollerSpawner.SlowestDriftSpeed(WindSettings.Default) };
+            var wind = new WindField(81UL, WindSettings.Default);
+            WindVector prevailing = wind.Prevailing;
+            double worst = 0.0;
+            int blocked = 0;
+            for (int slot = 0; slot < 24; slot++) {
+                ulong seed = StableHash.Mix(25UL, (ulong)slot);
+                var world = RollerTestWorld.Open();
+                world.AddStop(prevailing.X * (20.0 + slot), prevailing.Z * (20.0 + slot), 4.0);
+                double size = RollerPath.SizeOf(seed, settings);
+                RollerPath path = RollerPath.Build(seed, 0.0, 0.0, 0.45 * size, size, settings.MaxLife, prevailing, settings, world, null);
+                if (path == null || path.End != RollerEnd.Blocked) continue;
+
+                blocked++;
+                double spawnTime = 100.0 + slot * 53.0;
+                double spawnDrift = DriftAt(wind, spawnTime);
+                double fadeStart = double.NaN, fadeEnd = double.NaN;
+                for (double time = spawnTime; time < spawnTime + 400.0; time += Frame) {
+                    RollerPose pose = RollerPose.Of(path, spawnDrift, DriftAt(wind, time));
+                    if (pose.Distance > path.Length * 0.5 && pose.Scale < 1.0 && double.IsNaN(fadeStart)) fadeStart = time;
+                    if (pose.IsOut || pose.Distance < path.Length) continue;
+
+                    fadeEnd = time;
+                    break;
+                }
+                Assert.False(double.IsNaN(fadeEnd), $"slot {slot}: never reached its block");
+                worst = Math.Max(worst, fadeEnd - fadeStart);
+            }
+            Assert.True(blocked > 15, $"only {blocked} rolls blocked");
+            Assert.True(worst > 0.0 && worst <= 1.0 + 2.0 * Frame, $"a blocked fade takes {worst:0.000} s");
+        }
+
+        [Fact]
+        public void TheLoadedEdgeCutsTheRollAndAWiderWorldCarriesItOn() {
+            var prevailing = new WindVector(1.0, 0.0);
+            for (int slot = 0; slot < 30; slot++) {
+                ulong seed = StableHash.Mix(27UL, (ulong)slot);
+                var narrow = new RollerTestWorld { EdgeX = 40.0 };
+                RollerPath cut = Build(narrow, seed, prevailing, slot, Settings.MaxLife, 0.0, 0.0);
+                RollerPath full = Build(RollerTestWorld.Open(), seed, prevailing, slot, Settings.MaxLife, 0.0, 0.0);
+                Assert.Equal(RollerEnd.Edge, cut.End);
+                Assert.True(full.Length > cut.Length + 10.0);
+                for (double distance = 0.0; distance < cut.Length - 1.0; distance += 0.5) {
+                    cut.GroundPoint(distance, out double cutX, out double cutZ);
+                    full.GroundPoint(distance, out double fullX, out double fullZ);
+                    Assert.True(cutX <= 40.0 + 1e-9);
+                    Assert.Equal(fullX, cutX, 12);
+                    Assert.Equal(fullZ, cutZ, 12);
+                }
+            }
+        }
+
+        [Fact]
+        public void RollsCrossCellBordersWithoutAJump() {
+            var cells = new Dictionary<(long X, long Z), IRollerCell>();
+            for (long cellX = -3; cellX <= 3; cellX++) {
+                for (long cellZ = -3; cellZ <= 3; cellZ++) cells[(cellX, cellZ)] = new RollerHeightCell(cellX, cellZ, CellSize);
+            }
+            var world = new RollerCellWorld(CellSize, cells);
+            int borders = 0;
+            for (int slot = 0; slot < 30; slot++) {
+                ulong seed = StableHash.Mix(29UL, (ulong)slot);
+                WindVector prevailing = Prevailing(slot % 4);
+                RollerPath crossing = Build(world, seed, prevailing, slot, Settings.MaxLife, 40.0, 30.0);
+                RollerPath single = Build(RollerTestWorld.Open(), seed, prevailing, slot, Settings.MaxLife, 40.0, 30.0);
+                Assert.Equal(single.Length, crossing.Length);
+                double travel = StressWind * crossing.GroundSpeedShare * Frame;
+                RollerPose previous = RollerPose.At(crossing, 0.0);
+                for (double rolled = travel; rolled < crossing.Length; rolled += travel) {
+                    RollerPose next = RollerPose.At(crossing, rolled);
+                    RollerPose alone = RollerPose.At(single, rolled);
+                    Assert.True(Math.Abs(next.Y - alone.Y) < 1e-6 && Math.Abs(next.X - alone.X) < 1e-9, $"slot {slot}: the cell world rolls {next.Y - alone.Y:0.0000} m off one height field");
+                    bool isBorder = CellOf(previous.X) != CellOf(next.X) || CellOf(previous.Z) != CellOf(next.Z);
+                    borders += isBorder ? 1 : 0;
+                    if (isBorder) CheckStep(crossing, previous, next, travel, slot, false);
+                    previous = next;
+                }
+            }
+            Assert.True(borders > 15, $"only {borders} border crossings checked");
+        }
+
+        [Fact]
+        public void AStopAcrossABorderBlocksBothSides() {
+            var cells = new Dictionary<(long X, long Z), IRollerCell>();
+            var stopCell = new RollerStopCell(60.0, 0.0, 12.0);
+            cells[(0, 0)] = stopCell;
+            cells[(1, 0)] = new RollerStopCell(double.NaN, 0.0, 0.0);
+            var reaching = new RollerCellWorld(CellSize, cells, 12.0);
+            var blind = new RollerCellWorld(CellSize, cells);
+            double insideNeighbour = CellSize + 2.0;
+            double centreZ = RollerCellWorld.CentreOf(0, CellSize);
+            Assert.Equal(RollerBlock.Stop, reaching.BlockAt(insideNeighbour, centreZ, 0.4));
+            Assert.Equal(RollerBlock.None, blind.BlockAt(insideNeighbour, centreZ, 0.4));
+            Assert.Equal(RollerBlock.None, reaching.BlockAt(insideNeighbour + 10.0, centreZ, 0.4));
+            Assert.Equal(RollerBlock.Edge, reaching.BlockAt(-1.0, centreZ, 0.4));
+        }
+
+        [Fact]
+        public void MovesSmoothlyAtTwentyMetresPerSecond() {
+            int checkedRolls = 0;
+            for (int slot = 0; slot < 40; slot++) {
+                RollerTestWorld world = RollerTestWorld.Scattered(4000UL + (ulong)slot, 80);
+                RollerPath path = Build(world, StableHash.Mix(13UL, (ulong)slot), Prevailing(slot), slot);
+                if (path == null) continue;
+
+                checkedRolls++;
+                double travel = StressWind * path.GroundSpeedShare * Frame;
+                RollerPose previous = RollerPose.At(path, 0.0);
+                for (double rolled = travel; rolled <= path.Length; rolled += travel) {
+                    RollerPose next = RollerPose.At(path, rolled);
+                    CheckStep(path, previous, next, travel, slot, false);
+                    previous = next;
+                }
+            }
+            Assert.True(checkedRolls > 25);
         }
 
         [Fact]
         public void TheContactPointDoesNotSlip() {
-            var flat = new RollerPathSettings { WobbleAmplitude = 0.0, MinBumpChance = 0.0, MaxBumpChance = 0.0, StallChance = 0.0 };
+            var flat = new RollerPathSettings { MinBumpChance = 0.0, MaxBumpChance = 0.0, WanderDegrees = 0.0, CourseDegrees = 0.0 };
             for (int slot = 0; slot < 20; slot++) {
                 ulong seed = StableHash.Mix(17UL, (ulong)slot);
                 double size = slot % 2 == 0 ? flat.MaxSize : RollerPath.SizeOf(seed, flat);
-                RollerPath path = RollerPath.Build(seed, 0.0, -30.0, 0.45 * size, size, Prevailing(slot), flat, (x, z) => true, (x, z) => 0.0);
+                var world = new RollerTestWorld { Surface = (x, z) => 0.0 };
+                RollerPath path = RollerPath.Build(seed, 0.0, -30.0, 0.45 * size, size, flat.MaxLife, Prevailing(slot), flat, world, null);
                 Assert.Equal(0.45 * size, path.Radius, 12);
                 const double step = 0.01;
                 RollerPose before = RollerPose.At(path, 10.0);
                 RollerPose after = RollerPose.At(path, 10.0 + step);
+                path.HeadingAt(10.0, out double headingX, out double headingZ);
                 double[] bottom = InverseRotate(before, 0.0, -path.Radius, 0.0);
                 double[] top = InverseRotate(before, 0.0, path.Radius, 0.0);
                 double bottomMoved = Moved(before, after, bottom);
                 double[] topAfter = Rotate(after, top[0], top[1], top[2]);
-                double topForward = (after.X + topAfter[0] - before.X) * path.DirectionX + (after.Z + topAfter[2] - before.Z) * path.DirectionZ;
+                double topForward = (after.X + topAfter[0] - before.X) * headingX + (after.Z + topAfter[2] - before.Z) * headingZ;
                 Assert.True(bottomMoved < 0.1 * step, $"slot {slot}: contact point slid {bottomMoved:0.00000} m over {step} m");
                 Assert.InRange(topForward, 1.9 * step, 2.1 * step);
             }
         }
 
         [Fact]
-        public void CycleReducesHugeDriftInDouble() {
-            RollerPathScene scene = RollerPathScene.Open(0.4);
-            RollerPath path = scene.Build(21UL, new WindVector(1.0, 0.0));
-            double along = 4.0e9;
-            double cycle = path.CycleOf(along);
-            double later = path.CycleOf(along + 0.1);
-            Assert.InRange(cycle, 0.0, path.Cycle);
-            double step = later - cycle;
-            if (step < 0.0) step += path.Cycle;
-            double expected = 0.1 * path.GroundSpeedShare;
-            Assert.InRange(step, expected - 1e-6, expected + 1e-6);
-        }
-
-        [Fact]
-        public void BlockedOrHemmedSlotsGetNoRoll() {
-            var prevailing = new WindVector(1.0, 0.0);
-            Assert.Null(RollerPath.Build(1UL, 0.0, 0.0, 0.4, prevailing, Settings, (x, z) => false, (x, z) => 0.0));
-            Assert.Null(RollerPath.Build(1UL, 0.0, 0.0, 0.4, prevailing, Settings, (x, z) => x * x + z * z < 9.0, (x, z) => 0.0));
-        }
-
-        [Fact]
-        public void TheLineRunsThroughTheSlot() {
-            for (int slot = 0; slot < 50; slot++) {
-                RollerPathScene scene = RollerPathScene.Open(0.4);
-                RollerPath path = scene.Build(StableHash.Mix(23UL, (ulong)slot), Prevailing(slot));
-                Assert.Equal(0.0, path.Wobble(0.0));
-                path.GroundPoint(-path.StartOffset, out double x, out double z);
-                Assert.Equal(path.SlotX, x, 9);
-                Assert.Equal(path.SlotZ, z, 9);
-            }
-        }
-
-        [Fact]
-        public void EveryPoseStaysInsideTheBounds() {
-            for (int slot = 0; slot < 100; slot++) {
-                RollerPathScene scene = RollerPathScene.Random(3000UL + (ulong)slot);
-                RollerPath path = scene.Build(StableHash.Mix(29UL, (ulong)slot), Prevailing(slot));
-                if (path == null) continue;
-
-                path.Bounds(0.0, out double minX, out double minY, out double minZ, out double maxX, out double maxY, out double maxZ);
-                for (double cycle = 0.0; cycle < path.Cycle; cycle += 0.1) {
-                    RollerPose pose = RollerPose.At(path, cycle);
-                    Assert.True(pose.X >= minX - 1e-9 && pose.X <= maxX + 1e-9 && pose.Z >= minZ - 1e-9 && pose.Z <= maxZ + 1e-9, $"slot {slot}: ({pose.X:0.00}, {pose.Z:0.00}) outside x {minX:0.00}..{maxX:0.00} z {minZ:0.00}..{maxZ:0.00}");
-                    Assert.InRange(pose.Y, minY - 1e-9, maxY + 1e-9);
-                }
-            }
-        }
-
-        [Fact]
-        public void JitterAndWanderStayUnderTheOffWindLimit() {
-            Assert.Equal(10.0, RollerPathSettings.JitterWithin(10.0, 35.0));
-            Assert.Equal(RollerPathSettings.MaxOffWindDegrees - 75.0, RollerPathSettings.JitterWithin(10.0, 75.0));
-            Assert.Equal(0.0, RollerPathSettings.JitterWithin(10.0, 85.0));
-            Assert.Equal(0.0, RollerPathSettings.JitterWithin(-4.0, 10.0));
-            for (double wander = 0.0; wander <= 90.0; wander += 5.0) {
-                Assert.True(RollerPathSettings.JitterWithin(80.0, wander) + wander <= Math.Max(wander, RollerPathSettings.MaxOffWindDegrees) + 1e-9);
-            }
-        }
-
-        [Fact]
-        public void ScaleDistanceFitsTheRestAndTheShortestRoll() {
-            var settings = new RollerPathSettings { MinRestGap = 6.0, MaxRestGap = 6.0, MinClippedLength = 8.0, ScaleDistance = 3.0 };
-            settings.Validate();
-            Assert.Equal(3.0, settings.MaxScaleDistance);
-            settings.ScaleDistance = 3.01;
-            Assert.Throws<ArgumentException>(() => settings.Validate());
-            settings = new RollerPathSettings { MinClippedLength = 2.0, ScaleDistance = 2.5 };
-            Assert.Equal(2.0, settings.MaxScaleDistance);
-            Assert.Throws<ArgumentException>(() => settings.Validate());
-        }
-
-        [Fact]
         public void SizeSpeedAndShapeVaryWithinBounds() {
-            var prevailing = new WindVector(0.6, 0.8);
-            double smallShare = 0.0, bigShare = 0.0, minWobble = double.MaxValue, maxWobble = 0.0;
-            int small = 0, big = 0, belowMiddle = 0, stalls = 0, built = 0;
-            for (int slot = 0; slot < 400; slot++) {
-                ulong seed = StableHash.Mix(31UL, (ulong)slot);
-                double size = RollerPath.SizeOf(seed, Settings);
-                Assert.InRange(size, Settings.MinSize, Settings.MaxSize);
-                Assert.Equal(size, RollerPath.SizeOf(seed, Settings));
-                belowMiddle += size < (Settings.MinSize + Settings.MaxSize) * 0.5 ? 1 : 0;
-                RollerPath path = RollerPathScene.Open(0.45).Build(seed, prevailing);
-                built++;
-                Assert.Equal(size, path.Size);
-                Assert.Equal(0.45 * size, path.Radius, 12);
+            double smallest = double.MaxValue, largest = 0.0, slowest = double.MaxValue, fastest = 0.0;
+            for (int slot = 0; slot < 200; slot++) {
+                ulong seed = StableHash.Mix(19UL, (ulong)slot);
+                RollerPath path = Build(RollerTestWorld.Open(), seed, Prevailing(slot), slot, Settings.MinLife);
+                Assert.InRange(path.Size, Settings.MinSize, Settings.MaxSize);
                 Assert.InRange(path.GroundSpeedShare, Settings.MinGroundSpeedShare, Settings.MaxGroundSpeedShare);
-                Assert.InRange(path.WobbleAmplitude, Settings.WobbleAmplitude * Settings.MinWobbleShare - 1e-9, Settings.WobbleAmplitude + 1e-9);
-                minWobble = Math.Min(minWobble, path.WobbleAmplitude);
-                maxWobble = Math.Max(maxWobble, path.WobbleAmplitude);
-                double[] squash = { path.SquashX, path.SquashY, path.SquashZ };
-                foreach (double axis in squash) Assert.InRange(axis, 1.0 - Settings.MaxSquash - 1e-9, 1.0 + 1e-12);
-                Assert.Equal(1.0, Math.Max(squash[0], Math.Max(squash[1], squash[2])), 12);
-                Assert.InRange(Math.Abs(path.Tilt), 0.0, Settings.MaxTiltDegrees * Math.PI / 180.0 + 1e-12);
-                if (path.HasStall) {
-                    stalls++;
-                    Assert.True(path.Heft >= Settings.StallHeft, $"slot {slot}: a light roll (heft {path.Heft:0.00}) stalls");
-                    Assert.InRange(path.StallGap, Settings.MinStall, Settings.MaxStall);
-                    Assert.InRange(path.StallAt, path.Length * 0.25 - 1e-9, path.Length);
-                    Assert.False(path.TryGetJump(path.StallAt, out _), $"slot {slot}: stalls mid-jump");
-                }
-                if (path.Heft < 0.25) {
-                    small++;
-                    smallShare += path.GroundSpeedShare;
-                } else if (path.Heft > 0.75) {
-                    big++;
-                    bigShare += path.GroundSpeedShare;
-                }
+                Assert.Equal(RollerPath.GroundSpeedShareOf(seed, path.Size, Settings), path.GroundSpeedShare);
+                Assert.InRange(Math.Min(path.SquashX, Math.Min(path.SquashY, path.SquashZ)), 1.0 - Settings.MaxSquash - 1e-9, 1.0);
+                Assert.Equal(1.0, Math.Max(path.SquashX, Math.Max(path.SquashY, path.SquashZ)), 12);
+                Assert.InRange(Math.Abs(path.Tilt), 0.0, Settings.MaxTiltDegrees * Math.PI / 180.0 + 1e-9);
+                smallest = Math.Min(smallest, path.Size);
+                largest = Math.Max(largest, path.Size);
+                slowest = Math.Min(slowest, path.GroundSpeedShare);
+                fastest = Math.Max(fastest, path.GroundSpeedShare);
             }
-            Assert.True(belowMiddle > built * 0.6, $"only {belowMiddle} of {built} sizes are below the middle of the range (small ones should be common)");
-            Assert.True(small > 0 && big > 0 && smallShare / small > bigShare / big + 0.15, $"small rolls ({small}) are not clearly faster than big ones ({big})");
-            Assert.True(stalls > 0, "no heavy roll stalls");
-            Assert.True(maxWobble - minWobble > Settings.WobbleAmplitude * 0.4, $"wobble only varies {minWobble:0.00}..{maxWobble:0.00} m");
-        }
-
-        [Fact]
-        public void AStallHoldsTheRollThenCarriesOn() {
-            RollerPath path = null;
-            for (ulong slot = 0; path == null || !path.HasStall; slot++) path = RollerPathScene.Open(0.45).Build(StableHash.Mix(37UL, slot), new WindVector(1.0, 0.0));
-            RollerPose before = RollerPose.At(path, path.StallAt - 1e-6);
-            RollerPose during = RollerPose.At(path, path.StallAt + path.StallGap * 0.5);
-            RollerPose after = RollerPose.At(path, path.StallAt + path.StallGap + 1.0);
-            Assert.True(during.IsStalled && !during.IsResting);
-            Assert.Equal(path.StallAt, during.Distance, 9);
-            Assert.Equal(before.X, during.X, 4);
-            Assert.Equal(before.Z, during.Z, 4);
-            Assert.Equal(path.StallAt + 1.0, after.Distance, 9);
-            Assert.True(RollerPose.At(path, path.Length + path.StallGap + 0.5).IsResting);
+            Assert.True(largest - smallest > 0.5 && fastest - slowest > 0.25, $"sizes {smallest:0.00}..{largest:0.00}, shares {slowest:0.00}..{fastest:0.00}");
         }
 
         [Fact]
@@ -254,18 +305,34 @@ namespace AlpineLib.Server.Tests.Sky {
             }
         }
 
-        private static void CheckPoses(RollerPath path, RollerPathScene scene) {
-            for (double cycle = 0.0; cycle < path.Cycle; cycle += 0.1) {
-                RollerPose pose = RollerPose.At(path, cycle);
+        private static RollerPath Build(IRollerWorld world, ulong seed, WindVector prevailing, int slot, double life = -1.0, double startX = double.NaN, double startZ = double.NaN) {
+            double size = RollerPath.SizeOf(seed, Settings);
+            if (double.IsNaN(startX)) {
+                startX = -prevailing.X * 60.0 + (slot % 9 - 4) * 3.1;
+                startZ = -prevailing.Z * 60.0 + (slot % 7 - 3) * 2.3;
+            }
+            return RollerPath.Build(seed, startX, startZ, 0.45 * size, size, life > 0.0 ? life : Settings.MaxLife, prevailing, Settings, world, null);
+        }
+
+        private static long CellOf(double value) {
+            return (long)Math.Floor(value / CellSize);
+        }
+
+        private static double DriftAt(WindField wind, double time) {
+            WindVector displacement = wind.Displacement(time);
+            return displacement.X * wind.Prevailing.X + displacement.Z * wind.Prevailing.Z;
+        }
+
+        private static void CheckPoses(RollerPath path) {
+            for (double rolled = 0.0; rolled < path.Length; rolled += 0.1) {
+                RollerPose pose = RollerPose.At(path, rolled);
                 double contact = path.ContactHeight(pose.Distance, pose.RollAngle, pose.Scale);
                 if (pose.IsAirborne) Assert.True(pose.Y >= contact - 0.01, $"a jump dips {contact - pose.Y:0.000} m under the contact at {pose.Distance:0.00} m");
                 else Assert.Equal(contact, pose.Y, 9);
-                double side = path.Wobble(path.StartOffset + pose.Distance);
-                Assert.InRange(Math.Abs(side), 0.0, 2.0 * Settings.WobbleAmplitude + 1e-9);
                 Assert.InRange(pose.Scale, 0.0, 1.0);
+                Assert.True(pose.IsOut);
                 double norm = pose.RotationX * pose.RotationX + pose.RotationY * pose.RotationY + pose.RotationZ * pose.RotationZ + pose.RotationW * pose.RotationW;
                 Assert.InRange(norm, 1.0 - 1e-9, 1.0 + 1e-9);
-                if (pose.IsResting || pose.IsStalled) Assert.False(pose.IsAirborne);
             }
         }
 
@@ -285,37 +352,18 @@ namespace AlpineLib.Server.Tests.Sky {
             }
         }
 
-        // Twenty sub-steps inside a frame: no sub-step moves the centre more than a steep jump's climb allows, so a
-        // frame's move is never a teleport hidden inside the frame's travel.
-        private static void CheckSubSteps(RollerPath path, WindVector prevailing, int frame, double travel, int slot) {
-            const int steps = 20;
-            RollerPose previous = RollerPose.Of(path, WindAt(prevailing, (frame - 1) * Frame));
-            for (int step = 1; step <= steps; step++) {
-                RollerPose next = RollerPose.Of(path, WindAt(prevailing, (frame - 1 + step / (double)steps) * Frame));
-                if (next.Distance < previous.Distance - 1.0) return;
-
-                double dy = Math.Abs(next.Y - previous.Y);
-                Assert.True(dy <= travel / steps * SteepestClimb + JumpLimit * 0.2, $"slot {slot}: centre jumped {dy:0.000} m up or down in 1/{steps} of a frame");
-                previous = next;
-            }
-        }
-
         // Between two frames the centre moves the roll's travel plus at most the jump limit across (and no more than a
-        // steep jump climbs up or down), the visible size and the roll angle change smoothly.
-        private static void CheckStep(RollerPath path, RollerPose previous, RollerPose next, double travel, int slot) {
+        // steep jump climbs up or down) and the roll angle changes smoothly; at a real wind so does the visible size (a
+        // gale shortens the fades in time like everything else).
+        private static void CheckStep(RollerPath path, RollerPose previous, RollerPose next, double travel, int slot, bool withSize) {
             double dx = next.X - previous.X;
             double dz = next.Z - previous.Z;
             double moved = Math.Sqrt(dx * dx + dz * dz);
             Assert.True(moved <= travel + JumpLimit, $"slot {slot}: centre jumped {moved:0.000} m across in a frame (travel {travel:0.000})");
             Assert.True(Math.Abs(next.Y - previous.Y) <= travel * SteepestClimb + JumpLimit, $"slot {slot}: centre jumped {next.Y - previous.Y:0.000} m up or down in a frame");
-            Assert.True(Math.Abs(next.Scale - previous.Scale) * path.Radius <= JumpLimit, $"slot {slot}: size jumped");
+            if (withSize) Assert.True(Math.Abs(next.Scale - previous.Scale) * path.Radius <= JumpLimit, $"slot {slot}: size jumped {Math.Abs(next.Scale - previous.Scale) * path.Radius:0.000} m");
             double turned = Math.Abs(next.RollAngle - previous.RollAngle);
-            double rockLimit = path.RockAngle * 2.0 * Math.PI * travel / path.RockPeriod;
-            Assert.True(turned <= travel / path.RollRadius + rockLimit + 1e-9, $"slot {slot}: roll angle jumped {turned:0.000} rad");
-        }
-
-        private static WindVector WindAt(WindVector direction, double seconds) {
-            return direction * (StressWind * seconds + 12345.0);
+            Assert.True(turned <= travel / path.RollRadius + 1e-9, $"slot {slot}: roll angle jumped {turned:0.000} rad");
         }
 
         private static WindVector Prevailing(int slot) {
@@ -355,13 +403,13 @@ namespace AlpineLib.Server.Tests.Sky {
             if (path == null) return "none";
 
             var text = new StringBuilder();
-            text.Append(BitConverter.DoubleToInt64Bits(path.Length)).Append(' ').Append(BitConverter.DoubleToInt64Bits(path.Phase)).Append(' ')
+            text.Append(path.End).Append(' ').Append(BitConverter.DoubleToInt64Bits(path.Length)).Append(' ')
                 .Append(BitConverter.DoubleToInt64Bits(path.Size)).Append(' ').Append(BitConverter.DoubleToInt64Bits(path.GroundSpeedShare)).Append(' ')
-                .Append(BitConverter.DoubleToInt64Bits(path.StallAt)).Append(' ').Append(BitConverter.DoubleToInt64Bits(path.Tilt)).Append(' ')
-                .Append(BitConverter.DoubleToInt64Bits(path.SquashX)).Append(' ').Append(BitConverter.DoubleToInt64Bits(path.RollRadius)).Append(' ');
+                .Append(BitConverter.DoubleToInt64Bits(path.Tilt)).Append(' ').Append(BitConverter.DoubleToInt64Bits(path.SquashX)).Append(' ')
+                .Append(BitConverter.DoubleToInt64Bits(path.RollRadius)).Append(' ');
             foreach (RollerJump jump in path.Jumps) text.Append(jump.Kind).Append(BitConverter.DoubleToInt64Bits(jump.Takeoff)).Append(',').Append(BitConverter.DoubleToInt64Bits(jump.Height)).Append(' ');
-            for (double cycle = 0.0; cycle < path.Cycle; cycle += 3.7) {
-                RollerPose pose = RollerPose.At(path, cycle);
+            for (double rolled = 0.0; rolled < path.Length; rolled += 3.7) {
+                RollerPose pose = RollerPose.At(path, rolled);
                 text.Append(BitConverter.DoubleToInt64Bits(pose.X)).Append(',').Append(BitConverter.DoubleToInt64Bits(pose.Y)).Append(',')
                     .Append(BitConverter.DoubleToInt64Bits(pose.Z)).Append(',').Append(BitConverter.DoubleToInt64Bits(pose.RotationW)).Append(' ');
             }
