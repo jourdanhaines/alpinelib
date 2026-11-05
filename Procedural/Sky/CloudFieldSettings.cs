@@ -43,6 +43,12 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Outer share of the window radius over which clouds condense in and evaporate out.</summary>
         public double DissolveShare { get; set; } = 0.15;
 
+        /// <summary>Horizontal distance past which a cloud draws its coarse mesh (same puffs, fewer facets), metres; infinite = never.</summary>
+        public double FarMeshRadius { get; set; } = double.PositiveInfinity;
+
+        /// <summary>Half-width of the band about <see cref="FarMeshRadius"/> a cloud must cross before it swaps mesh, metres.</summary>
+        public double FarMeshHysteresis { get; set; } = 50.0;
+
         /// <summary>Least chance a candidate is kept, where the coverage noise is thinnest (1 everywhere at its thickest).</summary>
         public double MinCoverage { get; set; } = 0.45;
 
@@ -128,6 +134,22 @@ namespace AlpineLib.Procedural.Sky {
             return 1.0 - share * share * (3.0 - 2.0 * share);
         }
 
+        /// <summary>
+        /// True when a cloud <paramref name="distance"/> metres (horizontal) out draws its coarse mesh: past the band about
+        /// <see cref="FarMeshRadius"/> it is coarse, inside it fine, and within the band it keeps <paramref name="wasFar"/>.
+        /// </summary>
+        public bool IsFarMesh(double distance, bool wasFar) {
+            if (distance > FarMeshRadius + FarMeshHysteresis) return true;
+            if (distance < FarMeshRadius - FarMeshHysteresis) return false;
+
+            return wasFar;
+        }
+
+        /// <summary>The mesh a cloud seen for the first time <paramref name="distance"/> metres out draws: coarse past <see cref="FarMeshRadius"/>.</summary>
+        public bool IsFarMesh(double distance) {
+            return distance > FarMeshRadius;
+        }
+
         /// <summary>Throws when a value is out of range or the classes do not fit.</summary>
         public void Validate() {
             if (!(CellSize > 0.0)) throw new ArgumentOutOfRangeException(nameof(CellSize), CellSize, "Must be positive.");
@@ -139,6 +161,7 @@ namespace AlpineLib.Procedural.Sky {
             if (!(MinCoverage >= 0.0 && MinCoverage <= 1.0)) throw new ArgumentOutOfRangeException(nameof(MinCoverage), MinCoverage, "Must be in [0, 1].");
             if (!(CoveragePeriod > 0.0)) throw new ArgumentOutOfRangeException(nameof(CoveragePeriod), CoveragePeriod, "Must be positive.");
             if (!(MinScale > 0.0 && MaxScale >= MinScale)) throw new ArgumentOutOfRangeException(nameof(MaxScale), MaxScale, "Need 0 < min <= max scale.");
+            if (!(FarMeshHysteresis >= 0.0 && FarMeshRadius > FarMeshHysteresis)) throw new ArgumentOutOfRangeException(nameof(FarMeshRadius), FarMeshRadius, "Need 0 <= hysteresis < far mesh radius.");
             ValidateClasses();
         }
 

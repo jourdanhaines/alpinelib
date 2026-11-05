@@ -89,6 +89,54 @@ namespace AlpineLib.Procedural.Sky {
         }
 
         /// <summary>
+        /// Radius scale that gives a coarse puff the volume of a fine one (a coarse icosphere is inscribed deeper in its
+        /// sphere), so a cloud keeps its bulk when it swaps to its coarse mesh; quantised so every runtime builds the same mesh.
+        /// </summary>
+        public static readonly double CoarseRadiusScale = CloudFieldScatter.Quantise(Math.Cbrt(UnitVolume(FineLevel) / UnitVolume(CoarseLevel)));
+
+        private static double UnitVolume(int level) {
+            double[] directions = Icosphere.GetDirections(level);
+            int[] triangles = Icosphere.GetTriangles(level);
+            double volume = 0.0;
+            for (int corner = 0; corner < triangles.Length; corner += 3) {
+                int a = triangles[corner] * 3;
+                int b = triangles[corner + 1] * 3;
+                int c = triangles[corner + 2] * 3;
+                double crossX = directions[b + 1] * directions[c + 2] - directions[b + 2] * directions[c + 1];
+                double crossY = directions[b + 2] * directions[c] - directions[b] * directions[c + 2];
+                double crossZ = directions[b] * directions[c + 1] - directions[b + 1] * directions[c];
+                volume += (directions[a] * crossX + directions[a + 1] * crossY + directions[a + 2] * crossZ) / 6.0;
+            }
+
+            return Math.Abs(volume);
+        }
+
+        /// <summary>
+        /// The coarse mesh of the same cloud as <see cref="Build"/>: the same puffs, every one at the coarse level and grown
+        /// by <see cref="CoarseRadiusScale"/>,
+        /// painted by height up to <paramref name="paintTop"/> (the fine mesh's top, so both share one gradient).
+        /// </summary>
+        public static FacetMesh BuildFar(CloudClassSettings cloudClass, double diameter, ulong variantSeed, CloudPalette palette, double paintTop) {
+            if (cloudClass == null) throw new ArgumentNullException(nameof(cloudClass));
+            if (palette == null) throw new ArgumentNullException(nameof(palette));
+            if (!(diameter > 0.0)) throw new ArgumentOutOfRangeException(nameof(diameter), diameter, "Must be positive.");
+            if (!(paintTop > 0.0)) throw new ArgumentOutOfRangeException(nameof(paintTop), paintTop, "Must be positive.");
+
+            cloudClass.Validate();
+            List<BlobPuff> layout = Puffs(cloudClass, diameter, variantSeed);
+            float grow = (float)CoarseRadiusScale;
+            int[] levels = new int[layout.Count];
+            for (int index = 0; index < levels.Length; index++) {
+                levels[index] = CoarseLevel;
+                layout[index] = new BlobPuff(layout[index].Centre, layout[index].Radii * grow);
+            }
+
+            FacetMesh mesh = BuildVisible(layout, levels, variantSeed);
+            FacetUv.BandByHeight(mesh, (height) => CloudUv(palette, height), 0.0, paintTop);
+            return mesh;
+        }
+
+        /// <summary>
         /// The puffs of a cloud about <paramref name="diameter"/> across: base puffs on a golden-angle spiral (largest
         /// in the middle, every one inside the footprint), then crown puffs set on the base's top near the middle.
         /// </summary>

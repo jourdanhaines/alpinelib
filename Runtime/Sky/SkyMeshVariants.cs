@@ -8,7 +8,7 @@ using UnityEngine;
 namespace AlpineLib.Sky {
     /// <summary>
     /// The sky's cached meshes: one unit silhouette per backdrop (kind, variant), the ground annulus under the
-    /// ring and one drifting cloud per (class, variant), built once from seeds and palettes and shared by every
+    /// ring and one drifting cloud per (class, variant) with its coarse far mesh, built once from seeds and palettes and shared by every
     /// camera. <see cref="Dispose"/> destroys them.
     /// </summary>
     /// <remarks>
@@ -22,6 +22,7 @@ namespace AlpineLib.Sky {
         private readonly Mesh[] _backdrop = new Mesh[BackdropSettings.MeshCount];
         private readonly double[] _cloudBankAspects = new double[BackdropSettings.VariantsPerKind];
         private readonly Mesh[] _clouds = new Mesh[CloudFieldSettings.MeshCount];
+        private readonly Mesh[] _farClouds = new Mesh[CloudFieldSettings.MeshCount];
         private readonly BlobPuff[][] _cloudPuffs = new BlobPuff[CloudFieldSettings.MeshCount][];
         private Mesh _ground;
 
@@ -73,8 +74,11 @@ namespace AlpineLib.Sky {
                 int variant = index % CloudFieldSettings.VariantsPerClass;
                 CloudClassSettings classSettings = settings.ClassOf(cloudClass);
                 double diameter = CloudHeap.TargetDiameter(classSettings, variant);
-                FacetMesh facets = CloudHeap.Build(classSettings, diameter, CloudHeap.VariantSeed(seed, cloudClass, variant), palette, out BlobPuff[] puffs);
+                ulong variantSeed = CloudHeap.VariantSeed(seed, cloudClass, variant);
+                FacetMesh facets = CloudHeap.Build(classSettings, diameter, variantSeed, palette, out BlobPuff[] puffs);
+                FacetMesh far = CloudHeap.BuildFar(classSettings, diameter, variantSeed, palette, facets.Bounds.Max.Y);
                 _clouds[index] = FacetMeshUnity.ToMesh(facets, $"Cloud {cloudClass} {variant}");
+                _farClouds[index] = FacetMeshUnity.ToMesh(far, $"Cloud {cloudClass} {variant} Far");
                 _cloudPuffs[index] = puffs;
             }
         }
@@ -82,6 +86,11 @@ namespace AlpineLib.Sky {
         /// <summary>The cloud mesh of <see cref="CloudInstance.MeshIndex"/> <paramref name="meshIndex"/>, or null before <see cref="BuildClouds"/>.</summary>
         public Mesh Cloud(int meshIndex) {
             return _clouds[meshIndex];
+        }
+
+        /// <summary>The coarse mesh of <paramref name="meshIndex"/> drawn past the far mesh radius (same puffs, fewer facets), or null before <see cref="BuildClouds"/>.</summary>
+        public Mesh FarCloud(int meshIndex) {
+            return _farClouds[meshIndex];
         }
 
         /// <summary>The puffs cloud mesh <paramref name="meshIndex"/> was heaped from (mesh space, metres), or null.</summary>
@@ -126,7 +135,9 @@ namespace AlpineLib.Sky {
         private void DestroyClouds() {
             for (int index = 0; index < _clouds.Length; index++) {
                 DestroyMesh(_clouds[index]);
+                DestroyMesh(_farClouds[index]);
                 _clouds[index] = null;
+                _farClouds[index] = null;
                 _cloudPuffs[index] = null;
             }
         }

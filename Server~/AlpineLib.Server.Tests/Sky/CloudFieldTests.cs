@@ -9,6 +9,7 @@ namespace AlpineLib.Server.Tests.Sky {
     public sealed class CloudFieldTests {
         private static readonly CloudFieldSettings Settings = CloudFieldSettings.Default;
         private static readonly CloudClass[] Classes = { CloudClass.Small, CloudClass.Medium, CloudClass.Large };
+        private const double FarReachShare = 0.65;
         private static readonly CloudPalette Palette = new CloudPalette(
             new SkyAtlasBand(new Vector2(0.1f, 0.9f), new Vector2(0.2f, 0.9f)), new SkyAtlasBand(new Vector2(0.3f, 0.9f), new Vector2(0.4f, 0.9f)));
 
@@ -163,13 +164,13 @@ namespace AlpineLib.Server.Tests.Sky {
                 previousZ = offsetZ;
             }
 
-            long tick = CloudFieldScatter.MotionTick(731.25);
+            long tick = CloudFieldScatter.MotionTick(731.125);
             scatter.SmoothOffset(cloud, CloudFieldScatter.TickTime(tick), wind, out double onX, out double onZ);
             scatter.OffsetAtTick(cloud, tick, CloudFieldScatter.HeadingAt(wind, tick), out double tickX, out double tickZ);
             Assert.Equal(tickX, onX, 9);
             Assert.Equal(tickZ, onZ, 9);
-            Assert.Equal(7312L, tick);
-            Assert.InRange(CloudFieldScatter.TickShare(731.25, tick), 0.49, 0.51);
+            Assert.Equal(2924L, tick);
+            Assert.InRange(CloudFieldScatter.TickShare(731.125, tick), 0.49, 0.51);
         }
 
         // Over an hour: wander and surge stay in bounds, the surge swings at most 15 % of a cell in any 10 minutes and moves.
@@ -457,6 +458,70 @@ namespace AlpineLib.Server.Tests.Sky {
             classes[0] = new CloudClassSettings(small.MinDiameter, small.MaxDiameter, small.MinAltitude, small.MaxAltitude, small.MinPuffs, small.MaxPuffs,
                 small.CandidatesPerCell, small.FaceBudget, small.HeightShare, driftFactor, small.WanderAmplitude, surge);
             return classes;
+        }
+
+        // The coarse far mesh heaps the same puffs at the coarse level: far fewer faces, the same footprint and height, no hole.
+        [Fact]
+        public void FarHeapsAreCoarseCopiesOfTheirHeaps() {
+            Vector3[] directions = RayDirections();
+            foreach (ulong seed in new[] { 1UL, 7UL, 42UL }) {
+                for (int meshIndex = 0; meshIndex < CloudFieldSettings.MeshCount; meshIndex++) CheckFarHeap(seed, meshIndex, directions);
+            }
+        }
+
+        [Fact]
+        public void FarMeshBandKeepsEachCloudsChoice() {
+            var settings = new CloudFieldSettings { FarMeshRadius = 1200.0, FarMeshHysteresis = 50.0 };
+            Assert.False(settings.IsFarMesh(1199.0));
+            Assert.True(settings.IsFarMesh(1201.0));
+            Assert.True(settings.IsFarMesh(1160.0, true));
+            Assert.False(settings.IsFarMesh(1240.0, false));
+            Assert.False(settings.IsFarMesh(1149.0, true));
+            Assert.True(settings.IsFarMesh(1251.0, false));
+            Assert.False(CloudFieldSettings.Default.IsFarMesh(1e9));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new CloudFieldSettings { FarMeshRadius = 40.0, FarMeshHysteresis = 50.0 }.Validate());
+            Assert.Throws<ArgumentOutOfRangeException>(() => new CloudFieldSettings { FarMeshRadius = 1200.0, FarMeshHysteresis = -1.0 }.Validate());
+
+            bool isFar = false;
+            int swaps = 0;
+            for (int step = 0; step <= 4000; step++) {
+                double distance = 1200.0 + 45.0 * Math.Sin(step * 0.05) + 0.01 * step;
+                bool next = settings.IsFarMesh(distance, isFar);
+                swaps += next != isFar ? 1 : 0;
+                isFar = next;
+            }
+            Assert.Equal(1, swaps);
+            Assert.True(isFar, "the drift past the band did not swap the cloud to its far mesh");
+        }
+
+        private static void CheckFarHeap(ulong seed, int meshIndex, Vector3[] directions) {
+            CloudClass cloudClass = CloudFieldSettings.ClassOfMesh(meshIndex);
+            int variant = meshIndex % CloudFieldSettings.VariantsPerClass;
+            CloudClassSettings settings = Settings.ClassOf(cloudClass);
+            double diameter = CloudHeap.TargetDiameter(settings, variant);
+            ulong variantSeed = CloudHeap.VariantSeed(seed, cloudClass, variant);
+            FacetMesh fine = CloudHeap.Build(settings, diameter, variantSeed, Palette, out BlobPuff[] puffs);
+            FacetMesh far = CloudHeap.BuildFar(settings, diameter, variantSeed, Palette, fine.Bounds.Max.Y);
+            Assert.Equal(far.ComputePositionHash(), CloudHeap.BuildFar(settings, diameter, variantSeed, Palette, fine.Bounds.Max.Y).ComputePositionHash());
+            string label = $"seed {seed} mesh {meshIndex}";
+            Assert.InRange(CloudHeap.CoarseRadiusScale, 1.0, 1.25);
+            Assert.True(far.FaceCount * 2 <= fine.FaceCount, $"{label}: far {far.FaceCount} faces vs fine {fine.FaceCount}");
+            FacetBounds bounds = far.Bounds;
+            FacetBounds fineBounds = fine.Bounds;
+            Assert.InRange(bounds.Min.Y, -1e-3f, 1e-3f);
+            double reach = 0.0;
+            foreach (Vector3 corner in far.Positions) reach = Math.Max(reach, Math.Sqrt(corner.X * corner.X + corner.Z * corner.Z));
+            Assert.True(reach <= diameter * FarReachShare, $"{label}: far reach {reach / diameter:0.000} of its diameter");
+            Assert.InRange(bounds.Size.Y / fineBounds.Size.Y, 0.9, 1.1);
+            Assert.InRange(Math.Max(bounds.Size.X, bounds.Size.Z) / Math.Max(fineBounds.Size.X, fineBounds.Size.Z), 0.9, 1.1);
+            foreach (BlobPuff puff in puffs) {
+                foreach (Vector3 toward in directions) {
+                    Vector3 start = puff.Centre + toward * puff.Radii * 0.5f;
+                    if (start.Y < 0.05f) continue;
+
+                    foreach (Vector3 direction in directions) Assert.True(HitsAnyFace(far, start, direction), $"{label}: a ray from {start} along {direction} escapes the far mesh");
+                }
+            }
         }
 
         private static void CheckHeap(ulong seed, int meshIndex) {

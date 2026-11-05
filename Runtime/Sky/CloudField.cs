@@ -32,6 +32,10 @@ namespace AlpineLib.Sky {
     /// (<see cref="CloudClassSettings.OneShadowDisc"/>).
     /// </para>
     /// <para>
+    /// Past <see cref="CloudFieldSettings.FarMeshRadius"/> a cloud draws its coarse mesh (same puffs, same matrix); each
+    /// camera's batch keeps every cloud's choice while it is inside the band about that radius, so none flickers.
+    /// </para>
+    /// <para>
     /// Instanced through <c>Graphics.RenderMeshInstanced</c> per camera from <c>beginCameraRendering</c>, on one layer,
     /// shadows off both ways, no probes, no motion vectors; <see cref="SkyCameraFilter"/> keeps it out of capture
     /// cameras. Draws through the material asset itself when its <c>_FogScale</c> already matches (the asset must
@@ -50,6 +54,11 @@ namespace AlpineLib.Sky {
         public const float MaxStepSeconds = 0.1f;
 
         private const int StaleBatchFrames = 120;
+
+        // The tick after next is sampled over this many frames (a 0.25 s tick lasts 15 at 60 fps), at least this many clouds a frame.
+        private const int AheadFrames = 8;
+        private const int AheadMinClouds = 64;
+        private const int LookaheadCellsPerFrame = 1;
 
         private readonly Dictionary<int, CloudBatch> _batches = new Dictionary<int, CloudBatch>();
         private readonly Dictionary<(CloudClass Class, long X, long Z), CloudCell> _cells = new Dictionary<(CloudClass Class, long X, long Z), CloudCell>();
@@ -78,6 +87,12 @@ namespace AlpineLib.Sky {
         private long _tick = long.MinValue;
         private WindVector _tickHeading;
         private WindVector _nextHeading;
+        private WindVector _aheadHeading;
+        private readonly List<CloudCell> _aheadQueue = new List<CloudCell>();
+        private long _aheadTick = long.MinValue;
+        private int _aheadBudget;
+        private readonly Queue<(CloudClass Class, long X, long Z)> _lookahead = new Queue<(CloudClass Class, long X, long Z)>();
+        private double _fullRadius;
         private double _lastStep;
         private bool _hasDisplacement;
         private bool _wasReady;
@@ -172,15 +187,21 @@ namespace AlpineLib.Sky {
             EnsureMaterial();
             WarnFarClip(camera);
             int draws = 0;
-            for (int meshIndex = 0; meshIndex < CloudFieldSettings.MeshCount; meshIndex++) {
-                List<Matrix4x4> matrices = batch.MatricesOf(meshIndex);
+            for (int slot = 0; slot < CloudBatch.SlotCount; slot++) {
+                List<Matrix4x4> matrices = batch.MatricesOf(slot);
                 if (matrices.Count == 0) continue;
 
-                Graphics.RenderMeshInstanced(CreateParams(camera, batch.Bounds), _meshes.Cloud(meshIndex), 0, matrices);
+                Graphics.RenderMeshInstanced(CreateParams(camera, batch.Bounds), MeshOf(slot), 0, matrices);
                 draws++;
             }
 
             return draws;
+        }
+
+        /// <summary>The mesh draw slot <paramref name="slot"/> of a <see cref="CloudBatch"/> draws: a cloud's fine mesh or its coarse far one.</summary>
+        public Mesh MeshOf(int slot) {
+            int meshIndex = CloudBatch.MeshOfSlot(slot);
+            return CloudBatch.IsFarSlot(slot) ? _meshes.FarCloud(meshIndex) : _meshes.Cloud(meshIndex);
         }
 
         /// <summary>The instances <paramref name="camera"/> would draw now (rebuilt when anything moved), or null when it is filtered out or nothing is ready.</summary>
@@ -191,6 +212,7 @@ namespace AlpineLib.Sky {
             if (!_hasDisplacement) return null;
 
             CloudBatch batch = BatchFor(camera);
+            BuildLookahead();
             SweepStaleBatches();
             return batch;
         }
@@ -217,15 +239,17 @@ namespace AlpineLib.Sky {
             CloudBatch batch = Peek(camera);
             if (batch == null) return;
 
-            for (int meshIndex = 0; meshIndex < CloudFieldSettings.MeshCount; meshIndex++) {
+            for (int slot = 0; slot < CloudBatch.SlotCount; slot++) {
+                int meshIndex = CloudBatch.MeshOfSlot(slot);
                 float span = _shadowSpan[meshIndex] + _shadowRadius[meshIndex] * radiusScale;
-                foreach (Matrix4x4 matrix in batch.MatricesOf(meshIndex)) {
-                    Matrix4x4 toSpace = worldToSpace * matrix;
-                    float scale = new Vector3(matrix.m00, matrix.m10, matrix.m20).magnitude;
-                    float reach = halfSize + span * scale;
-                    if (Mathf.Abs(toSpace.m03 - centre.x) > reach || Mathf.Abs(toSpace.m13 - centre.y) > reach) continue;
+                List<Vector4> centres = batch.CentresOf(slot);
+                for (int index = 0; index < centres.Count; index++) {
+                    Vector4 cloud = centres[index];
+                    Vector3 at = worldToSpace.MultiplyPoint3x4(new Vector3(cloud.x, cloud.y, cloud.z));
+                    float reach = halfSize + span * cloud.w;
+                    if (Mathf.Abs(at.x - centre.x) > reach || Mathf.Abs(at.y - centre.y) > reach) continue;
 
-                    AppendFootprints(toSpace, scale, meshIndex, footprints);
+                    AppendFootprints(worldToSpace * batch.MatricesOf(slot)[index], cloud.w, meshIndex, footprints);
                 }
             }
         }
@@ -241,6 +265,9 @@ namespace AlpineLib.Sky {
             foreach (CloudCell cell in _cells.Values) RecycleCell(cell);
             _cells.Clear();
             _batches.Clear();
+            _lookahead.Clear();
+            _aheadQueue.Clear();
+            _aheadTick = long.MinValue;
             _revision++;
         }
 
@@ -316,8 +343,10 @@ namespace AlpineLib.Sky {
             long tick = CloudFieldScatter.MotionTick(_time);
             if (tick == _tick) return;
 
-            _tickHeading = tick == _tick + 1 ? _nextHeading : CloudFieldScatter.HeadingAt(field, tick);
-            _nextHeading = CloudFieldScatter.HeadingAt(field, tick + 1);
+            bool isStep = tick == _tick + 1;
+            _tickHeading = isStep ? _nextHeading : CloudFieldScatter.HeadingAt(field, tick);
+            _nextHeading = isStep ? _aheadHeading : CloudFieldScatter.HeadingAt(field, tick + 1);
+            _aheadHeading = CloudFieldScatter.HeadingAt(field, tick + 2);
             _tick = tick;
         }
 
@@ -387,14 +416,18 @@ namespace AlpineLib.Sky {
             float groundY = _frame != null ? _frame.GroundY : 0f;
             batch.Clear();
             batch.WindowCells = _scatter.Settings.WindowCells;
+            _fullRadius = _scatter.Settings.FullRadius;
             for (int classIndex = 0; classIndex < CloudFieldSettings.ClassCount; classIndex++) {
                 var cloudClass = (CloudClass)classIndex;
                 CloudFieldFrame frame = CloudFieldFrame.Locate(absoluteX, absoluteZ, _scatter.DriftOf(cloudClass, _displacement), _scatter.Settings.CellSize);
-                hasMoved |= batch.CellXOf(cloudClass) != frame.CellX || batch.CellZOf(cloudClass) != frame.CellZ;
+                bool hasClassMoved = hasMoved || batch.CellXOf(cloudClass) != frame.CellX || batch.CellZOf(cloudClass) != frame.CellZ;
+                hasMoved |= hasClassMoved;
                 batch.SetCell(cloudClass, frame.CellX, frame.CellZ);
                 AddWindow(batch, cloudClass, frame, world, groundY);
+                if (hasClassMoved) QueueLookahead(cloudClass, frame);
             }
 
+            PrepareAhead();
             batch.CloseBounds(new Vector3(world.x, groundY, world.z), _reach);
             batch.CameraWorld = world;
             batch.AbsoluteX = absoluteX;
@@ -404,7 +437,64 @@ namespace AlpineLib.Sky {
             batch.Fade = _fade;
             batch.Revision = _revision;
             batch.IsBuilt = true;
-            if (hasMoved) ReleaseCells();
+            if (!hasMoved) return;
+
+            batch.DropBandsOutside();
+            ReleaseCells();
+        }
+
+        // Cells of the ring just past the window (within one cell of its radius) that are not built yet: built a few a
+        // frame, so a cell is ready before the camera's drift brings it into the window and no frame builds a whole row.
+        private void QueueLookahead(CloudClass cloudClass, CloudFieldFrame frame) {
+            int ring = _scatter.Settings.WindowCells + CloudBatch.LookaheadCells;
+            double inner = _scatter.Settings.WindowRadius;
+            double outer = inner + _scatter.Settings.CellSize;
+            for (long cellZ = frame.CellZ - ring; cellZ <= frame.CellZ + ring; cellZ++) {
+                double nearZ = NearestAcross(frame.OffsetZ(cellZ, 0.0));
+                for (long cellX = frame.CellX - ring; cellX <= frame.CellX + ring; cellX++) {
+                    double nearX = NearestAcross(frame.OffsetX(cellX, 0.0));
+                    double near = nearX * nearX + nearZ * nearZ;
+                    if (near < inner * inner || near >= outer * outer || _cells.ContainsKey((cloudClass, cellX, cellZ))) continue;
+
+                    _lookahead.Enqueue((cloudClass, cellX, cellZ));
+                }
+            }
+        }
+
+        private void BuildLookahead() {
+            int built = 0;
+            while (_lookahead.Count > 0 && built < LookaheadCellsPerFrame) {
+                (CloudClass Class, long X, long Z) key = _lookahead.Dequeue();
+                if (_cells.ContainsKey(key) || !IsHeld(key)) continue;
+
+                CellOf(key.Class, key.X, key.Z);
+                built++;
+            }
+        }
+
+        /// <summary>Lookahead cells queued but not built yet.</summary>
+        public int PendingCellCount => _lookahead.Count;
+
+        // Samples the tick after next for a share of the cached cells each frame, so a tick change costs a shift, not a
+        // sample of every cloud; cells left over when the tick turns sample in Prepare as before (same values either way).
+        private void PrepareAhead() {
+            if (_aheadTick != _tick) {
+                _aheadTick = _tick;
+                _aheadQueue.Clear();
+                int clouds = 0;
+                foreach (CloudCell cell in _cells.Values) {
+                    _aheadQueue.Add(cell);
+                    clouds += cell.Clouds.Count;
+                }
+                _aheadBudget = Math.Max(AheadMinClouds, clouds / AheadFrames + 1);
+            }
+
+            int sampled = 0;
+            while (_aheadQueue.Count > 0 && sampled < _aheadBudget) {
+                CloudCell cell = _aheadQueue[_aheadQueue.Count - 1];
+                _aheadQueue.RemoveAt(_aheadQueue.Count - 1);
+                sampled += cell.PrepareAhead(_scatter, _tick + 2, _aheadHeading);
+            }
         }
 
         // Every cell of the class's window that comes within the window's radius (its clouds never leave it).
@@ -439,6 +529,8 @@ namespace AlpineLib.Sky {
             cell.Prepare(_scatter, _tick, _tickHeading, _nextHeading);
             double reach = _scatter.Settings.WindowRadius + _scatter.Settings.ClassOf(cloudClass).MotionReach;
             List<CloudInstance> clouds = cell.Clouds;
+            byte[] bands = batch.BandsOf(cloudClass, cellX, cellZ, clouds.Count);
+            CloudFieldSettings settings = _scatter.Settings;
             for (int index = 0; index < clouds.Count; index++) {
                 CloudInstance cloud = clouds[index];
                 double offsetX = frame.OffsetX(cellX, cloud.AnchorX);
@@ -446,13 +538,17 @@ namespace AlpineLib.Sky {
                 if (offsetX * offsetX + offsetZ * offsetZ >= reach * reach) continue;
 
                 cell.OffsetOf(index, share, out double moveX, out double moveZ);
-                AddCloud(batch, cloud, offsetX + moveX, offsetZ + moveZ, world, groundY);
+                offsetX += moveX;
+                offsetZ += moveZ;
+                double distance = Math.Sqrt(offsetX * offsetX + offsetZ * offsetZ);
+                bool isFar = CloudBatch.ResolveFar(settings, bands, index, distance);
+                AddCloud(batch, cloud, offsetX, offsetZ, distance, isFar, world, groundY);
             }
         }
 
-        // Shrunk about its flat base by its presence and the fade; turned by its cached heading.
-        private void AddCloud(CloudBatch batch, in CloudInstance cloud, double offsetX, double offsetZ, Vector3 world, float groundY) {
-            double presence = _scatter.Presence(Math.Sqrt(offsetX * offsetX + offsetZ * offsetZ)) * _fade;
+        // Shrunk about its flat base by its presence and the fade; turned by its cached heading; coarse past the far mesh band.
+        private void AddCloud(CloudBatch batch, in CloudInstance cloud, double offsetX, double offsetZ, double distance, bool isFar, Vector3 world, float groundY) {
+            double presence = (distance <= _fullRadius ? 1.0 : _scatter.Presence(distance)) * _fade;
             if (presence <= 0.0) return;
 
             float scale = (float)(cloud.Scale * presence);
@@ -462,7 +558,7 @@ namespace AlpineLib.Sky {
                 m00 = cos, m02 = sin, m11 = scale, m20 = -sin, m22 = cos, m33 = 1f,
                 m03 = world.x + (float)offsetX, m13 = groundY + (float)cloud.Altitude, m23 = world.z + (float)offsetZ,
             };
-            batch.Add(cloud.MeshIndex, matrix);
+            batch.Add(isFar ? cloud.MeshIndex + CloudFieldSettings.MeshCount : cloud.MeshIndex, matrix, scale);
         }
 
         private CloudCell CellOf(CloudClass cloudClass, long cellX, long cellZ) {

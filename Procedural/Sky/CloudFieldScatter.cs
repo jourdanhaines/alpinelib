@@ -34,8 +34,8 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Gain on the surge noise before it is clamped to ±1, so a cloud spends its time across the whole swing.</summary>
         public const double SurgeGain = 2.0;
 
-        /// <summary>Step of the motion ticks the wander and surge are sampled at and blended between, seconds (they move millimetres a frame).</summary>
-        public const double MotionTickSeconds = 0.1;
+        /// <summary>Step of the motion ticks the wander and surge are sampled at and blended between, seconds (they move millimetres a frame; the blend is within millimetres of the curve).</summary>
+        public const double MotionTickSeconds = 0.25;
 
         /// <summary>Steps per metre (or unit) values from libm are rounded to, so every runtime gets the same bits.</summary>
         public const double QuantumSteps = 1024.0;
