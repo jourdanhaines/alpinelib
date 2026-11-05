@@ -11,18 +11,36 @@ namespace AlpineLib.Sky {
             for (int index = 0; index < _matrices.Length; index++) _matrices[index] = new List<Matrix4x4>();
         }
 
-        /// <summary>True once matrices were built.</summary>
+        /// <summary>True once feature matrices were built.</summary>
         public bool IsBuilt { get; set; }
 
-        /// <summary>Camera world position the matrices were built at.</summary>
+        /// <summary>The layout revision the feature matrices were built from.</summary>
+        public int Revision { get; set; }
+
+        /// <summary>Keep-out cell of the camera the features were picked for.</summary>
+        public long CellX { get; set; }
+        public long CellZ { get; set; }
+
+        /// <summary>Camera absolute minus world xz the features were placed with (changes on an origin shift).</summary>
+        public double OffsetX { get; set; }
+        public double OffsetZ { get; set; }
+
+        /// <summary>Camera absolute xz the features were picked at.</summary>
+        public double FeaturesX { get; set; }
+        public double FeaturesZ { get; set; }
+
+        /// <summary>True once the ground was placed.</summary>
+        public bool IsGroundPlaced { get; set; }
+
+        /// <summary>The layout revision the ground was placed for.</summary>
+        public int GroundRevision { get; set; }
+
+        /// <summary>Camera world position the ground was placed at.</summary>
         public Vector3 CameraWorld { get; set; }
 
-        /// <summary>Camera absolute xz the matrices were built at.</summary>
+        /// <summary>Camera absolute xz the ground was placed at.</summary>
         public double AbsoluteX { get; set; }
         public double AbsoluteZ { get; set; }
-
-        /// <summary>The layout revision the matrices were built from.</summary>
-        public int Revision { get; set; }
 
         /// <summary>Frame of the last draw (stale batches are dropped).</summary>
         public int LastUsedFrame { get; set; }
@@ -33,7 +51,7 @@ namespace AlpineLib.Sky {
         /// <summary>Box holding every instance.</summary>
         public Bounds Bounds { get; set; }
 
-        /// <summary>Where the ground annulus is drawn (about the camera, below the ground).</summary>
+        /// <summary>Where the ground is drawn (the annulus about the camera, or the lattice about its anchor; below the ground).</summary>
         public Matrix4x4 GroundMatrix { get; set; }
 
         /// <summary>Box holding the ground annulus.</summary>

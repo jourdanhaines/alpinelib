@@ -81,32 +81,116 @@ namespace AlpineLib.Server.Tests.Sky {
             Assert.Equal(-1, maxX);
         }
 
+        // Every drawn feature is the sector's own, at its absolute position: what a camera draws never depends on where it is.
         [Fact]
-        public void PresenceRampsAcrossTheFadeBands() {
-            Assert.Equal(0.0, Settings.Presence(BackdropFeatureKind.Mesa, 400.0));
-            Assert.Equal(0.0, Settings.Presence(BackdropFeatureKind.Mesa, 420.0));
-            Assert.Equal(0.5, Settings.Presence(BackdropFeatureKind.Mesa, 450.0), 12);
-            Assert.Equal(1.0, Settings.Presence(BackdropFeatureKind.Ridge, 620.0));
-            Assert.Equal(0.25, Settings.Presence(BackdropFeatureKind.Butte, 805.0), 12);
-            Assert.Equal(0.0, Settings.Presence(BackdropFeatureKind.Butte, 820.0));
-            Assert.Equal(0.0, Settings.Presence(BackdropFeatureKind.CloudBank, 590.0));
-            Assert.Equal(1.0, Settings.Presence(BackdropFeatureKind.CloudBank, 700.0));
-            Assert.Equal(0.0, Settings.Presence(BackdropFeatureKind.CloudBank, double.NaN));
+        public void DrawnFeaturesAreWorldFixed() {
+            BackdropLayout layout = Layout(5UL, 6UL, Settings);
+            var random = new SplitMix64(77UL);
+            int drawn = 0;
+            for (int trial = 0; trial < 200; trial++) {
+                double cameraX = (random.NextDouble() - 0.5) * 2.0e5;
+                double cameraZ = (random.NextDouble() - 0.5) * 2.0e5;
+                var features = new List<BackdropFeature>();
+                layout.AppendDrawn(cameraX, cameraZ, features);
+                drawn += features.Count;
+                foreach (BackdropFeature feature in features) {
+                    string own = Describe(layout.Sector(feature.SectorX, feature.SectorZ));
+                    Assert.Contains(Describe(new[] { feature }), own);
+                    Assert.Equal(feature.SectorX * Settings.SectorSize + feature.LocalX, feature.AbsoluteX(Settings.SectorSize));
+                }
+            }
+
+            Assert.True(drawn > 200 * 10, $"only {drawn} features over 200 cameras");
+        }
+
+        // From any camera, every part of every drawn feature is at least the clear distance from every point of the
+        // camera's cell (so past the loaded 7x7 by the keep-out margin), and its centre within the outer radius.
+        [Fact]
+        public void NoDrawnFeatureComesNearTheLoadedWorld() {
+            BackdropLayout layout = Layout(9UL, 10UL, Settings);
+            var random = new SplitMix64(78UL);
+            double size = Settings.KeepOutCellSize;
+            double least = double.MaxValue;
+            for (int trial = 0; trial < 400; trial++) {
+                double cameraX = (random.NextDouble() - 0.5) * 2.0e5;
+                double cameraZ = (random.NextDouble() - 0.5) * 2.0e5;
+                var features = new List<BackdropFeature>();
+                layout.AppendDrawn(cameraX, cameraZ, features);
+                layout.KeepOutCellOf(cameraX, cameraZ, out long cellX, out long cellZ);
+                foreach (BackdropFeature feature in features) {
+                    double x = feature.AbsoluteX(Settings.SectorSize);
+                    double z = feature.AbsoluteZ(Settings.SectorSize);
+                    double fromCell = Gap(x, cellX * size, (cellX + 1) * size, z, cellZ * size, (cellZ + 1) * size) - feature.Reach;
+                    double fromWindow = layout.KeepOutGap(x, z, cellX, cellZ) - feature.Reach;
+                    least = Math.Min(least, fromCell);
+                    Assert.True(fromCell >= Settings.ClearDistance - 1e-6, $"a feature reaches {fromCell:0.0} m from the camera's cell");
+                    Assert.True(fromWindow >= Settings.KeepOutMargin - 1e-6, $"a feature reaches {fromWindow:0.0} m from the loaded window");
+                    Assert.True(Math.Sqrt((x - cameraX) * (x - cameraX) + (z - cameraZ) * (z - cameraZ)) <= Settings.OuterRadius);
+                }
+            }
+
+            Assert.InRange(least, Settings.ClearDistance, Settings.ClearDistance + 40.0);
+        }
+
+        [Fact]
+        public void RepeatQueriesAgree() {
+            var features = new List<BackdropFeature>();
+            var again = new List<BackdropFeature>();
+            var fresh = new List<BackdropFeature>();
+            Layout(3UL, 4UL, Settings).AppendDrawn(-40123.5, 9876.25, features);
+            BackdropLayout layout = Layout(3UL, 4UL, BackdropSettings.Default);
+            layout.AppendDrawn(-40123.5, 9876.25, again);
+            layout.AppendDrawn(-40123.5, 9876.25, fresh);
+            Assert.NotEmpty(features);
+            Assert.Equal(Describe(features.ToArray()), Describe(again.ToArray()));
+            Assert.Equal(Describe(features.ToArray()), Describe(fresh.ToArray()));
+        }
+
+        // A 500 m walk in quarter-metre steps: features join or leave only as the camera crosses a cell (then at least
+        // the clear distance away) or as their centre crosses the outer radius (in full fog), and none comes nearer.
+        [Theory]
+        [InlineData(0.0, 1.0, 0.0)]
+        [InlineData(37.0, 0.8, 0.6)]
+        [InlineData(-5000.5, -0.6, 0.8)]
+        public void MembershipChangesOnlyAcrossCellsOrAtTheOuterEdge(double startX, double directionX, double directionZ) {
+            BackdropLayout layout = Layout(21UL, 22UL, Settings);
+            const double step = 0.25;
+            var previous = DrawnKeys(layout, startX, 64.0);
+            layout.KeepOutCellOf(startX, 64.0, out long previousX, out long previousZ);
+            int joins = 0;
+            for (int index = 1; index <= 2000; index++) {
+                double x = startX + directionX * step * index;
+                double z = 64.0 + directionZ * step * index;
+                layout.KeepOutCellOf(x, z, out long cellX, out long cellZ);
+                bool isCrossing = cellX != previousX || cellZ != previousZ;
+                var current = DrawnKeys(layout, x, z);
+                joins += CheckChanges(previous, current, x, z, isCrossing, step);
+                CheckClear(current, x, z);
+                previous = current;
+                previousX = cellX;
+                previousZ = cellZ;
+            }
+
+            Assert.True(joins > 0, "a 500 m walk changed nothing");
         }
 
         [Fact]
         public void FarClipCoversTheRing() {
-            Assert.Equal(940.0, Settings.RequiredFarClip);
-            Assert.True(Settings.RequiredFarClip <= 1000.0);
+            Assert.Equal(1050.0, Settings.RequiredFarClip);
+            Assert.True(Settings.RequiredFarClip <= 1100.0);
+            Assert.Equal(316.0, Settings.KeepOutMargin, 12);
+            Assert.True(Settings.GroundOuterRadius - Settings.GroundLatticeSnap * Math.Sqrt(0.5) >= Settings.OuterRadius);
         }
 
         [Fact]
         public void SettingsRejectInvertedBands() {
-            Assert.Throws<ArgumentOutOfRangeException>(() => Layout(1UL, 2UL, new BackdropSettings { OuterRadius = 300.0 }));
+            Assert.Throws<ArgumentOutOfRangeException>(() => Layout(1UL, 2UL, new BackdropSettings { OuterRadius = 650.0 }));
+            Assert.Throws<ArgumentOutOfRangeException>(() => Layout(1UL, 2UL, new BackdropSettings { ClearDistance = 300.0 }));
+            Assert.Throws<ArgumentOutOfRangeException>(() => Layout(1UL, 2UL, new BackdropSettings { KeepOutRadiusCells = -1 }));
             Assert.Throws<ArgumentOutOfRangeException>(() => Layout(1UL, 2UL, new BackdropSettings { MaxFeaturesPerSector = -1 }));
-            Assert.Throws<ArgumentOutOfRangeException>(() => Layout(1UL, 2UL, new BackdropSettings { ParallaxFactor = 1.0 }));
             Assert.Throws<ArgumentNullException>(() => Layout(1UL, 2UL, null));
             Assert.Throws<ArgumentOutOfRangeException>(() => Layout(1UL, 2UL, new BackdropSettings { GroundOuterRadius = 300.0 }));
+            Assert.Throws<ArgumentOutOfRangeException>(() => Layout(1UL, 2UL, new BackdropSettings { GroundOuterRadius = 1060.0 }));
             Assert.Throws<ArgumentOutOfRangeException>(() => Layout(1UL, 2UL, new BackdropSettings { CloudBankWidthJitter = 1.0 }));
             Assert.Throws<ArgumentNullException>(() => new BackdropLayout(1UL, 2UL, Settings, null));
             Assert.Throws<ArgumentException>(() => new BackdropLayout(1UL, 2UL, Settings, new[] { 4.0, 4.0 }));
@@ -312,8 +396,8 @@ namespace AlpineLib.Server.Tests.Sky {
         }
 
         private static ulong MixRock(ulong hash, BackdropFeature feature) {
-            hash = StableHash.Mix(hash, (ulong)BitConverter.DoubleToInt64Bits(feature.FrameX(Settings.SectorSize)));
-            hash = StableHash.Mix(hash, (ulong)BitConverter.DoubleToInt64Bits(feature.FrameZ(Settings.SectorSize)));
+            hash = StableHash.Mix(hash, (ulong)BitConverter.DoubleToInt64Bits(feature.AbsoluteX(Settings.SectorSize)));
+            hash = StableHash.Mix(hash, (ulong)BitConverter.DoubleToInt64Bits(feature.AbsoluteZ(Settings.SectorSize)));
             hash = StableHash.Mix(hash, (ulong)BitConverter.DoubleToInt64Bits(feature.Width));
             hash = StableHash.Mix(hash, (ulong)BitConverter.DoubleToInt64Bits(feature.Height));
             return StableHash.Mix(hash, (ulong)feature.Kind);
@@ -323,6 +407,58 @@ namespace AlpineLib.Server.Tests.Sky {
             return new BackdropPalette(new SkyAtlasBand(new Vector2(0.1f, 0.9f), new Vector2(0.1f, 0.8f)), new SkyAtlasBand(new Vector2(0.2f, 0.9f), new Vector2(0.2f, 0.8f)),
                 new SkyAtlasBand(new Vector2(0.3f, 0.9f), new Vector2(0.3f, 0.8f)), new SkyAtlasBand(new Vector2(0.4f, 0.9f), new Vector2(0.4f, 0.8f)),
                 new SkyAtlasBand(new Vector2(0.5f, 0.9f), new Vector2(0.5f, 0.8f)));
+        }
+
+        private static Dictionary<string, BackdropFeature> DrawnKeys(BackdropLayout layout, double cameraX, double cameraZ) {
+            var features = new List<BackdropFeature>();
+            layout.AppendDrawn(cameraX, cameraZ, features);
+            var keys = new Dictionary<string, BackdropFeature>();
+            foreach (BackdropFeature feature in features) keys.Add(Describe(new[] { feature }), feature);
+            return keys;
+        }
+
+        // Each join or leave between two steps: on a cell crossing it is at least the clear distance away, else its centre is at the outer radius.
+        private static int CheckChanges(Dictionary<string, BackdropFeature> previous, Dictionary<string, BackdropFeature> current, double cameraX, double cameraZ, bool isCrossing, double step) {
+            int changes = 0;
+            foreach (KeyValuePair<string, BackdropFeature> entry in current) {
+                if (previous.ContainsKey(entry.Key)) continue;
+
+                changes++;
+                CheckChange(entry.Value, cameraX, cameraZ, isCrossing, step);
+            }
+            foreach (KeyValuePair<string, BackdropFeature> entry in previous) {
+                if (current.ContainsKey(entry.Key)) continue;
+
+                changes++;
+                CheckChange(entry.Value, cameraX, cameraZ, isCrossing, step);
+            }
+            return changes;
+        }
+
+        private static void CheckChange(BackdropFeature feature, double cameraX, double cameraZ, bool isCrossing, double step) {
+            double centre = Distance(feature, cameraX, cameraZ);
+            bool isAtOuterEdge = Math.Abs(centre - Settings.OuterRadius) <= step + 1e-9;
+            Assert.True(isAtOuterEdge || isCrossing, $"a feature {centre:0.0} m away changed inside a cell");
+            Assert.True(centre - feature.Reach >= Settings.ClearDistance - step - 1e-9, $"a feature changed only {centre - feature.Reach:0.0} m away");
+        }
+
+        private static void CheckClear(Dictionary<string, BackdropFeature> current, double cameraX, double cameraZ) {
+            foreach (BackdropFeature feature in current.Values) {
+                double nearest = Distance(feature, cameraX, cameraZ) - feature.Reach;
+                Assert.True(nearest >= Settings.ClearDistance - 1e-6, $"a drawn feature reaches {nearest:0.0} m from the camera");
+            }
+        }
+
+        private static double Distance(BackdropFeature feature, double cameraX, double cameraZ) {
+            double deltaX = feature.AbsoluteX(Settings.SectorSize) - cameraX;
+            double deltaZ = feature.AbsoluteZ(Settings.SectorSize) - cameraZ;
+            return Math.Sqrt(deltaX * deltaX + deltaZ * deltaZ);
+        }
+
+        private static double Gap(double x, double minX, double maxX, double z, double minZ, double maxZ) {
+            double gapX = x < minX ? minX - x : x > maxX ? x - maxX : 0.0;
+            double gapZ = z < minZ ? minZ - z : z > maxZ ? z - maxZ : 0.0;
+            return Math.Sqrt(gapX * gapX + gapZ * gapZ);
         }
 
         private static BackdropFeature[] Around(BackdropLayout layout) {

@@ -1,6 +1,8 @@
+using System;
+
 namespace AlpineLib.Procedural.Sky {
     /// <summary>
-    /// One silhouette of the backdrop ring: its sector, where it stands in that sector (backdrop-frame metres
+    /// One silhouette of the backdrop ring: its sector, where it stands in that sector (absolute-world metres
     /// from the sector's min corner), its kind and mesh variant, yaw, and size.
     /// </summary>
     public readonly struct BackdropFeature {
@@ -48,17 +50,29 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Height of its base above the ground, metres (0 for rock).</summary>
         public double Altitude { get; }
 
-        /// <summary>Backdrop-frame x of the feature with sectors of <paramref name="sectorSize"/> metres.</summary>
-        public double FrameX(double sectorSize) {
+        /// <summary>Absolute-world x of the feature with sectors of <paramref name="sectorSize"/> metres.</summary>
+        public double AbsoluteX(double sectorSize) {
             return SectorX * sectorSize + LocalX;
         }
 
-        /// <summary>Backdrop-frame z of the feature with sectors of <paramref name="sectorSize"/> metres.</summary>
-        public double FrameZ(double sectorSize) {
+        /// <summary>Absolute-world z of the feature with sectors of <paramref name="sectorSize"/> metres.</summary>
+        public double AbsoluteZ(double sectorSize) {
             return SectorZ * sectorSize + LocalZ;
         }
 
         /// <summary>Index of the feature's mesh among every kind's variants.</summary>
         public int MeshIndex => (int)Kind * BackdropSettings.VariantsPerKind + Variant;
+
+        /// <summary>Farthest any part of the feature's footprint lies from its centre, at any yaw, metres.</summary>
+        public double Reach => ReachOf(Kind, Width, Depth);
+
+        /// <summary>
+        /// Footprint reach of a <paramref name="kind"/> silhouette <paramref name="width"/> by <paramref name="depth"/>:
+        /// rock's unit footprint fits a half-unit square, a cloud bank's z runs up to one depth either side.
+        /// </summary>
+        public static double ReachOf(BackdropFeatureKind kind, double width, double depth) {
+            double halfDepth = kind == BackdropFeatureKind.CloudBank ? depth : depth * 0.5;
+            return Math.Sqrt(width * width * 0.25 + halfDepth * halfDepth);
+        }
     }
 }

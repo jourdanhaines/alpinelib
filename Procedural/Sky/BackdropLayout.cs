@@ -3,8 +3,9 @@ using System.Collections.Generic;
 
 namespace AlpineLib.Procedural.Sky {
     /// <summary>
-    /// Seeds the backdrop frame on a grid of sectors: each sector's features depend only on the two stream seeds
-    /// and its coordinate, so every client sees the same skyline from the same absolute position.
+    /// Seeds world-fixed silhouettes on a grid of absolute-world sectors: each sector's features depend only on the two
+    /// stream seeds and its coordinate, so every client sees the same skyline in the same place, and decides which of
+    /// them a camera draws (<see cref="IsDrawn"/>).
     /// </summary>
     /// <remarks>
     /// Placement, kind and size draw from <c>Mix(Mix(layoutSeed, sx), sz)</c>; mesh variant and yaw (and a cloud
@@ -60,22 +61,65 @@ namespace AlpineLib.Procedural.Sky {
             return features.ToArray();
         }
 
-        /// <summary>The sector holding backdrop-frame (<paramref name="frameX"/>, <paramref name="frameZ"/>).</summary>
-        public void SectorOf(double frameX, double frameZ, out int sectorX, out int sectorZ) {
-            sectorX = (int)Math.Floor(frameX / Settings.SectorSize);
-            sectorZ = (int)Math.Floor(frameZ / Settings.SectorSize);
+        /// <summary>The sector holding absolute (<paramref name="x"/>, <paramref name="z"/>).</summary>
+        public void SectorOf(double x, double z, out int sectorX, out int sectorZ) {
+            sectorX = (int)Math.Floor(x / Settings.SectorSize);
+            sectorZ = (int)Math.Floor(z / Settings.SectorSize);
         }
 
         /// <summary>
         /// Appends every feature of the sectors overlapping the square of half-size <paramref name="radius"/> around
-        /// backdrop-frame (<paramref name="frameX"/>, <paramref name="frameZ"/>), sectors row-major (z, then x).
+        /// absolute (<paramref name="x"/>, <paramref name="z"/>), sectors row-major (z, then x).
         /// </summary>
-        public void AppendAround(double frameX, double frameZ, double radius, List<BackdropFeature> features) {
-            SectorOf(frameX - radius, frameZ - radius, out int minX, out int minZ);
-            SectorOf(frameX + radius, frameZ + radius, out int maxX, out int maxZ);
+        public void AppendAround(double x, double z, double radius, List<BackdropFeature> features) {
+            SectorOf(x - radius, z - radius, out int minX, out int minZ);
+            SectorOf(x + radius, z + radius, out int maxX, out int maxZ);
             for (int sectorZ = minZ; sectorZ <= maxZ; sectorZ++) {
                 for (int sectorX = minX; sectorX <= maxX; sectorX++) AppendSector(sectorX, sectorZ, features);
             }
+        }
+
+        /// <summary>Appends, in sector order, every feature a camera at absolute (<paramref name="cameraX"/>, <paramref name="cameraZ"/>) draws.</summary>
+        public void AppendDrawn(double cameraX, double cameraZ, List<BackdropFeature> features) {
+            var around = new List<BackdropFeature>();
+            AppendAround(cameraX, cameraZ, Settings.OuterRadius, around);
+            KeepOutCellOf(cameraX, cameraZ, out long cellX, out long cellZ);
+            foreach (BackdropFeature feature in around) {
+                if (IsDrawn(feature, cameraX, cameraZ, cellX, cellZ)) features.Add(feature);
+            }
+        }
+
+        /// <summary>The keep-out cell holding absolute (<paramref name="x"/>, <paramref name="z"/>): cell i spans [i, i + 1) × cell size.</summary>
+        public void KeepOutCellOf(double x, double z, out long cellX, out long cellZ) {
+            cellX = (long)Math.Floor(x / Settings.KeepOutCellSize);
+            cellZ = (long)Math.Floor(z / Settings.KeepOutCellSize);
+        }
+
+        /// <summary>
+        /// True when a camera at absolute (<paramref name="cameraX"/>, <paramref name="cameraZ"/>) in keep-out cell
+        /// (<paramref name="cellX"/>, <paramref name="cellZ"/>) draws <paramref name="feature"/>: its centre within
+        /// <see cref="BackdropSettings.OuterRadius"/> of the camera and its whole footprint at least
+        /// <see cref="BackdropSettings.KeepOutMargin"/> outside the keep-out square. The answer changes only when the
+        /// camera crosses a cell (at <see cref="BackdropSettings.ClearDistance"/> or more) or at the outer radius.
+        /// </summary>
+        public bool IsDrawn(in BackdropFeature feature, double cameraX, double cameraZ, long cellX, long cellZ) {
+            double x = feature.AbsoluteX(Settings.SectorSize);
+            double z = feature.AbsoluteZ(Settings.SectorSize);
+            double deltaX = x - cameraX;
+            double deltaZ = z - cameraZ;
+            double outer = Settings.OuterRadius;
+            if (!(deltaX * deltaX + deltaZ * deltaZ <= outer * outer)) return false;
+
+            return KeepOutGap(x, z, cellX, cellZ) - feature.Reach >= Settings.KeepOutMargin;
+        }
+
+        /// <summary>Distance from absolute (<paramref name="x"/>, <paramref name="z"/>) to the keep-out square of cell (<paramref name="cellX"/>, <paramref name="cellZ"/>); 0 inside it.</summary>
+        public double KeepOutGap(double x, double z, long cellX, long cellZ) {
+            double size = Settings.KeepOutCellSize;
+            int radius = Settings.KeepOutRadiusCells;
+            double gapX = AxisGap(x, (cellX - radius) * size, (cellX + radius + 1) * size);
+            double gapZ = AxisGap(z, (cellZ - radius) * size, (cellZ + radius + 1) * size);
+            return Math.Sqrt(gapX * gapX + gapZ * gapZ);
         }
 
         private BackdropFeature CreateFeature(int sectorX, int sectorZ, SplitMix64 layout, SplitMix64 looks) {
@@ -128,6 +172,12 @@ namespace AlpineLib.Procedural.Sky {
             if (pick < Settings.MesaWeight) return BackdropFeatureKind.Mesa;
 
             return pick < Settings.MesaWeight + Settings.ButteWeight ? BackdropFeatureKind.Butte : BackdropFeatureKind.Ridge;
+        }
+
+        private static double AxisGap(double value, double low, double high) {
+            if (value < low) return low - value;
+
+            return value > high ? value - high : 0.0;
         }
 
         private static double Lerp(double low, double high, double t) {

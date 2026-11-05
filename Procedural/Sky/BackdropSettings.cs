@@ -2,10 +2,11 @@ using System;
 
 namespace AlpineLib.Procedural.Sky {
     /// <summary>
-    /// Tunables of the backdrop ring: the band around the camera silhouettes are drawn in, the sector grid they
-    /// are seeded on, how many each sector holds, their sizes, and the parallax of the frame they live in.
+    /// Tunables of the backdrop ring: world-fixed silhouettes seeded on a grid of sectors in absolute xz, drawn only
+    /// well clear of the streamed window around the camera and out to a radius the fog has long hidden, their sizes,
+    /// and the ground lattice under them.
     /// </summary>
-    /// <remarks>Distances are metres in the backdrop frame (see <see cref="ParallaxFactor"/>).</remarks>
+    /// <remarks>Distances are absolute-world metres. Nothing grows, sinks or fades: the fog alone reveals a silhouette.</remarks>
     public sealed class BackdropSettings {
         /// <summary>Mesh variants per kind.</summary>
         public const int VariantsPerKind = 4;
@@ -16,26 +17,26 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Distinct silhouette meshes the ring draws.</summary>
         public const int MeshCount = VariantsPerKind * KindCount;
 
-        /// <summary>Nearest a silhouette is drawn from the camera.</summary>
-        public double InnerRadius { get; set; } = 420.0;
+        /// <summary>Farthest a silhouette's centre is drawn from the camera; the fog must have it fully hidden there.</summary>
+        public double OuterRadius { get; set; } = 1050.0;
 
-        /// <summary>Farthest a silhouette is drawn from the camera.</summary>
-        public double OuterRadius { get; set; } = 820.0;
+        /// <summary>Edge of one keep-out cell: the streamed world's cell, the camera's own being the one it stands in.</summary>
+        public double KeepOutCellSize { get; set; } = 128.0;
 
-        /// <summary>Width of the band at each edge over which silhouettes sink (inner) or rise (outer) into view.</summary>
-        public double FadeBand { get; set; } = 60.0;
+        /// <summary>Cells the keep-out square reaches either side of the camera's cell (the streamed load radius).</summary>
+        public int KeepOutRadiusCells { get; set; } = 3;
+
+        /// <summary>
+        /// Least distance from any point of the camera's cell to any part of a drawn silhouette: features closer to the
+        /// keep-out square than <see cref="KeepOutMargin"/> are not drawn, so none ever stands inside the loaded world.
+        /// </summary>
+        public double ClearDistance { get; set; } = 700.0;
 
         /// <summary>Edge of one seeding sector.</summary>
         public double SectorSize { get; set; } = 160.0;
 
         public int MinFeaturesPerSector { get; set; }
         public int MaxFeaturesPerSector { get; set; } = 2;
-
-        /// <summary>
-        /// Share of the camera's motion the frame follows: the ring sits at 0.6 × the camera's absolute xz, so
-        /// silhouettes drift at 0.4 of the camera's speed and can never be reached.
-        /// </summary>
-        public double ParallaxFactor { get; set; } = 0.6;
 
         public double MinWidth { get; set; } = 60.0;
         public double MaxWidth { get; set; } = 220.0;
@@ -51,8 +52,6 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Chance a feature is a cloud bank rather than rock.</summary>
         public double CloudBankShare { get; set; } = 0.15;
 
-        public double CloudBankInnerRadius { get; set; } = 600.0;
-        public double CloudBankOuterRadius { get; set; } = 800.0;
         public double CloudBankMinAltitude { get; set; } = 60.0;
         public double CloudBankMaxAltitude { get; set; } = 150.0;
         public double CloudBankMinHeight { get; set; } = 18.0;
@@ -64,15 +63,16 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Most a cloud bank's depth strays from its height, as a share (0.2 = 0.8–1.2).</summary>
         public double CloudBankDepthJitter { get; set; } = 0.2;
 
-        /// <summary>Widest a cloud bank may be, in heights (jitter included): bounds the far clip; the layout caps wider ones.</summary>
+        /// <summary>Widest a cloud bank may be, in heights (jitter included): bounds its footprint reach; the layout caps wider ones.</summary>
         public double CloudBankMaxAspect { get; set; } = 7.0;
 
         /// <summary>
         /// The flat ground annulus drawn under the ring, centred on the camera: it hides the edge of the streamed
-        /// world from height and the sunk feet of near silhouettes.
+        /// world from height and carries on under the silhouettes (the lattice's outer edge reaches past
+        /// <see cref="OuterRadius"/> wherever its anchor sits).
         /// </summary>
         public double GroundInnerRadius { get; set; } = 380.0;
-        public double GroundOuterRadius { get; set; } = 1000.0;
+        public double GroundOuterRadius { get; set; } = 1080.0;
 
         /// <summary>How far below the ground height the annulus lies, so it never shows through streamed ground.</summary>
         public double GroundDrop { get; set; } = 0.3;
@@ -99,42 +99,26 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>The settings the plan starts from.</summary>
         public static BackdropSettings Default => new BackdropSettings();
 
-        /// <summary>Least far clip a camera needs to see the whole ring: each band's outer radius plus half its widest silhouette.</summary>
-        public double RequiredFarClip => Math.Max(OuterRadius + MaxWidth * 0.5, CloudBankOuterRadius + CloudBankMaxWidth * 0.5);
-
-        /// <summary>Farthest any feature is drawn from the camera: the outer edge of the widest band.</summary>
-        public double MaxBandRadius => Math.Max(OuterRadius, CloudBankOuterRadius);
+        /// <summary>Least far clip a camera needs: every drawn silhouette's centre (parts beyond it are in full fog).</summary>
+        public double RequiredFarClip => OuterRadius;
 
         /// <summary>Widest a cloud bank can be, metres.</summary>
         public double CloudBankMaxWidth => CloudBankMaxHeight * CloudBankMaxAspect;
 
-        /// <summary>The band <paramref name="kind"/> is drawn in, from the camera.</summary>
-        public void BandOf(BackdropFeatureKind kind, out double inner, out double outer) {
-            bool isCloud = kind == BackdropFeatureKind.CloudBank;
-            inner = isCloud ? CloudBankInnerRadius : InnerRadius;
-            outer = isCloud ? CloudBankOuterRadius : OuterRadius;
-        }
+        /// <summary>How far outside the keep-out square every part of a drawn silhouette lies.</summary>
+        public double KeepOutMargin => ClearDistance - KeepOutRadiusCells * KeepOutCellSize;
 
-        /// <summary>
-        /// How far a <paramref name="kind"/> silhouette <paramref name="distance"/> from the camera has risen into
-        /// view: 0 outside its band, ramping to 1 across <see cref="FadeBand"/> at either edge.
-        /// </summary>
-        public double Presence(BackdropFeatureKind kind, double distance) {
-            BandOf(kind, out double inner, out double outer);
-            if (!(distance > inner) || !(distance < outer)) return 0.0;
-
-            double fade = Math.Min(FadeBand, (outer - inner) * 0.5);
-            if (fade <= 0.0) return 1.0;
-
-            return Math.Min(1.0, Math.Min(distance - inner, outer - distance) / fade);
-        }
+        /// <summary>Farthest any part of a drawn silhouette reaches from its centre, metres.</summary>
+        public double MaxReach => Math.Max(BackdropFeature.ReachOf(BackdropFeatureKind.Mesa, MaxWidth, MaxWidth),
+            BackdropFeature.ReachOf(BackdropFeatureKind.CloudBank, CloudBankMaxWidth, CloudBankMaxHeight * (1.0 + CloudBankDepthJitter)));
 
         /// <summary>Throws when a value is out of range or the bands are inverted.</summary>
         public void Validate() {
             RequirePositive(SectorSize, nameof(SectorSize));
-            RequirePositive(InnerRadius, nameof(InnerRadius));
-            RequireOrdered(InnerRadius, OuterRadius, nameof(OuterRadius));
-            RequireOrdered(CloudBankInnerRadius, CloudBankOuterRadius, nameof(CloudBankOuterRadius));
+            RequirePositive(KeepOutCellSize, nameof(KeepOutCellSize));
+            if (KeepOutRadiusCells < 0) throw new ArgumentOutOfRangeException(nameof(KeepOutRadiusCells), KeepOutRadiusCells, "Must not be negative.");
+            RequireOrdered(KeepOutRadiusCells * KeepOutCellSize, ClearDistance, nameof(ClearDistance));
+            RequireOrdered(ClearDistance, OuterRadius, nameof(OuterRadius));
             RequireOrdered(MinWidth, MaxWidth, nameof(MaxWidth));
             RequireOrdered(MinHeight, MaxHeight, nameof(MaxHeight));
             RequireOrdered(CloudBankMinAltitude, CloudBankMaxAltitude, nameof(CloudBankMaxAltitude));
@@ -144,6 +128,7 @@ namespace AlpineLib.Procedural.Sky {
             RequireShare(CloudBankDepthJitter, nameof(CloudBankDepthJitter));
             RequirePositive(GroundInnerRadius, nameof(GroundInnerRadius));
             RequireOrdered(GroundInnerRadius, GroundOuterRadius, nameof(GroundOuterRadius));
+            RequireOrdered(OuterRadius + GroundLatticeSnap * Math.Sqrt(0.5), GroundOuterRadius, nameof(GroundOuterRadius));
             if (GroundDrop < 0.0) throw new ArgumentOutOfRangeException(nameof(GroundDrop), GroundDrop, "Must not be negative.");
             RequirePositive(GroundLatticeSpacing, nameof(GroundLatticeSpacing));
             RequirePositive(GroundLatticeSnap, nameof(GroundLatticeSnap));
@@ -152,11 +137,9 @@ namespace AlpineLib.Procedural.Sky {
             RequirePositive(MinHeight, nameof(MinHeight));
             RequirePositive(MaxRockAspect, nameof(MaxRockAspect));
             RequirePositive(CloudBankMinHeight, nameof(CloudBankMinHeight));
-            if (FadeBand < 0.0) throw new ArgumentOutOfRangeException(nameof(FadeBand), FadeBand, "Must not be negative.");
             if (MinFeaturesPerSector < 0 || MaxFeaturesPerSector < MinFeaturesPerSector) {
                 throw new ArgumentOutOfRangeException(nameof(MaxFeaturesPerSector), MaxFeaturesPerSector, "Need 0 <= min <= max features per sector.");
             }
-            if (!(ParallaxFactor >= 0.0 && ParallaxFactor < 1.0)) throw new ArgumentOutOfRangeException(nameof(ParallaxFactor), ParallaxFactor, "Must be in [0, 1).");
             if (!(CloudBankShare >= 0.0 && CloudBankShare <= 1.0)) throw new ArgumentOutOfRangeException(nameof(CloudBankShare), CloudBankShare, "Must be in [0, 1].");
             if (!(MesaWeight + ButteWeight + RidgeWeight > 0.0)) throw new ArgumentOutOfRangeException(nameof(MesaWeight), "Rock weights must sum above 0.");
         }

@@ -7,45 +7,48 @@ using UnityEngine.Rendering;
 
 namespace AlpineLib.Sky {
     /// <summary>
-    /// Draws the backdrop ring: seeded silhouettes laid out in a parallax frame that follows each camera at
-    /// <see cref="BackdropSettings.ParallaxFactor"/> of its absolute motion, shown <see cref="BackdropSettings.InnerRadius"/>
-    /// to <see cref="BackdropSettings.OuterRadius"/> from it, sinking in and rising out across the fade bands.
+    /// Draws the backdrop ring: seeded silhouettes fixed at absolute world positions, drawn while clear of the streamed
+    /// window about the camera (<see cref="BackdropLayout.IsDrawn"/>) and out to <see cref="BackdropSettings.OuterRadius"/>,
+    /// never grown, sunk or faded: radial fog toward the sky behind them is all that reveals them.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// A silhouette at backdrop-frame F is drawn at the camera plus (F − parallax × camera absolute xz), so two
-    /// clients at the same absolute position see the same skyline, and a floating-origin shift (which moves the
-    /// camera's world position but not its absolute one) leaves the skyline where it was on screen.
+    /// A silhouette at absolute A is drawn at A − (camera absolute − camera world), so two clients see the same skyline
+    /// in the same place and a floating-origin shift (which moves the camera's world position but not its absolute
+    /// one) leaves it where it was on screen. A feature only joins or leaves the drawn set when the camera crosses a
+    /// keep-out cell (it is then at least <see cref="BackdropSettings.ClearDistance"/> away) or at the outer radius,
+    /// where the fog must hide it whole: the template fogs radially toward the sky (<c>_FOG_RADIAL</c>, <c>_FOG_SKY</c>).
     /// </para>
     /// <para>
     /// Instanced through <c>Graphics.RenderMeshInstanced</c> per camera from <c>beginCameraRendering</c>, on one
     /// layer, with shadows off both ways and no colliders; <see cref="SkyCameraFilter"/> keeps it out of capture
-    /// cameras. Matrices are rebuilt whenever the camera moved more than <see cref="RebuildDistance"/> (about every
-    /// moving frame: cached world-space matrices would otherwise lag and jump). One flat annulus, fogged like the
-    /// world, is drawn under the ring about the camera to hide the edge of the streamed world (or, with
-    /// <see cref="SetGroundSource"/>, a world-anchored lattice coloured like the consumer's ground); rock's foot is
-    /// fogged like the world too (<see cref="BackdropSilhouette.FootFogWeight"/> in vertex alpha), so a silhouette
-    /// rises out of that ground haze instead of standing vivid on a pale band.
+    /// cameras. Feature matrices are rebuilt only when the layout, the camera's keep-out cell or its world-to-absolute
+    /// offset changes, or after <see cref="FeatureRebuildDistance"/> of motion (for the outer edge); the ground under
+    /// the ring follows the camera every <see cref="RebuildDistance"/>. That ground is one flat annulus fogged like the
+    /// world about the camera, or with <see cref="SetGroundSource"/> a world-anchored lattice coloured like the
+    /// consumer's ground; rock's foot fog scale rides in vertex alpha (<see cref="BackdropSilhouette.FootFogWeight"/>).
     /// </para>
     /// <para>
     /// Rock draws through the template material itself when its fog scales already match (the template asset
-    /// must carry <c>_FLAT_SHADING</c>, <c>_NO_LIGHT_COOKIE</c>, <c>_RECEIVE_SHADOWS_OFF</c> and <c>_FOG_SCALE_BLEND</c>,
-    /// see <see cref="HasSkyKeywords"/>: keywords switched on at runtime are stripped from player builds, so the
-    /// template's <c>_FogScale</c> is rock's and its <c>_FogScaleAlpha</c> the foot's, <see cref="GroundFogScale"/>);
-    /// cloud banks and the annulus draw through clones differing only in those two floats (set equal, so their
-    /// vertex alpha is moot). In edit mode clones are freed on disable and rebuilt on the next draw.
+    /// must carry the keywords of <see cref="HasSkyKeywords"/>: keywords switched on at runtime are stripped from
+    /// player builds, so the template's <c>_FogScale</c> is rock's and its <c>_FogScaleAlpha</c> the foot's,
+    /// <see cref="GroundFogScale"/>); cloud banks and the annulus draw through clones differing only in those two
+    /// floats, or the template itself when they match. In edit mode clones are freed on disable and rebuilt on the next draw.
     /// </para>
     /// </remarks>
     [ExecuteAlways, DisallowMultipleComponent]
     public sealed class BackdropRing : MonoBehaviour {
-        /// <summary>Camera motion, metres, before its instances are rebuilt.</summary>
+        /// <summary>Camera motion, metres, before the ground under the ring is placed again.</summary>
         public const float RebuildDistance = 0.01f;
+
+        /// <summary>Camera motion, metres, before the drawn features are re-picked for the outer radius (fully fogged there).</summary>
+        public const float FeatureRebuildDistance = 8f;
+
+        /// <summary>Change of the camera's world-to-absolute offset, metres, that re-places every feature (an origin shift).</summary>
+        public const double OffsetTolerance = 0.001;
 
         /// <summary>Fog distance scale of the ground annulus and of rock's foot: fogged exactly like the world they continue.</summary>
         public const float GroundFogScale = 1f;
-
-        /// <summary>Most a cloud bank's yaw strays from broadside to the camera, degrees.</summary>
-        public const float CloudYawJitterDegrees = 20f;
 
         private const int StaleBatchFrames = 120;
         private const int SectorCacheLimit = 2048;
@@ -91,6 +94,9 @@ namespace AlpineLib.Sky {
 
         /// <summary>The layer every instance draws on.</summary>
         public int Layer => _layer;
+
+        /// <summary>False draws only the ground under the ring (review renders isolate the silhouettes' own pixels).</summary>
+        public bool DrawsFeatures { get; set; } = true;
 
         /// <summary>
         /// Draws <paramref name="layout"/> with <paramref name="meshes"/> (not owned) through <paramref name="materialTemplate"/>,
@@ -150,7 +156,9 @@ namespace AlpineLib.Sky {
             return material.IsKeywordEnabled(StylizedLitShader.FlatShadingKeyword)
                 && material.IsKeywordEnabled(StylizedLitShader.NoLightCookieKeyword)
                 && material.IsKeywordEnabled(StylizedLitShader.ReceiveShadowsOffKeyword)
-                && material.IsKeywordEnabled(StylizedLitShader.FogScaleBlendKeyword);
+                && material.IsKeywordEnabled(StylizedLitShader.FogScaleBlendKeyword)
+                && material.IsKeywordEnabled(StylizedLitShader.FogRadialKeyword)
+                && material.IsKeywordEnabled(StylizedLitShader.FogSkyKeyword);
         }
 
         /// <summary>
@@ -164,7 +172,7 @@ namespace AlpineLib.Sky {
             WarnFarClip(camera);
             BackdropBatch batch = BatchFor(camera);
             int draws = 0;
-            for (int meshIndex = 0; meshIndex < BackdropSettings.MeshCount; meshIndex++) {
+            for (int meshIndex = 0; meshIndex < BackdropSettings.MeshCount && DrawsFeatures; meshIndex++) {
                 List<Matrix4x4> matrices = batch.MatricesOf(meshIndex);
                 if (matrices.Count == 0) continue;
 
@@ -179,7 +187,7 @@ namespace AlpineLib.Sky {
             return draws + 1;
         }
 
-        /// <summary>The instances <paramref name="camera"/> would draw now (rebuilt if it moved), or null when it is filtered out.</summary>
+        /// <summary>The instances <paramref name="camera"/> would draw now (re-picked if needed), or null when it is filtered out.</summary>
         public BackdropBatch Peek(Camera camera) {
             if (!IsReady || !SkyCameraFilter.ShouldDraw(camera, _layer)) return null;
 
@@ -235,9 +243,10 @@ namespace AlpineLib.Sky {
             batch.LastUsedFrame = Time.frameCount;
             Vector3 world = camera.transform.position;
             ResolveAbsolute(world, out double absoluteX, out double absoluteZ);
-            if (!NeedsRebuild(batch, world, absoluteX, absoluteZ)) return batch;
+            if (NeedsFeatures(batch, world, absoluteX, absoluteZ)) RebuildFeatures(batch, world, absoluteX, absoluteZ);
+            if (!NeedsGround(batch, world, absoluteX, absoluteZ)) return batch;
 
-            Rebuild(batch, world, absoluteX, absoluteZ);
+            PlaceGround(batch, world, absoluteX, absoluteZ);
             PlaceGroundLattice(id, batch, world, absoluteX, absoluteZ);
             DropStaleBatches();
             return batch;
@@ -250,8 +259,23 @@ namespace AlpineLib.Sky {
             absoluteZ = world.z;
         }
 
-        private bool NeedsRebuild(BackdropBatch batch, Vector3 world, double absoluteX, double absoluteZ) {
+        private bool NeedsFeatures(BackdropBatch batch, Vector3 world, double absoluteX, double absoluteZ) {
             if (!batch.IsBuilt || batch.Revision != _revision) return true;
+
+            _layout.KeepOutCellOf(absoluteX, absoluteZ, out long cellX, out long cellZ);
+            if (cellX != batch.CellX || cellZ != batch.CellZ) return true;
+
+            double offsetX = absoluteX - world.x;
+            double offsetZ = absoluteZ - world.z;
+            if (Math.Abs(offsetX - batch.OffsetX) > OffsetTolerance || Math.Abs(offsetZ - batch.OffsetZ) > OffsetTolerance) return true;
+
+            double movedX = absoluteX - batch.FeaturesX;
+            double movedZ = absoluteZ - batch.FeaturesZ;
+            return movedX * movedX + movedZ * movedZ > FeatureRebuildDistance * FeatureRebuildDistance;
+        }
+
+        private bool NeedsGround(BackdropBatch batch, Vector3 world, double absoluteX, double absoluteZ) {
+            if (!batch.IsGroundPlaced || batch.GroundRevision != _revision) return true;
             if ((batch.CameraWorld - world).sqrMagnitude > RebuildDistance * RebuildDistance) return true;
 
             double deltaX = batch.AbsoluteX - absoluteX;
@@ -259,70 +283,74 @@ namespace AlpineLib.Sky {
             return deltaX * deltaX + deltaZ * deltaZ > RebuildDistance * RebuildDistance;
         }
 
-        private void Rebuild(BackdropBatch batch, Vector3 world, double absoluteX, double absoluteZ) {
+        // Every feature the camera draws, at its absolute position less the world-to-absolute offset.
+        private void RebuildFeatures(BackdropBatch batch, Vector3 world, double absoluteX, double absoluteZ) {
             BackdropSettings settings = _layout.Settings;
-            double centreX = absoluteX * settings.ParallaxFactor;
-            double centreZ = absoluteZ * settings.ParallaxFactor;
-            double reach = settings.MaxBandRadius;
+            double reach = settings.OuterRadius;
             float groundY = _frame != null ? _frame.GroundY : 0f;
+            double offsetX = absoluteX - world.x;
+            double offsetZ = absoluteZ - world.z;
+            _layout.KeepOutCellOf(absoluteX, absoluteZ, out long cellX, out long cellZ);
 
             batch.Clear();
-            _layout.SectorOf(centreX - reach, centreZ - reach, out int minX, out int minZ);
-            _layout.SectorOf(centreX + reach, centreZ + reach, out int maxX, out int maxZ);
+            _layout.SectorOf(absoluteX - reach, absoluteZ - reach, out int minX, out int minZ);
+            _layout.SectorOf(absoluteX + reach, absoluteZ + reach, out int maxX, out int maxZ);
             if (_sectors.Count > SectorCacheLimit) _sectors.Clear();
             for (int sectorZ = minZ; sectorZ <= maxZ; sectorZ++) {
                 for (int sectorX = minX; sectorX <= maxX; sectorX++) {
-                    AddSector(batch, SectorOf(sectorX, sectorZ), settings, world, centreX, centreZ, groundY);
+                    AddSector(batch, SectorOf(sectorX, sectorZ), settings, absoluteX, absoluteZ, cellX, cellZ, offsetX, offsetZ, groundY);
                 }
             }
 
-            float height = (float)(settings.CloudBankMaxAltitude + settings.CloudBankMaxHeight + settings.MaxHeight);
-            float extent = (float)settings.RequiredFarClip * 2f;
+            float height = (float)Math.Max(settings.CloudBankMaxAltitude + settings.CloudBankMaxHeight, settings.MaxHeight);
+            float extent = (float)(settings.OuterRadius + settings.MaxReach + FeatureRebuildDistance) * 2f;
             batch.Bounds = new Bounds(new Vector3(world.x, groundY + height * 0.5f, world.z), new Vector3(extent, height * 2f, extent));
-            float groundAt = groundY - (float)settings.GroundDrop;
+            batch.CellX = cellX;
+            batch.CellZ = cellZ;
+            batch.OffsetX = offsetX;
+            batch.OffsetZ = offsetZ;
+            batch.FeaturesX = absoluteX;
+            batch.FeaturesZ = absoluteZ;
+            batch.Revision = _revision;
+            batch.IsBuilt = true;
+        }
+
+        private void PlaceGround(BackdropBatch batch, Vector3 world, double absoluteX, double absoluteZ) {
+            BackdropSettings settings = _layout.Settings;
+            float groundAt = (_frame != null ? _frame.GroundY : 0f) - (float)settings.GroundDrop;
             float groundExtent = (float)settings.GroundOuterRadius * 2f;
             batch.GroundMatrix = Matrix4x4.Translate(new Vector3(world.x, groundAt, world.z));
             batch.GroundBounds = new Bounds(new Vector3(world.x, groundAt, world.z), new Vector3(groundExtent, 1f, groundExtent));
             batch.CameraWorld = world;
             batch.AbsoluteX = absoluteX;
             batch.AbsoluteZ = absoluteZ;
-            batch.Revision = _revision;
-            batch.IsBuilt = true;
+            batch.GroundRevision = _revision;
+            batch.IsGroundPlaced = true;
         }
 
-        private void AddSector(BackdropBatch batch, BackdropFeature[] features, BackdropSettings settings, Vector3 world, double centreX, double centreZ, float groundY) {
+        private void AddSector(BackdropBatch batch, BackdropFeature[] features, BackdropSettings settings, double absoluteX, double absoluteZ,
+            long cellX, long cellZ, double offsetX, double offsetZ, float groundY) {
             foreach (BackdropFeature feature in features) {
-                double offsetX = feature.FrameX(settings.SectorSize) - centreX;
-                double offsetZ = feature.FrameZ(settings.SectorSize) - centreZ;
-                double presence = settings.Presence(feature.Kind, Math.Sqrt(offsetX * offsetX + offsetZ * offsetZ));
-                if (presence <= 0.0) continue;
+                if (!_layout.IsDrawn(feature, absoluteX, absoluteZ, cellX, cellZ)) continue;
 
-                float x = (float)(world.x + offsetX);
-                float z = (float)(world.z + offsetZ);
-                batch.Add(feature.MeshIndex, InstanceMatrix(feature, settings, presence, x, z, offsetX, offsetZ, groundY));
+                float x = (float)(feature.AbsoluteX(settings.SectorSize) - offsetX);
+                float z = (float)(feature.AbsoluteZ(settings.SectorSize) - offsetZ);
+                batch.Add(feature.MeshIndex, InstanceMatrix(feature, settings, x, z, groundY));
             }
         }
 
-        // Rock sinks into the ground as it fades; a cloud bank turns broadside to the camera and shrinks about its base.
-        private static Matrix4x4 InstanceMatrix(BackdropFeature feature, BackdropSettings settings, double presence, float x, float z, double offsetX, double offsetZ, float groundY) {
-            float width = (float)feature.Width;
-            float height = (float)feature.Height;
-            if (feature.Kind == BackdropFeatureKind.CloudBank) {
-                float scale = (float)presence;
-                var position = new Vector3(x, groundY + (float)feature.Altitude, z);
-                return Matrix4x4.TRS(position, CloudYaw(feature, offsetX, offsetZ), new Vector3(width, height, (float)feature.Depth) * scale);
-            }
-
+        // Fixed by the feature alone: rock stands sunk by its base share, a cloud bank floats at its altitude, both at their own yaw.
+        private static Matrix4x4 InstanceMatrix(in BackdropFeature feature, BackdropSettings settings, float x, float z, float groundY) {
+            var width = (float)feature.Width;
+            var height = (float)feature.Height;
             Quaternion yaw = Quaternion.Euler(0f, (float)(feature.Yaw * (180.0 / Math.PI)), 0f);
-            float sink = (float)(settings.BaseSink + (1.0 - presence) * (1.0 + settings.BaseSink)) * height;
-            return Matrix4x4.TRS(new Vector3(x, groundY - sink, z), yaw, new Vector3(width, height, width));
-        }
+            if (feature.Kind == BackdropFeatureKind.CloudBank) {
+                var position = new Vector3(x, groundY + (float)feature.Altitude, z);
+                return Matrix4x4.TRS(position, yaw, new Vector3(width, height, (float)feature.Depth));
+            }
 
-        // The bank's long (x) axis across the line of sight, give or take the feature's own jitter.
-        private static Quaternion CloudYaw(BackdropFeature feature, double offsetX, double offsetZ) {
-            double bearing = Math.Atan2(offsetX, offsetZ) * (180.0 / Math.PI);
-            double jitter = (feature.Yaw / Math.PI - 1.0) * CloudYawJitterDegrees;
-            return Quaternion.Euler(0f, (float)(bearing + jitter), 0f);
+            float sink = (float)settings.BaseSink * height;
+            return Matrix4x4.TRS(new Vector3(x, groundY - sink, z), yaw, new Vector3(width, height, width));
         }
 
         private BackdropFeature[] SectorOf(int sectorX, int sectorZ) {
