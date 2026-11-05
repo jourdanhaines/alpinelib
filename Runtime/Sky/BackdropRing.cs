@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using AlpineLib.Procedural.Grid;
 using AlpineLib.Procedural.Sky;
 using AlpineLib.Rendering;
 using UnityEngine;
@@ -7,23 +8,26 @@ using UnityEngine.Rendering;
 
 namespace AlpineLib.Sky {
     /// <summary>
-    /// Draws the backdrop ring: seeded silhouettes fixed at absolute world positions, drawn while clear of the streamed
-    /// window about the camera (<see cref="BackdropLayout.IsDrawn"/>) and out to <see cref="BackdropSettings.OuterRadius"/>,
-    /// never grown, sunk or faded: radial fog toward the sky behind them is all that reveals them.
+    /// Draws the backdrop ring: seeded silhouettes fixed at absolute world positions, kept while clear of the streamed
+    /// window about the camera (<see cref="BackdropLayout.IsDrawn"/>) and of every loaded cell (<see cref="SetKeepOutSource"/>)
+    /// out to <see cref="BackdropSettings.OuterRadius"/>, never grown, sunk or faded: radial fog toward the sky behind
+    /// them is all that reveals them, and one the fog hides whole (<see cref="BackdropLayout.IsFogHidden"/>) is not drawn.
     /// </summary>
     /// <remarks>
     /// <para>
     /// A silhouette at absolute A is drawn at A − (camera absolute − camera world), so two clients see the same skyline
     /// in the same place and a floating-origin shift (which moves the camera's world position but not its absolute
-    /// one) leaves it where it was on screen. A feature only joins or leaves the drawn set when the camera crosses a
-    /// keep-out cell (it is then at least <see cref="BackdropSettings.ClearDistance"/> away) or at the outer radius,
-    /// where the fog must hide it whole: the template fogs radially toward the sky (<c>_FOG_RADIAL</c>, <c>_FOG_SKY</c>).
+    /// one) leaves it where it was on screen. A feature only joins or leaves the ring when the camera's keep-out cell
+    /// moves (with <see cref="BackdropSettings.KeepOutHysteresis"/>; it is then at least <see cref="BackdropSettings.ClearDistance"/>
+    /// away), when the loaded cells change, or at the outer radius, where the fog must hide it whole: the template fogs
+    /// radially toward the sky (<c>_FOG_RADIAL</c>, <c>_FOG_SKY</c>). The fog cull reads the scene's linear fog.
     /// </para>
     /// <para>
     /// Instanced through <c>Graphics.RenderMeshInstanced</c> per camera from <c>beginCameraRendering</c>, on one
     /// layer, with shadows off both ways and no colliders; <see cref="SkyCameraFilter"/> keeps it out of capture
-    /// cameras. Feature matrices are rebuilt only when the layout, the camera's keep-out cell or its world-to-absolute
-    /// offset changes, or after <see cref="FeatureRebuildDistance"/> of motion (for the outer edge); the ground under
+    /// cameras. Feature matrices are rebuilt only when the layout, the loaded cells, the fog, the camera's keep-out cell
+    /// or its world-to-absolute offset changes, or after <see cref="FeatureRebuildDistance"/> of motion (for the outer
+    /// edge and the fog cull, which allows for that much approach); the ground under
     /// the ring follows the camera every <see cref="RebuildDistance"/>. That ground is one flat annulus fogged like the
     /// world about the camera, or with <see cref="SetGroundSource"/> a world-anchored lattice coloured like the
     /// consumer's ground; rock's foot fog scale rides in vertex alpha (<see cref="BackdropSilhouette.FootFogWeight"/>).
@@ -59,7 +63,13 @@ namespace AlpineLib.Sky {
         private readonly List<int> _staleCameras = new List<int>();
         private readonly HashSet<int> _warnedFarClip = new HashSet<int>();
         private readonly Dictionary<int, BackdropGroundLattice> _lattices = new Dictionary<int, BackdropGroundLattice>();
+        private readonly List<CellCoord> _keepOutCells = new List<CellCoord>();
         private Func<double, double, Color32> _groundColourAt;
+        private IBackdropKeepOutSource _keepOutSource;
+        private BackdropKeepOut _keepOut;
+        private int _keepOutRevision;
+        private bool _isKeepOutRead;
+        private int _keepOutVersion;
         private Material _groundSourceMaterial;
         private BackdropLayout _layout;
         private SkyMeshVariants _meshes;
@@ -117,13 +127,29 @@ namespace AlpineLib.Sky {
             _cloudFogScale = cloudFogScale;
             if (!HasSkyKeywords(materialTemplate)) Debug.LogWarning($"BackdropRing::Configure->'{materialTemplate.name}' lacks the sky keywords; player builds strip variants switched on at runtime.", this);
             EnsureMaterials();
+            _keepOut = new BackdropKeepOut(layout.Settings.KeepOutCellSize);
+            _isKeepOutRead = false;
             _sectors.Clear();
             _revision++;
         }
 
+        /// <summary>
+        /// Keeps every silhouette clear of the cells <paramref name="source"/> reports loaded (remote players' and the
+        /// train's windows as well as the camera's), re-read whenever its revision changes; null keeps clear of the
+        /// camera's window only. Survives <see cref="Configure"/>.
+        /// </summary>
+        public void SetKeepOutSource(IBackdropKeepOutSource source) {
+            _keepOutSource = source;
+            _isKeepOutRead = false;
+        }
+
+        /// <summary>The loaded cells as last read from the keep-out source, or null before <see cref="Configure"/>.</summary>
+        public BackdropKeepOut KeepOut => _keepOut;
+
         /// <summary>Sets the fog distance scale rock draws with above its foot (1 = fogged like the world), cloning the template first if needed.</summary>
         public void SetFogScale(float fogScale) {
             _fogScale = fogScale;
+            _revision++;
             if (_material == null) return;
 
             if (_material == _template) _material = MaterialFor(fogScale, GroundFogScale);
@@ -162,8 +188,8 @@ namespace AlpineLib.Sky {
         }
 
         /// <summary>
-        /// Queues the ring for <paramref name="camera"/>'s next render and returns the instanced draws issued: 0 when
-        /// the camera is filtered out (<see cref="SkyCameraFilter"/>) or nothing is in its band.
+        /// Queues the ring for <paramref name="camera"/>'s next render and returns the draws issued (instanced silhouette
+        /// meshes plus the ground): 0 when the camera is filtered out (<see cref="SkyCameraFilter"/>).
         /// </summary>
         public int Submit(Camera camera) {
             if (!IsReady || !SkyCameraFilter.ShouldDraw(camera, _layer)) return 0;
@@ -173,7 +199,7 @@ namespace AlpineLib.Sky {
             BackdropBatch batch = BatchFor(camera);
             int draws = 0;
             for (int meshIndex = 0; meshIndex < BackdropSettings.MeshCount && DrawsFeatures; meshIndex++) {
-                List<Matrix4x4> matrices = batch.MatricesOf(meshIndex);
+                List<Matrix4x4> matrices = batch.DrawnOf(meshIndex);
                 if (matrices.Count == 0) continue;
 
                 Material material = BackdropSettings.KindOf(meshIndex) == BackdropFeatureKind.CloudBank ? _cloudMaterial : _material;
@@ -243,7 +269,9 @@ namespace AlpineLib.Sky {
             batch.LastUsedFrame = Time.frameCount;
             Vector3 world = camera.transform.position;
             ResolveAbsolute(world, out double absoluteX, out double absoluteZ);
-            if (NeedsFeatures(batch, world, absoluteX, absoluteZ)) RebuildFeatures(batch, world, absoluteX, absoluteZ);
+            RefreshKeepOut();
+            BackdropFog fog = FogFor(camera);
+            if (NeedsFeatures(batch, world, absoluteX, absoluteZ, fog)) RebuildFeatures(batch, world, absoluteX, absoluteZ, fog);
             if (!NeedsGround(batch, world, absoluteX, absoluteZ)) return batch;
 
             PlaceGround(batch, world, absoluteX, absoluteZ);
@@ -259,11 +287,35 @@ namespace AlpineLib.Sky {
             absoluteZ = world.z;
         }
 
-        private bool NeedsFeatures(BackdropBatch batch, Vector3 world, double absoluteX, double absoluteZ) {
-            if (!batch.IsBuilt || batch.Revision != _revision) return true;
+        // Re-reads the loaded cells only when the source's revision moved.
+        private void RefreshKeepOut() {
+            if (_keepOut == null) return;
 
-            _layout.KeepOutCellOf(absoluteX, absoluteZ, out long cellX, out long cellZ);
-            if (cellX != batch.CellX || cellZ != batch.CellZ) return true;
+            int revision = _keepOutSource != null ? _keepOutSource.KeepOutRevision : 0;
+            if (_isKeepOutRead && revision == _keepOutRevision) return;
+
+            _keepOutCells.Clear();
+            _keepOutSource?.CollectKeepOutCells(_keepOutCells);
+            _keepOut.SetCells(_keepOutCells);
+            _keepOutRevision = revision;
+            _isKeepOutRead = true;
+            _keepOutVersion++;
+        }
+
+        // The scene's linear fog as the camera sees it; any other mode, or none, culls nothing.
+        private static BackdropFog FogFor(Camera camera) {
+            if (!RenderSettings.fog || RenderSettings.fogMode != FogMode.Linear) return BackdropFog.None;
+            if (!(RenderSettings.fogEndDistance > RenderSettings.fogStartDistance)) return BackdropFog.None;
+
+            return new BackdropFog(RenderSettings.fogStartDistance, RenderSettings.fogEndDistance, camera.nearClipPlane);
+        }
+
+        private bool NeedsFeatures(BackdropBatch batch, Vector3 world, double absoluteX, double absoluteZ, BackdropFog fog) {
+            if (!batch.IsBuilt || batch.Revision != _revision || batch.KeepOutRevision != _keepOutVersion || !batch.Fog.Equals(fog)) return true;
+
+            long cellX = batch.CellX;
+            long cellZ = batch.CellZ;
+            if (_layout.FollowKeepOutCell(absoluteX, absoluteZ, ref cellX, ref cellZ)) return true;
 
             double offsetX = absoluteX - world.x;
             double offsetZ = absoluteZ - world.z;
@@ -284,21 +336,25 @@ namespace AlpineLib.Sky {
         }
 
         // Every feature the camera draws, at its absolute position less the world-to-absolute offset.
-        private void RebuildFeatures(BackdropBatch batch, Vector3 world, double absoluteX, double absoluteZ) {
+        private void RebuildFeatures(BackdropBatch batch, Vector3 world, double absoluteX, double absoluteZ, BackdropFog fog) {
             BackdropSettings settings = _layout.Settings;
             double reach = settings.OuterRadius;
             float groundY = _frame != null ? _frame.GroundY : 0f;
             double offsetX = absoluteX - world.x;
             double offsetZ = absoluteZ - world.z;
-            _layout.KeepOutCellOf(absoluteX, absoluteZ, out long cellX, out long cellZ);
+            long cellX = batch.CellX;
+            long cellZ = batch.CellZ;
+            if (batch.IsBuilt) _layout.FollowKeepOutCell(absoluteX, absoluteZ, ref cellX, ref cellZ);
+            else _layout.KeepOutCellOf(absoluteX, absoluteZ, out cellX, out cellZ);
 
             batch.Clear();
+            var view = new BackdropSectorView(absoluteX, absoluteZ, cellX, cellZ, offsetX, offsetZ, groundY, fog);
             _layout.SectorOf(absoluteX - reach, absoluteZ - reach, out int minX, out int minZ);
             _layout.SectorOf(absoluteX + reach, absoluteZ + reach, out int maxX, out int maxZ);
             if (_sectors.Count > SectorCacheLimit) _sectors.Clear();
             for (int sectorZ = minZ; sectorZ <= maxZ; sectorZ++) {
                 for (int sectorX = minX; sectorX <= maxX; sectorX++) {
-                    AddSector(batch, SectorOf(sectorX, sectorZ), settings, absoluteX, absoluteZ, cellX, cellZ, offsetX, offsetZ, groundY);
+                    AddSector(batch, SectorOf(sectorX, sectorZ), settings, view);
                 }
             }
 
@@ -311,6 +367,8 @@ namespace AlpineLib.Sky {
             batch.OffsetZ = offsetZ;
             batch.FeaturesX = absoluteX;
             batch.FeaturesZ = absoluteZ;
+            batch.Fog = fog;
+            batch.KeepOutRevision = _keepOutVersion;
             batch.Revision = _revision;
             batch.IsBuilt = true;
         }
@@ -328,14 +386,17 @@ namespace AlpineLib.Sky {
             batch.IsGroundPlaced = true;
         }
 
-        private void AddSector(BackdropBatch batch, BackdropFeature[] features, BackdropSettings settings, double absoluteX, double absoluteZ,
-            long cellX, long cellZ, double offsetX, double offsetZ, float groundY) {
+        // Kept when clear of the camera's window and every loaded cell; drawn unless the fog hides it whole after the
+        // camera closes up to FeatureRebuildDistance (rock at its lighter of body and foot fog).
+        private void AddSector(BackdropBatch batch, BackdropFeature[] features, BackdropSettings settings, in BackdropSectorView view) {
             foreach (BackdropFeature feature in features) {
-                if (!_layout.IsDrawn(feature, absoluteX, absoluteZ, cellX, cellZ)) continue;
+                if (!_layout.IsDrawn(feature, view.AbsoluteX, view.AbsoluteZ, view.CellX, view.CellZ) || !_layout.IsClearOf(feature, _keepOut)) continue;
 
-                float x = (float)(feature.AbsoluteX(settings.SectorSize) - offsetX);
-                float z = (float)(feature.AbsoluteZ(settings.SectorSize) - offsetZ);
-                batch.Add(feature.MeshIndex, InstanceMatrix(feature, settings, x, z, groundY));
+                float x = (float)(feature.AbsoluteX(settings.SectorSize) - view.OffsetX);
+                float z = (float)(feature.AbsoluteZ(settings.SectorSize) - view.OffsetZ);
+                double fogScale = feature.Kind == BackdropFeatureKind.CloudBank ? _cloudFogScale : Math.Min(_fogScale, GroundFogScale);
+                bool isDrawn = !_layout.IsFogHidden(feature, view.AbsoluteX, view.AbsoluteZ, view.Fog, fogScale, FeatureRebuildDistance);
+                batch.Add(feature.MeshIndex, InstanceMatrix(feature, settings, x, z, view.GroundY), isDrawn);
             }
         }
 

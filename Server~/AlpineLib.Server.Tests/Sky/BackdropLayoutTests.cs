@@ -178,7 +178,7 @@ namespace AlpineLib.Server.Tests.Sky {
         public void FarClipCoversTheRing() {
             Assert.Equal(1050.0, Settings.RequiredFarClip);
             Assert.True(Settings.RequiredFarClip <= 1100.0);
-            Assert.Equal(316.0, Settings.KeepOutMargin, 12);
+            Assert.Equal(316.0 + 4.0 * Math.Sqrt(2.0), Settings.KeepOutMargin, 12);
             Assert.True(Settings.GroundOuterRadius - Settings.GroundLatticeSnap * Math.Sqrt(0.5) >= Settings.OuterRadius);
         }
 

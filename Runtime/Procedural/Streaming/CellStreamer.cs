@@ -115,6 +115,9 @@ namespace AlpineLib.Procedural.Streaming {
         /// <summary>Tracked cells (any state, released ones excluded).</summary>
         public int CellCount => _cells.Count;
 
+        /// <summary>Bumped whenever a cell starts or stops being tracked, so layers that keep clear of the loaded world re-read it.</summary>
+        public int CellsRevision { get; private set; }
+
         /// <summary>Cells fully built.</summary>
         public int LiveCount => CountInState(StreamedCellState.Live);
 
@@ -331,6 +334,8 @@ namespace AlpineLib.Procedural.Streaming {
                 _cells[coord] = new StreamedCell(coord);
             }
 
+            if (_added.Count > 0) CellsRevision++;
+
             return _removed.Count > 0;
         }
 
@@ -540,6 +545,7 @@ namespace AlpineLib.Procedural.Streaming {
             if (!_cells.TryGetValue(coord, out StreamedCell cell)) return;
 
             _cells.Remove(coord);
+            CellsRevision++;
             if (_instantiating == cell) _instantiating = null;
 
             StreamedCellState state = cell.State;

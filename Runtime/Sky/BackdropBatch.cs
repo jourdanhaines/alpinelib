@@ -3,12 +3,19 @@ using AlpineLib.Procedural.Sky;
 using UnityEngine;
 
 namespace AlpineLib.Sky {
-    /// <summary>One camera's backdrop instances: a matrix list per silhouette mesh, and where they were built from.</summary>
+    /// <summary>
+    /// One camera's backdrop instances: per silhouette mesh, every matrix of the ring and the share of them drawn (those
+    /// not wholly hidden in fog), and where they were built from.
+    /// </summary>
     public sealed class BackdropBatch {
         private readonly List<Matrix4x4>[] _matrices = new List<Matrix4x4>[BackdropSettings.MeshCount];
+        private readonly List<Matrix4x4>[] _drawn = new List<Matrix4x4>[BackdropSettings.MeshCount];
 
         public BackdropBatch() {
-            for (int index = 0; index < _matrices.Length; index++) _matrices[index] = new List<Matrix4x4>();
+            for (int index = 0; index < _matrices.Length; index++) {
+                _matrices[index] = new List<Matrix4x4>();
+                _drawn[index] = new List<Matrix4x4>();
+            }
         }
 
         /// <summary>True once feature matrices were built.</summary>
@@ -17,7 +24,13 @@ namespace AlpineLib.Sky {
         /// <summary>The layout revision the feature matrices were built from.</summary>
         public int Revision { get; set; }
 
-        /// <summary>Keep-out cell of the camera the features were picked for.</summary>
+        /// <summary>Read of the loaded cells the features were picked against.</summary>
+        public int KeepOutRevision { get; set; }
+
+        /// <summary>The fog the drawn share was culled with.</summary>
+        public BackdropFog Fog { get; set; }
+
+        /// <summary>Keep-out cell of the camera the features were picked for (it follows the camera with hysteresis).</summary>
         public long CellX { get; set; }
         public long CellZ { get; set; }
 
@@ -45,8 +58,14 @@ namespace AlpineLib.Sky {
         /// <summary>Frame of the last draw (stale batches are dropped).</summary>
         public int LastUsedFrame { get; set; }
 
-        /// <summary>Instances across every mesh.</summary>
+        /// <summary>Instances across every mesh, drawn or fogged away.</summary>
         public int InstanceCount { get; private set; }
+
+        /// <summary>Instances drawn across every mesh.</summary>
+        public int DrawnCount { get; private set; }
+
+        /// <summary>Meshes with at least one drawn instance: the instanced draws a frame issues.</summary>
+        public int DrawnMeshCount { get; private set; }
 
         /// <summary>Box holding every instance.</summary>
         public Bounds Bounds { get; set; }
@@ -57,20 +76,34 @@ namespace AlpineLib.Sky {
         /// <summary>Box holding the ground annulus.</summary>
         public Bounds GroundBounds { get; set; }
 
-        /// <summary>Instances of mesh <paramref name="meshIndex"/>.</summary>
+        /// <summary>Instances of mesh <paramref name="meshIndex"/> in the ring, drawn or not.</summary>
         public List<Matrix4x4> MatricesOf(int meshIndex) {
             return _matrices[meshIndex];
         }
 
-        public void Clear() {
-            foreach (List<Matrix4x4> list in _matrices) list.Clear();
-
-            InstanceCount = 0;
+        /// <summary>Instances of mesh <paramref name="meshIndex"/> drawn (not wholly hidden in fog).</summary>
+        public List<Matrix4x4> DrawnOf(int meshIndex) {
+            return _drawn[meshIndex];
         }
 
-        public void Add(int meshIndex, Matrix4x4 matrix) {
+        public void Clear() {
+            foreach (List<Matrix4x4> list in _matrices) list.Clear();
+            foreach (List<Matrix4x4> list in _drawn) list.Clear();
+
+            InstanceCount = 0;
+            DrawnCount = 0;
+            DrawnMeshCount = 0;
+        }
+
+        /// <summary>Adds an instance of mesh <paramref name="meshIndex"/>; <paramref name="isDrawn"/> false keeps it in the ring undrawn.</summary>
+        public void Add(int meshIndex, Matrix4x4 matrix, bool isDrawn = true) {
             _matrices[meshIndex].Add(matrix);
             InstanceCount++;
+            if (!isDrawn) return;
+
+            if (_drawn[meshIndex].Count == 0) DrawnMeshCount++;
+            _drawn[meshIndex].Add(matrix);
+            DrawnCount++;
         }
     }
 }

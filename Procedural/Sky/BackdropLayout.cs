@@ -89,6 +89,58 @@ namespace AlpineLib.Procedural.Sky {
             }
         }
 
+        /// <summary>
+        /// Appends, in sector order, every feature a camera at absolute (<paramref name="cameraX"/>, <paramref name="cameraZ"/>)
+        /// with keep-out cell (<paramref name="cellX"/>, <paramref name="cellZ"/>) keeps in its ring, clear of every
+        /// <paramref name="loaded"/> cell too (null for none).
+        /// </summary>
+        public void AppendDrawn(double cameraX, double cameraZ, long cellX, long cellZ, BackdropKeepOut loaded, List<BackdropFeature> features) {
+            var around = new List<BackdropFeature>();
+            AppendAround(cameraX, cameraZ, Settings.OuterRadius, around);
+            foreach (BackdropFeature feature in around) {
+                if (IsDrawn(feature, cameraX, cameraZ, cellX, cellZ) && IsClearOf(feature, loaded)) features.Add(feature);
+            }
+        }
+
+        /// <summary>
+        /// Moves (<paramref name="cellX"/>, <paramref name="cellZ"/>) to the keep-out cell of absolute (<paramref name="x"/>,
+        /// <paramref name="z"/>) only on an axis where the point stands more than <see cref="BackdropSettings.KeepOutHysteresis"/>
+        /// outside the current cell; true when it moved.
+        /// </summary>
+        public bool FollowKeepOutCell(double x, double z, ref long cellX, ref long cellZ) {
+            long nextX = FollowAxis(x, cellX);
+            long nextZ = FollowAxis(z, cellZ);
+            bool isMoved = nextX != cellX || nextZ != cellZ;
+            cellX = nextX;
+            cellZ = nextZ;
+            return isMoved;
+        }
+
+        /// <summary>True when every part of <paramref name="feature"/> is at least <see cref="BackdropSettings.KeepOutMargin"/> from every <paramref name="loaded"/> cell.</summary>
+        public bool IsClearOf(in BackdropFeature feature, BackdropKeepOut loaded) {
+            if (loaded == null || loaded.CellCount == 0) return true;
+
+            double x = feature.AbsoluteX(Settings.SectorSize);
+            double z = feature.AbsoluteZ(Settings.SectorSize);
+            return loaded.Gap(x, z) - feature.Reach >= Settings.KeepOutMargin;
+        }
+
+        /// <summary>
+        /// True when <paramref name="feature"/>'s nearest point, seen from absolute (<paramref name="cameraX"/>,
+        /// <paramref name="cameraZ"/>) after the camera closes <paramref name="slack"/> metres, is at least
+        /// <see cref="BackdropSettings.FogCullShare"/> hidden by <paramref name="fog"/> at <paramref name="fogScale"/>.
+        /// </summary>
+        public bool IsFogHidden(in BackdropFeature feature, double cameraX, double cameraZ, BackdropFog fog, double fogScale, double slack) {
+            return fog.HiddenShare(NearestDistance(feature, cameraX, cameraZ) - slack, fogScale) >= Settings.FogCullShare;
+        }
+
+        /// <summary>Flat distance from absolute (<paramref name="cameraX"/>, <paramref name="cameraZ"/>) to <paramref name="feature"/>'s footprint; 0 inside it.</summary>
+        public double NearestDistance(in BackdropFeature feature, double cameraX, double cameraZ) {
+            double deltaX = feature.AbsoluteX(Settings.SectorSize) - cameraX;
+            double deltaZ = feature.AbsoluteZ(Settings.SectorSize) - cameraZ;
+            return Math.Max(Math.Sqrt(deltaX * deltaX + deltaZ * deltaZ) - feature.Reach, 0.0);
+        }
+
         /// <summary>The keep-out cell holding absolute (<paramref name="x"/>, <paramref name="z"/>): cell i spans [i, i + 1) × cell size.</summary>
         public void KeepOutCellOf(double x, double z, out long cellX, out long cellZ) {
             cellX = (long)Math.Floor(x / Settings.KeepOutCellSize);
@@ -100,7 +152,7 @@ namespace AlpineLib.Procedural.Sky {
         /// (<paramref name="cellX"/>, <paramref name="cellZ"/>) draws <paramref name="feature"/>: its centre within
         /// <see cref="BackdropSettings.OuterRadius"/> of the camera and its whole footprint at least
         /// <see cref="BackdropSettings.KeepOutMargin"/> outside the keep-out square. The answer changes only when the
-        /// camera crosses a cell (at <see cref="BackdropSettings.ClearDistance"/> or more) or at the outer radius.
+        /// keep-out cell moves (at <see cref="BackdropSettings.ClearDistance"/> or more) or at the outer radius.
         /// </summary>
         public bool IsDrawn(in BackdropFeature feature, double cameraX, double cameraZ, long cellX, long cellZ) {
             double x = feature.AbsoluteX(Settings.SectorSize);
@@ -172,6 +224,14 @@ namespace AlpineLib.Procedural.Sky {
             if (pick < Settings.MesaWeight) return BackdropFeatureKind.Mesa;
 
             return pick < Settings.MesaWeight + Settings.ButteWeight ? BackdropFeatureKind.Butte : BackdropFeatureKind.Ridge;
+        }
+
+        private long FollowAxis(double value, long cell) {
+            double size = Settings.KeepOutCellSize;
+            double band = Settings.KeepOutHysteresis;
+            if (value >= cell * size - band && value < (cell + 1L) * size + band) return cell;
+
+            return (long)Math.Floor(value / size);
         }
 
         private static double AxisGap(double value, double low, double high) {

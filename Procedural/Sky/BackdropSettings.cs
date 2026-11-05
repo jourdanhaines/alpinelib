@@ -32,6 +32,15 @@ namespace AlpineLib.Procedural.Sky {
         /// </summary>
         public double ClearDistance { get; set; } = 700.0;
 
+        /// <summary>
+        /// How far (m, per axis) the camera must stand inside a neighbouring cell before its keep-out cell follows,
+        /// so a camera parked on a cell edge does not swap features back and forth; the margin grows to match.
+        /// </summary>
+        public double KeepOutHysteresis { get; set; } = 4.0;
+
+        /// <summary>Fog share (0–1) from which a silhouette's nearest point counts as hidden in the sky: it stays in the ring, undrawn.</summary>
+        public double FogCullShare { get; set; } = 0.99;
+
         /// <summary>Edge of one seeding sector.</summary>
         public double SectorSize { get; set; } = 160.0;
 
@@ -105,8 +114,11 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Widest a cloud bank can be, metres.</summary>
         public double CloudBankMaxWidth => CloudBankMaxHeight * CloudBankMaxAspect;
 
-        /// <summary>How far outside the keep-out square every part of a drawn silhouette lies.</summary>
-        public double KeepOutMargin => ClearDistance - KeepOutRadiusCells * KeepOutCellSize;
+        /// <summary>
+        /// How far outside the keep-out square (and every loaded cell) every part of a drawn silhouette lies: the camera
+        /// may stand up to <see cref="KeepOutHysteresis"/> past its keep-out cell on both axes.
+        /// </summary>
+        public double KeepOutMargin => ClearDistance - KeepOutRadiusCells * KeepOutCellSize + KeepOutHysteresis * Math.Sqrt(2.0);
 
         /// <summary>Farthest any part of a drawn silhouette reaches from its centre, metres.</summary>
         public double MaxReach => Math.Max(BackdropFeature.ReachOf(BackdropFeatureKind.Mesa, MaxWidth, MaxWidth),
@@ -119,6 +131,8 @@ namespace AlpineLib.Procedural.Sky {
             if (KeepOutRadiusCells < 0) throw new ArgumentOutOfRangeException(nameof(KeepOutRadiusCells), KeepOutRadiusCells, "Must not be negative.");
             RequireOrdered(KeepOutRadiusCells * KeepOutCellSize, ClearDistance, nameof(ClearDistance));
             RequireOrdered(ClearDistance, OuterRadius, nameof(OuterRadius));
+            if (!(KeepOutHysteresis >= 0.0 && KeepOutHysteresis < KeepOutCellSize * 0.5)) throw new ArgumentOutOfRangeException(nameof(KeepOutHysteresis), KeepOutHysteresis, "Must be in [0, half a cell).");
+            if (!(FogCullShare > 0.0 && FogCullShare <= 1.0)) throw new ArgumentOutOfRangeException(nameof(FogCullShare), FogCullShare, "Must be in (0, 1].");
             RequireOrdered(MinWidth, MaxWidth, nameof(MaxWidth));
             RequireOrdered(MinHeight, MaxHeight, nameof(MaxHeight));
             RequireOrdered(CloudBankMinAltitude, CloudBankMaxAltitude, nameof(CloudBankMaxAltitude));
