@@ -51,6 +51,9 @@ namespace AlpineLib.Sky {
         // Headroom on the wind's speed × real time a drift step may cover before it counts as a jump (gusts between updates).
         private const double TravelSlack = 2.0;
 
+        // Plane metres past the draw distance a prop is posed before its exact distance is taken (height, root rounding).
+        private const double CullSlack = 50.0;
+
         // Drift metres between spawn refreshes (a prop's first few centimetres are scaled to nothing anyway).
         private const double RefreshDrift = 0.25;
 
@@ -406,7 +409,8 @@ namespace AlpineLib.Sky {
             }
         }
 
-        // Past its whole life, spent by a moving blocker, waiting on an unloaded spawn cell, or out of the loaded window.
+        // Past its whole life, waiting on an unloaded spawn cell, or out of the loaded window; one spent by a moving
+        // blocker is kept (never drawn) until its life is over, so its spawn does not come back.
         private void DropSpent(double drift) {
             _dropped.Clear();
             foreach (KeyValuePair<ulong, RollingPropEntry> pair in _entries) {
@@ -417,7 +421,8 @@ namespace AlpineLib.Sky {
 
         private bool IsGone(RollingPropEntry entry, double drift) {
             RollerSpawn spawn = entry.Spawn;
-            if (drift >= spawn.EndDrift || drift < spawn.Drift || entry.IsSpent) return true;
+            if (drift >= spawn.EndDrift || drift < spawn.Drift) return true;
+            if (entry.IsSpent) return false;
             if (!entry.Prop.HasValue) return !entry.IsBuilt && !_cells.ContainsKey((spawn.CellX, spawn.CellZ));
 
             RollerPath path = entry.Prop.Value.Path;
@@ -478,13 +483,19 @@ namespace AlpineLib.Sky {
 
             double drift = Drift;
             float reachSquared = _drawDistance * _drawDistance;
+            if (!TryCameraPlane(camera, out double cameraX, out double cameraZ)) return;
+
+            double cull = (_drawDistance + CullSlack) * (_drawDistance + CullSlack);
             foreach (RollingPropEntry entry in _entries.Values) {
                 if (!entry.Prop.HasValue || entry.IsSpent) continue;
 
                 RollingProp prop = entry.Prop.Value;
                 double rolled = entry.Spawn.RolledAt(drift);
                 if (rolled < 0.0 || rolled > prop.Path.Length) continue;
-                if (!TryLocal(prop.Path, rolled, out Transform root, out Vector3 local)) continue;
+
+                prop.Path.GroundPoint(rolled, out double planeX, out double planeZ);
+                double dx = planeX - cameraX, dz = planeZ - cameraZ;
+                if (dx * dx + dz * dz > cull || !TryLocal(prop.Path, rolled, out Transform root, out Vector3 local)) continue;
 
                 Vector3 world = root.TransformPoint(local);
                 if ((world - camera).sqrMagnitude > reachSquared) continue;
@@ -494,6 +505,20 @@ namespace AlpineLib.Sky {
 
                 _candidates.Add(new RollingPropDrawn(entry, pose, root));
             }
+        }
+
+        // The camera's position in the absolute plane, through any live cell root (roots only translate).
+        private bool TryCameraPlane(Vector3 camera, out double x, out double z) {
+            foreach (KeyValuePair<(long X, long Z), Transform> pair in _roots) {
+                if (pair.Value == null) continue;
+
+                Vector3 origin = pair.Value.position;
+                x = RollerCellWorld.CentreOf(pair.Key.X, _spawner.CellSize) + (camera.x - origin.x);
+                z = RollerCellWorld.CentreOf(pair.Key.Z, _spawner.CellSize) + (camera.z - origin.z);
+                return true;
+            }
+            x = z = 0.0;
+            return false;
         }
 
         // The registered root of the cell the roll is in after `rolled` metres and the centre in its local plane.

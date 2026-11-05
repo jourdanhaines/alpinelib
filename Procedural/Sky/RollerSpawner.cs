@@ -27,6 +27,7 @@ namespace AlpineLib.Procedural.Sky {
 
         private readonly List<RollerSpawn> _scratch = new List<RollerSpawn>();
         private readonly Dictionary<(long X, long Z, long Bucket), RollerSpawn[]> _cache = new Dictionary<(long X, long Z, long Bucket), RollerSpawn[]>();
+        private readonly Dictionary<(long X, long Z, long Bucket), RollerSpawn[]> _admitted = new Dictionary<(long X, long Z, long Bucket), RollerSpawn[]>();
 
         /// <summary>
         /// Spawns of world seed <paramref name="seed"/> in cells of <paramref name="cellSize"/> metres for a wind
@@ -102,7 +103,7 @@ namespace AlpineLib.Procedural.Sky {
             if (bucket < 0) return;
 
             if (!_cache.TryGetValue((cellX, cellZ, bucket), out RollerSpawn[] spawns)) {
-                if (_cache.Count >= MostCachedBuckets) _cache.Clear();
+                if (_cache.Count >= MostCachedBuckets) ClearCache();
                 spawns = DrawBucket(cellX, cellZ, bucket);
                 _cache[(cellX, cellZ, bucket)] = spawns;
             }
@@ -129,10 +130,32 @@ namespace AlpineLib.Procedural.Sky {
         public void AliveAt(long cellX, long cellZ, double drift, List<RollerSpawn> into) {
             if (into == null) throw new ArgumentNullException(nameof(into));
 
-            CollectBack(cellX, cellZ, drift, 2.0 * Paths.MostLifeDrift);
-            foreach (RollerSpawn spawn in _scratch) {
-                if (spawn.IsAliveAt(drift) && IsAdmittedAmong(spawn, _scratch)) into.Add(spawn);
+            long lastBucket = BucketOf(drift);
+            for (long bucket = Math.Max(0, BucketOf(drift - Paths.MostLifeDrift)); bucket <= lastBucket; bucket++) AddAlive(AdmittedIn(cellX, cellZ, bucket), drift, into);
+        }
+
+        private static void AddAlive(RollerSpawn[] spawns, double drift, List<RollerSpawn> into) {
+            foreach (RollerSpawn spawn in spawns) {
+                if (spawn.IsAliveAt(drift)) into.Add(spawn);
             }
+        }
+
+        // The bucket's admitted spawns in spawn order, worked out once per bucket.
+        private RollerSpawn[] AdmittedIn(long cellX, long cellZ, long bucket) {
+            if (_admitted.TryGetValue((cellX, cellZ, bucket), out RollerSpawn[] admitted)) return admitted;
+
+            var candidates = new List<RollerSpawn>();
+            CandidatesIn(cellX, cellZ, bucket, candidates);
+            candidates.Sort(CompareSpawnOrder);
+            candidates.RemoveAll((spawn) => !IsAdmitted(spawn));
+            admitted = candidates.ToArray();
+            _admitted[(cellX, cellZ, bucket)] = admitted;
+            return admitted;
+        }
+
+        private void ClearCache() {
+            _cache.Clear();
+            _admitted.Clear();
         }
 
         /// <summary>True when fewer than the cap of earlier candidates of the spawn's cell are still out when it appears.</summary>
