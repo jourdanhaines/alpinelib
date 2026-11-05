@@ -8,14 +8,15 @@ using UnityEngine.Rendering;
 
 namespace AlpineLib.Sky {
     /// <summary>
-    /// Draws the drifting cloud field: the clouds of <see cref="CloudFieldScatter"/> on the wind-frame lattice that
-    /// slides over the world with the wind's drift, each wandering a little about its anchor, in a window of field
-    /// cells around each camera, condensing in and evaporating out only past <see cref="CloudFieldSettings.FullRadius"/>.
+    /// Draws the drifting cloud field: the clouds of <see cref="CloudFieldScatter"/> on one wind-frame lattice per class,
+    /// each sliding over the world by its class's share of the wind's drift (big clouds slower), each cloud wandering
+    /// and surging a little about its anchor, in a window of field cells around each camera, condensing in and
+    /// evaporating out only past <see cref="CloudFieldSettings.FullRadius"/>.
     /// </summary>
     /// <remarks>
     /// <para>
     /// Every client with the same seed, drift and session time draws the same sky: a cloud's absolute position is
-    /// its anchor plus the drift plus its wander, and its world position is the camera's plus that minus the
+    /// its anchor plus its class's share of the drift plus its wander and surge, and its world position is the camera's plus that minus the
     /// camera's absolute position (<see cref="CloudFieldFrame"/>, in double), so a floating-origin shift moves nothing.
     /// </para>
     /// <para>
@@ -46,9 +47,9 @@ namespace AlpineLib.Sky {
         private const int StaleBatchFrames = 120;
 
         private readonly Dictionary<int, CloudBatch> _batches = new Dictionary<int, CloudBatch>();
-        private readonly Dictionary<(long X, long Z), List<CloudInstance>> _cells = new Dictionary<(long X, long Z), List<CloudInstance>>();
+        private readonly Dictionary<(CloudClass Class, long X, long Z), List<CloudInstance>> _cells = new Dictionary<(CloudClass Class, long X, long Z), List<CloudInstance>>();
         private readonly Stack<List<CloudInstance>> _cellPool = new Stack<List<CloudInstance>>();
-        private readonly List<(long X, long Z)> _releasable = new List<(long X, long Z)>();
+        private readonly List<(CloudClass Class, long X, long Z)> _releasable = new List<(CloudClass Class, long X, long Z)>();
         private readonly List<int> _staleCameras = new List<int>();
         private readonly HashSet<int> _warnedFarClip = new HashSet<int>();
         private CloudFieldScatter _scatter;
@@ -65,6 +66,7 @@ namespace AlpineLib.Sky {
         private WindVector _displacement;
         private WindVector _glide;
         private double _time;
+        private WindVector _heading;
         private double _lastStep;
         private bool _hasDisplacement;
         private bool _wasReady;
@@ -82,7 +84,7 @@ namespace AlpineLib.Sky {
         /// <summary>The layer every instance draws on.</summary>
         public int Layer => _layer;
 
-        /// <summary>Field cells whose clouds are cached.</summary>
+        /// <summary>Field cells whose clouds are cached, across every class's lattice.</summary>
         public int CachedCellCount => _cells.Count;
 
         /// <summary>Condensing share applied to every cloud: below 1 while the clouds fade in after a wind jump.</summary>
@@ -246,6 +248,7 @@ namespace AlpineLib.Sky {
             _displacement = WindVector.Zero;
             _glide = WindVector.Zero;
             _time = 0.0;
+            _heading = WindVector.Zero;
             _hasDisplacement = false;
             _wasReady = false;
             _hasWaited = false;
@@ -258,10 +261,12 @@ namespace AlpineLib.Sky {
             if (_wind == null) {
                 _hasDisplacement = true;
                 _time = 0.0;
+                _heading = WindVector.Zero;
                 return;
             }
 
             _time = _wind.Time;
+            _heading = _wind.Field != null ? _wind.Field.Direction(_time) : WindVector.Zero;
             if (!_wind.IsReady) {
                 _wasReady = false;
                 _hasWaited |= !_hasDisplacement;
@@ -338,17 +343,16 @@ namespace AlpineLib.Sky {
         }
 
         private void Rebuild(CloudBatch batch, Vector3 world, double absoluteX, double absoluteZ) {
-            CloudFieldSettings settings = _scatter.Settings;
-            CloudFieldFrame frame = CloudFieldFrame.Locate(absoluteX, absoluteZ, _displacement, settings.CellSize);
-            bool hasMoved = !batch.IsBuilt || batch.CellX != frame.CellX || batch.CellZ != frame.CellZ || batch.Revision != _revision;
+            bool hasMoved = !batch.IsBuilt || batch.Revision != _revision;
             float groundY = _frame != null ? _frame.GroundY : 0f;
-            int window = settings.WindowCells;
-
             batch.Clear();
-            for (long cellZ = frame.CellZ - window; cellZ <= frame.CellZ + window; cellZ++) {
-                for (long cellX = frame.CellX - window; cellX <= frame.CellX + window; cellX++) {
-                    AddCell(batch, frame, cellX, cellZ, world, groundY);
-                }
+            batch.WindowCells = _scatter.Settings.WindowCells;
+            for (int classIndex = 0; classIndex < CloudFieldSettings.ClassCount; classIndex++) {
+                var cloudClass = (CloudClass)classIndex;
+                CloudFieldFrame frame = CloudFieldFrame.Locate(absoluteX, absoluteZ, _scatter.DriftOf(cloudClass, _displacement), _scatter.Settings.CellSize);
+                hasMoved |= batch.CellXOf(cloudClass) != frame.CellX || batch.CellZOf(cloudClass) != frame.CellZ;
+                batch.SetCell(cloudClass, frame.CellX, frame.CellZ);
+                AddWindow(batch, cloudClass, frame, world, groundY);
             }
 
             batch.CloseBounds(new Vector3(world.x, groundY, world.z), _reach);
@@ -358,17 +362,23 @@ namespace AlpineLib.Sky {
             batch.Displacement = _displacement;
             batch.Time = _time;
             batch.Fade = _fade;
-            batch.CellX = frame.CellX;
-            batch.CellZ = frame.CellZ;
-            batch.WindowCells = window;
             batch.Revision = _revision;
             batch.IsBuilt = true;
             if (hasMoved) ReleaseCells();
         }
 
-        private void AddCell(CloudBatch batch, CloudFieldFrame frame, long cellX, long cellZ, Vector3 world, float groundY) {
-            List<CloudInstance> clouds = CellOf(cellX, cellZ);
-            double reach = _scatter.Settings.WindowRadius + _scatter.Settings.WanderAmplitude;
+        private void AddWindow(CloudBatch batch, CloudClass cloudClass, CloudFieldFrame frame, Vector3 world, float groundY) {
+            int window = _scatter.Settings.WindowCells;
+            for (long cellZ = frame.CellZ - window; cellZ <= frame.CellZ + window; cellZ++) {
+                for (long cellX = frame.CellX - window; cellX <= frame.CellX + window; cellX++) {
+                    AddCell(batch, cloudClass, frame, cellX, cellZ, world, groundY);
+                }
+            }
+        }
+
+        private void AddCell(CloudBatch batch, CloudClass cloudClass, CloudFieldFrame frame, long cellX, long cellZ, Vector3 world, float groundY) {
+            List<CloudInstance> clouds = CellOf(cloudClass, cellX, cellZ);
+            double reach = _scatter.Settings.WindowRadius + _scatter.Settings.ClassOf(cloudClass).MotionReach;
             for (int index = 0; index < clouds.Count; index++) {
                 CloudInstance cloud = clouds[index];
                 double offsetX = frame.OffsetX(cellX, cloud.AnchorX);
@@ -379,11 +389,11 @@ namespace AlpineLib.Sky {
             }
         }
 
-        // Wandered about its anchor, shrunk about its flat base by its presence and the fade.
+        // Wandered and surged about its anchor, shrunk about its flat base by its presence and the fade.
         private void AddCloud(CloudBatch batch, in CloudInstance cloud, double offsetX, double offsetZ, Vector3 world, float groundY) {
-            _scatter.Wander(cloud, _time, out double wanderX, out double wanderZ);
-            offsetX += wanderX;
-            offsetZ += wanderZ;
+            _scatter.Offset(cloud, _time, _heading.X, _heading.Z, out double moveX, out double moveZ);
+            offsetX += moveX;
+            offsetZ += moveZ;
             double presence = _scatter.Presence(Math.Sqrt(offsetX * offsetX + offsetZ * offsetZ)) * _fade;
             if (presence <= 0.0) return;
 
@@ -393,12 +403,12 @@ namespace AlpineLib.Sky {
             batch.Add(cloud.MeshIndex, Matrix4x4.TRS(position, yaw, new Vector3(scale, scale, scale)));
         }
 
-        private List<CloudInstance> CellOf(long cellX, long cellZ) {
-            if (_cells.TryGetValue((cellX, cellZ), out List<CloudInstance> clouds)) return clouds;
+        private List<CloudInstance> CellOf(CloudClass cloudClass, long cellX, long cellZ) {
+            if (_cells.TryGetValue((cloudClass, cellX, cellZ), out List<CloudInstance> clouds)) return clouds;
 
-            clouds = _cellPool.Count > 0 ? _cellPool.Pop() : new List<CloudInstance>(_scatter.Settings.CandidatesPerCell);
-            _scatter.AppendCell(cellX, cellZ, clouds);
-            _cells.Add((cellX, cellZ), clouds);
+            clouds = _cellPool.Count > 0 ? _cellPool.Pop() : new List<CloudInstance>(_scatter.Settings.ClassOf(cloudClass).CandidatesPerCell);
+            _scatter.AppendCell(cloudClass, cellX, cellZ, clouds);
+            _cells.Add((cloudClass, cellX, cellZ), clouds);
             return clouds;
         }
 
@@ -419,18 +429,18 @@ namespace AlpineLib.Sky {
         private void ReleaseCells() {
             DropStaleBatches();
             _releasable.Clear();
-            foreach ((long X, long Z) cell in _cells.Keys) {
+            foreach ((CloudClass Class, long X, long Z) cell in _cells.Keys) {
                 if (!IsHeld(cell)) _releasable.Add(cell);
             }
-            foreach ((long X, long Z) cell in _releasable) {
+            foreach ((CloudClass Class, long X, long Z) cell in _releasable) {
                 RecycleCell(_cells[cell]);
                 _cells.Remove(cell);
             }
         }
 
-        private bool IsHeld((long X, long Z) cell) {
+        private bool IsHeld((CloudClass Class, long X, long Z) cell) {
             foreach (CloudBatch batch in _batches.Values) {
-                if (batch.HoldsCell(cell.X, cell.Z)) return true;
+                if (batch.HoldsCell(cell.Class, cell.X, cell.Z)) return true;
             }
 
             return false;

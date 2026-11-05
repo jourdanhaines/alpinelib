@@ -72,7 +72,7 @@ namespace AlpineLib.Sky {
                 CloudClass cloudClass = CloudFieldSettings.ClassOfMesh(index);
                 int variant = index % CloudFieldSettings.VariantsPerClass;
                 CloudClassSettings classSettings = settings.ClassOf(cloudClass);
-                double diameter = CloudHeap.TargetDiameter(classSettings, settings, variant);
+                double diameter = CloudHeap.TargetDiameter(classSettings, variant);
                 FacetMesh facets = CloudHeap.Build(classSettings, diameter, CloudHeap.VariantSeed(seed, cloudClass, variant), palette, out BlobPuff[] puffs);
                 _clouds[index] = FacetMeshUnity.ToMesh(facets, $"Cloud {cloudClass} {variant}");
                 _cloudPuffs[index] = puffs;

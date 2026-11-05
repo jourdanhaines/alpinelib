@@ -44,17 +44,20 @@ namespace AlpineLib.Procedural.Sky {
         }
 
         /// <summary>
-        /// Footprint diameter of mesh <paramref name="variant"/> of a class, metres: spread across the range that
-        /// keeps every instance scale of <paramref name="field"/> inside the class's diameter range.
+        /// Bound on a heap's horizontal reach from its centre over its target diameter, any heading: what the field
+        /// spaces clouds by (the footprint is fitted to the diameter on its wider axis, puffs keep inside a disc of it).
         /// </summary>
-        public static double TargetDiameter(CloudClassSettings cloudClass, CloudFieldSettings field, int variant) {
-            if (cloudClass == null) throw new ArgumentNullException(nameof(cloudClass));
-            if (field == null) throw new ArgumentNullException(nameof(field));
+        public const double ReachShare = 0.65;
 
-            double low = cloudClass.MinDiameter / field.MinScale;
-            double high = cloudClass.MaxDiameter / field.MaxScale;
+        /// <summary>
+        /// Footprint diameter of mesh <paramref name="variant"/> of a class, metres: spread geometrically across the
+        /// class's diameter range (instances scale it on top).
+        /// </summary>
+        public static double TargetDiameter(CloudClassSettings cloudClass, int variant) {
+            if (cloudClass == null) throw new ArgumentNullException(nameof(cloudClass));
+
             double share = CloudFieldSettings.VariantsPerClass > 1 ? variant / (double)(CloudFieldSettings.VariantsPerClass - 1) : 0.5;
-            return low + (high - low) * share;
+            return cloudClass.MinDiameter * Math.Pow(cloudClass.MaxDiameter / cloudClass.MinDiameter, share);
         }
 
         /// <summary>

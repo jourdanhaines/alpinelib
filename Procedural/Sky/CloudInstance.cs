@@ -1,22 +1,23 @@
 namespace AlpineLib.Procedural.Sky {
     /// <summary>
-    /// One seeded cloud of a field cell: where it is anchored in the wind frame, how high, which mesh, its size and
-    /// heading, and the seed of its wander. Pure data, the same for every client of a seed.
+    /// One seeded cloud of a field cell of its class's lattice: where it is anchored in that wind frame, how high,
+    /// which mesh, its size and heading, and the seed of its wander and surge. Pure data, the same for every client of a seed.
     /// </summary>
     public readonly struct CloudInstance {
-        public CloudInstance(double anchorX, double anchorZ, double altitude, CloudClass cloudClass, int variant, double scale, double yaw, ulong wanderSeed, ulong seed) {
+        public CloudInstance(double anchorX, double anchorZ, double altitude, CloudClass cloudClass, int variant, double scale, double reach, double yaw, ulong wanderSeed, ulong seed) {
             AnchorX = anchorX;
             AnchorZ = anchorZ;
             Altitude = altitude;
             Class = cloudClass;
             Variant = variant;
             Scale = scale;
+            Reach = reach;
             Yaw = yaw;
             WanderSeed = wanderSeed;
             Seed = seed;
         }
 
-        /// <summary>Anchor within its field cell, metres from the cell's minimum corner in the wind frame.</summary>
+        /// <summary>Anchor within its field cell, metres from the cell's minimum corner in its class's wind frame.</summary>
         public double AnchorX { get; }
         public double AnchorZ { get; }
 
@@ -31,10 +32,13 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Uniform scale on the mesh (never stretched, so its puffs stay round).</summary>
         public double Scale { get; }
 
+        /// <summary>Horizontal radius the drawn cloud stays within about its centre, metres (<see cref="CloudFieldSettings.ReachOf"/>).</summary>
+        public double Reach { get; }
+
         /// <summary>Heading of the mesh, radians.</summary>
         public double Yaw { get; }
 
-        /// <summary>Seed of the bounded wander about the anchor (<see cref="CloudFieldScatter.Wander"/>).</summary>
+        /// <summary>Seed of the bounded wander and surge about the anchor (<see cref="CloudFieldScatter.Offset"/>).</summary>
         public ulong WanderSeed { get; }
 
         /// <summary>The cloud's own seed, for anything else that wants to vary per cloud.</summary>

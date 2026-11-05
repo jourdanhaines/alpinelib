@@ -3,7 +3,7 @@ using AlpineLib.Procedural.Sky;
 using UnityEngine;
 
 namespace AlpineLib.Sky {
-    /// <summary>One camera's cloud instances: a matrix list per cloud mesh, the field window they came from and what they were built at.</summary>
+    /// <summary>One camera's cloud instances: a matrix list per cloud mesh, the field window of each class's lattice they came from and what they were built at.</summary>
     public sealed class CloudBatch {
         private readonly List<Matrix4x4>[] _matrices = new List<Matrix4x4>[CloudFieldSettings.MeshCount];
         private Vector3 _min;
@@ -30,10 +30,25 @@ namespace AlpineLib.Sky {
         /// <summary>Frame of the last use (stale batches are dropped and stop holding cells).</summary>
         public int LastUsedFrame { get; set; }
 
-        /// <summary>The field cell the camera stood in and the window's reach in cells either side.</summary>
-        public long CellX { get; set; }
-        public long CellZ { get; set; }
+        private readonly long[] _cellX = new long[CloudFieldSettings.ClassCount];
+        private readonly long[] _cellZ = new long[CloudFieldSettings.ClassCount];
+
+        /// <summary>The window's reach in cells either side of the camera's cell.</summary>
         public int WindowCells { get; set; }
+
+        /// <summary>The field cell of <paramref name="cloudClass"/>'s lattice the camera stood in.</summary>
+        public long CellXOf(CloudClass cloudClass) {
+            return _cellX[(int)cloudClass];
+        }
+
+        public long CellZOf(CloudClass cloudClass) {
+            return _cellZ[(int)cloudClass];
+        }
+
+        public void SetCell(CloudClass cloudClass, long cellX, long cellZ) {
+            _cellX[(int)cloudClass] = cellX;
+            _cellZ[(int)cloudClass] = cellZ;
+        }
 
         /// <summary>Instances across every mesh.</summary>
         public int InstanceCount { get; private set; }
@@ -46,9 +61,11 @@ namespace AlpineLib.Sky {
             return _matrices[meshIndex];
         }
 
-        /// <summary>True when field cell (<paramref name="cellX"/>, <paramref name="cellZ"/>) is inside this batch's window.</summary>
-        public bool HoldsCell(long cellX, long cellZ) {
-            return IsBuilt && System.Math.Abs(cellX - CellX) <= WindowCells && System.Math.Abs(cellZ - CellZ) <= WindowCells;
+        /// <summary>True when <paramref name="cloudClass"/>'s field cell (<paramref name="cellX"/>, <paramref name="cellZ"/>) is inside this batch's window.</summary>
+        public bool HoldsCell(CloudClass cloudClass, long cellX, long cellZ) {
+            if (!IsBuilt) return false;
+
+            return System.Math.Abs(cellX - _cellX[(int)cloudClass]) <= WindowCells && System.Math.Abs(cellZ - _cellZ[(int)cloudClass]) <= WindowCells;
         }
 
         public void Clear() {

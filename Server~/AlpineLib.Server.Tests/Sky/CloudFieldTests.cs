@@ -8,6 +8,7 @@ using Xunit;
 namespace AlpineLib.Server.Tests.Sky {
     public sealed class CloudFieldTests {
         private static readonly CloudFieldSettings Settings = CloudFieldSettings.Default;
+        private static readonly CloudClass[] Classes = { CloudClass.Small, CloudClass.Medium, CloudClass.Large };
         private static readonly CloudPalette Palette = new CloudPalette(
             new SkyAtlasBand(new Vector2(0.1f, 0.9f), new Vector2(0.2f, 0.9f)), new SkyAtlasBand(new Vector2(0.3f, 0.9f), new Vector2(0.4f, 0.9f)));
 
@@ -16,88 +17,191 @@ namespace AlpineLib.Server.Tests.Sky {
             var first = new CloudFieldScatter(21UL, Settings);
             var second = new CloudFieldScatter(21UL, CloudFieldSettings.Default);
             var other = new CloudFieldScatter(22UL, Settings);
-            int differing = 0;
-            for (long cellZ = -6; cellZ <= 6; cellZ += 2) {
-                for (long cellX = -6; cellX <= 6; cellX += 2) {
-                    string described = Describe(first.Cell(cellX, cellZ));
-                    Assert.Equal(described, Describe(second.Cell(cellX, cellZ)));
-                    differing += described != Describe(other.Cell(cellX, cellZ)) ? 1 : 0;
+            foreach (CloudClass cloudClass in Classes) {
+                int differing = 0;
+                for (long cellZ = -6; cellZ <= 6; cellZ += 2) {
+                    for (long cellX = -6; cellX <= 6; cellX += 2) {
+                        string described = Describe(first.Cell(cloudClass, cellX, cellZ));
+                        Assert.Equal(described, Describe(second.Cell(cloudClass, cellX, cellZ)));
+                        differing += described != Describe(other.Cell(cloudClass, cellX, cellZ)) ? 1 : 0;
+                    }
                 }
+                Assert.True(differing > 20, $"{cloudClass}: only {differing} cells differ between seeds");
+                long far = 9_000_000_000L;
+                Assert.Equal(Describe(first.Cell(cloudClass, far, -far)), Describe(second.Cell(cloudClass, far, -far)));
             }
-            Assert.True(differing > 40);
-            long far = 9_000_000_000L;
-            Assert.Equal(Describe(first.Cell(far, -far)), Describe(second.Cell(far, -far)));
         }
 
         [Fact]
         public void CloudsStayInsideTheirCellAndRanges() {
             var scatter = new CloudFieldScatter(5UL, Settings);
-            var classes = new int[CloudFieldSettings.ClassCount];
-            for (long cellZ = -12; cellZ < 12; cellZ++) {
-                for (long cellX = -12; cellX < 12; cellX++) {
-                    foreach (CloudInstance cloud in scatter.Cell(cellX, cellZ)) CheckCloud(cloud, classes);
+            foreach (CloudClass cloudClass in Classes) {
+                for (long cellZ = -8; cellZ < 8; cellZ++) {
+                    for (long cellX = -8; cellX < 8; cellX++) {
+                        foreach (CloudInstance cloud in scatter.Cell(cloudClass, cellX, cellZ)) CheckCloud(scatter, cloudClass, cloud);
+                    }
                 }
             }
-
-            int total = classes[0] + classes[1] + classes[2];
-            Assert.InRange(classes[0] / (double)total, 0.38, 0.52);
-            Assert.InRange(classes[1] / (double)total, 0.28, 0.42);
-            Assert.InRange(classes[2] / (double)total, 0.14, 0.26);
         }
 
+        // Many small, a few large: about 6 : 3 : 1 per field cell, 1–3 clouds per 128 m overall.
         [Fact]
-        public void DensityIsOneToThreePer128Metres() {
-            var scatter = new CloudFieldScatter(9UL, Settings);
-            int clouds = 0;
-            int cells = 0;
-            for (long cellZ = -15; cellZ < 15; cellZ++) {
-                for (long cellX = -15; cellX < 15; cellX++) {
-                    clouds += scatter.Cell(cellX, cellZ).Length;
-                    cells++;
-                }
-            }
+        public void ClassMixIsManySmallAndAFewLarge() {
+            double[] perCell = MeanPerCell(new CloudFieldScatter(9UL, Settings), 15);
+            Assert.InRange(perCell[0], 5.0, 8.0);
+            Assert.InRange(perCell[1], 2.0, 3.5);
+            Assert.InRange(perCell[2], 0.7, 1.4);
+            Assert.True(perCell[0] / perCell[2] >= 4.5);
 
-            double per128 = clouds / (double)cells / (Settings.CellSize * Settings.CellSize / (128.0 * 128.0));
+            double per128 = (perCell[0] + perCell[1] + perCell[2]) / (Settings.CellSize * Settings.CellSize / (128.0 * 128.0));
             Assert.InRange(per128, 1.0, 3.0);
         }
 
+        // Drawn footprints spread over more than a decade, classes overlap, scales are log-uniform.
         [Fact]
-        public void AnchorsAndDrawnCloudsKeepTheirSpacing() {
-            var scatter = new CloudFieldScatter(13UL, Settings);
-            var anchors = new List<(double X, double Z, CloudInstance Cloud)>();
-            for (long cellZ = -4; cellZ < 4; cellZ++) {
-                for (long cellX = -4; cellX < 4; cellX++) {
-                    foreach (CloudInstance cloud in scatter.Cell(cellX, cellZ)) anchors.Add((cellX * Settings.CellSize + cloud.AnchorX, cellZ * Settings.CellSize + cloud.AnchorZ, cloud));
+        public void SizesSpreadWidely() {
+            var scatter = new CloudFieldScatter(17UL, Settings);
+            var diameters = new List<double>();
+            double logScaleSum = 0.0;
+            var classLow = new double[CloudFieldSettings.ClassCount];
+            var classHigh = new double[CloudFieldSettings.ClassCount];
+            for (int index = 0; index < classLow.Length; index++) classLow[index] = double.MaxValue;
+            foreach (CloudClass cloudClass in Classes) {
+                for (long cellZ = -10; cellZ < 10; cellZ++) {
+                    for (long cellX = -10; cellX < 10; cellX++) {
+                        foreach (CloudInstance cloud in scatter.Cell(cloudClass, cellX, cellZ)) {
+                            double diameter = scatter.MeshDiameter(cloudClass, cloud.Variant) * cloud.Scale;
+                            diameters.Add(diameter);
+                            logScaleSum += Math.Log(cloud.Scale);
+                            classLow[(int)cloudClass] = Math.Min(classLow[(int)cloudClass], diameter);
+                            classHigh[(int)cloudClass] = Math.Max(classHigh[(int)cloudClass], diameter);
+                        }
+                    }
                 }
             }
 
+            diameters.Sort();
+            double tenth = diameters[diameters.Count / 10];
+            double ninetieth = diameters[diameters.Count * 9 / 10];
+            Assert.True(diameters[0] < 9.0 && diameters[diameters.Count - 1] > 120.0, $"drawn diameters {diameters[0]:0.0}..{diameters[diameters.Count - 1]:0.0}");
+            Assert.True(ninetieth / tenth >= 3.0, $"p10 {tenth:0.0} p90 {ninetieth:0.0}");
+            Assert.True(classHigh[0] > classLow[1] && classHigh[1] > classLow[2], "class size bands do not overlap");
+            double logMid = 0.5 * (Math.Log(Settings.MinScale) + Math.Log(Settings.MaxScale));
+            Assert.InRange(logScaleSum / diameters.Count, logMid - 0.05, logMid + 0.05);
+        }
+
+        // Anchors keep their exclusion; at any time and wind heading two clouds of one class keep the gap between footprints.
+        [Fact]
+        public void SameClassCloudsNeverTouch() {
+            var scatter = new CloudFieldScatter(13UL, Settings);
             double[] times = { 0.0, 37.5, 911.0, 86_400.25 };
-            for (int first = 0; first < anchors.Count; first++) {
-                for (int second = first + 1; second < anchors.Count; second++) {
-                    Assert.True(Distance(anchors[first].X, anchors[first].Z, anchors[second].X, anchors[second].Z) >= Settings.AnchorSpacing - 1e-9);
-                    foreach (double time in times) CheckDrawnSpacing(scatter, anchors[first], anchors[second], time);
+            var headings = new[] { new WindVector(1.0, 0.0), new WindVector(-0.6, 0.8) };
+            foreach (CloudClass cloudClass in Classes) {
+                List<(double X, double Z, CloudInstance Cloud)> anchors = Anchors(scatter, cloudClass, 4);
+                CloudClassSettings classSettings = Settings.ClassOf(cloudClass);
+                for (int first = 0; first < anchors.Count; first++) {
+                    for (int second = first + 1; second < anchors.Count; second++) {
+                        double exclusion = Settings.Exclusion(classSettings, anchors[first].Cloud.Reach, anchors[second].Cloud.Reach);
+                        Assert.True(Distance(anchors[first].X, anchors[first].Z, anchors[second].X, anchors[second].Z) >= exclusion - 1e-9);
+                        foreach (double time in times) {
+                            foreach (WindVector heading in headings) CheckDrawnGap(scatter, anchors[first], anchors[second], time, heading);
+                        }
+                    }
                 }
             }
         }
 
+        // Classes drift apart, so they are kept apart in height: every cloud's top is under the next band's floor.
         [Fact]
-        public void WanderIsBoundedAndAlive() {
-            var scatter = new CloudFieldScatter(3UL, Settings);
-            CloudInstance[] clouds = scatter.Cell(0, 0);
-            Assert.NotEmpty(clouds);
-            double most = 0.0;
-            foreach (CloudInstance cloud in clouds) {
-                for (double time = 0.0; time < 3600.0; time += 7.3) {
-                    scatter.Wander(cloud, time, out double x, out double z);
-                    double length = Math.Sqrt(x * x + z * z);
-                    Assert.True(length <= Settings.WanderAmplitude + 1e-9);
-                    most = Math.Max(most, length);
+        public void ClassBandsNeverMeet() {
+            for (int index = 1; index < CloudFieldSettings.ClassCount; index++) {
+                Assert.True(Settings.TopOf(Settings.Classes[index - 1]) < Settings.Classes[index].MinAltitude);
+            }
+
+            var scatter = new CloudFieldScatter(29UL, Settings);
+            foreach (CloudClass cloudClass in Classes) {
+                CloudClassSettings classSettings = Settings.ClassOf(cloudClass);
+                foreach (CloudInstance cloud in scatter.Cell(cloudClass, 3, -2)) {
+                    double top = cloud.Altitude + scatter.MeshDiameter(cloudClass, cloud.Variant) * cloud.Scale * classSettings.HeightShare;
+                    Assert.True(top <= Settings.TopOf(classSettings) + 1e-9);
                 }
             }
-            Assert.True(most > Settings.WanderAmplitude * 0.5);
 
-            scatter.Wander(clouds[0], 604_800.5, out double farX, out double farZ);
-            Assert.True(Math.Sqrt(farX * farX + farZ * farZ) <= Settings.WanderAmplitude + 1e-9);
+            Assert.Throws<ArgumentOutOfRangeException>(() => new CloudFieldSettings { Classes = OverlappingBands() }.Validate());
+        }
+
+        // Over an hour: wander and surge stay in bounds, the surge swings at most 15 % of a cell in any 10 minutes and moves.
+        [Fact]
+        public void WanderAndSurgeAreBoundedAndAlive() {
+            var scatter = new CloudFieldScatter(3UL, Settings);
+            foreach (CloudClass cloudClass in Classes) {
+                CloudInstance[] clouds = scatter.Cell(cloudClass, 0, 0);
+                Assert.NotEmpty(clouds);
+                CloudClassSettings classSettings = Settings.ClassOf(cloudClass);
+                double mostSurge = 0.0;
+                foreach (CloudInstance cloud in clouds) mostSurge = Math.Max(mostSurge, CheckMotion(scatter, classSettings, cloud));
+                Assert.True(mostSurge > classSettings.SurgeAmplitude * 0.5, $"{cloudClass}: surge peaked at {mostSurge:0.0} m");
+
+                scatter.Wander(clouds[0], 604_800.5, out double farX, out double farZ);
+                Assert.True(Math.Sqrt(farX * farX + farZ * farZ) <= classSettings.WanderAmplitude + 1e-9);
+                Assert.True(Math.Abs(scatter.Surge(clouds[0], 604_800.5)) <= classSettings.SurgeAmplitude + 1e-9);
+            }
+        }
+
+        // An hour of real wind at 1 s steps: every cloud's centre stays inside its own field cell of its class's lattice.
+        [Fact]
+        public void NoCloudLeavesItsFieldCellOverAnHour() {
+            var scatter = new CloudFieldScatter(31UL, Settings);
+            var wind = new WindField(31UL, WindSettings.Default);
+            foreach (CloudClass cloudClass in Classes) {
+                var clouds = new List<CloudInstance>();
+                for (long cellX = -1; cellX <= 1; cellX++) clouds.AddRange(scatter.Cell(cloudClass, cellX, 2));
+                Assert.NotEmpty(clouds);
+                for (double time = 0.0; time <= 3600.0; time += 1.0) {
+                    WindVector heading = wind.Direction(time);
+                    foreach (CloudInstance cloud in clouds) {
+                        scatter.Offset(cloud, time, heading.X, heading.Z, out double offsetX, out double offsetZ);
+                        Assert.InRange(cloud.AnchorX + offsetX, 0.0, Settings.CellSize - 1e-9);
+                        Assert.InRange(cloud.AnchorZ + offsetZ, 0.0, Settings.CellSize - 1e-9);
+                    }
+                }
+            }
+        }
+
+        // A cloud's absolute position moves by its class's factor of the drift, its own offset aside; big clouds run slower.
+        [Fact]
+        public void PerClassDriftFactorsApplied() {
+            var scatter = new CloudFieldScatter(7UL, Settings);
+            var wind = new WindField(7UL, WindSettings.Default);
+            var speeds = new double[CloudFieldSettings.ClassCount];
+            foreach (CloudClass cloudClass in Classes) {
+                CloudInstance cloud = scatter.Cell(cloudClass, 0, 0)[0];
+                double factor = Settings.ClassOf(cloudClass).DriftFactor;
+                Assert.Equal(new WindVector(1e6 * factor, -2e5 * factor), scatter.DriftOf(cloudClass, new WindVector(1e6, -2e5)));
+                AbsoluteOf(scatter, wind, cloud, 0, 0, 600.0, out double startX, out double startZ, out double startOffsetX, out double startOffsetZ);
+                AbsoluteOf(scatter, wind, cloud, 0, 0, 1800.0, out double endX, out double endZ, out double endOffsetX, out double endOffsetZ);
+                WindVector drift = wind.Displacement(1800.0) - wind.Displacement(600.0);
+                Assert.Equal(drift.X * factor, (endX - endOffsetX) - (startX - startOffsetX), 6);
+                Assert.Equal(drift.Z * factor, (endZ - endOffsetZ) - (startZ - startOffsetZ), 6);
+                speeds[(int)cloudClass] = Distance(startX, startZ, endX, endZ) / 1200.0;
+            }
+
+            Assert.True(speeds[2] < speeds[1] && speeds[1] < speeds[0], $"speeds {speeds[0]:0.00} {speeds[1]:0.00} {speeds[2]:0.00} m/s");
+            Assert.InRange(speeds[2] / speeds[0], 0.35, 0.7);
+        }
+
+        // Two sessions at the same clock, one stepped frame by frame and one joining cold, place every cloud on the same bits.
+        [Fact]
+        public void TwoSessionsAtEqualClockPlaceCloudsIdentically() {
+            const double clock = 1234.5;
+            var stepped = new WindField(55UL, WindSettings.Default);
+            for (double time = 0.0; time < clock; time += 1.0 / 60.0) stepped.Displacement(time);
+            var cold = new WindField(55UL, WindSettings.Default);
+            var first = new CloudFieldScatter(77UL, Settings);
+            var second = new CloudFieldScatter(77UL, CloudFieldSettings.Default);
+            Assert.Equal(stepped.Displacement(clock), cold.Displacement(clock));
+            Assert.Equal(Placements(first, stepped, clock), Placements(second, cold, clock));
+            Assert.NotEqual(Placements(first, stepped, clock), Placements(first, stepped, clock + 5.0));
         }
 
         [Fact]
@@ -162,20 +266,25 @@ namespace AlpineLib.Server.Tests.Sky {
 
         [Fact]
         public void InvalidSettingsThrow() {
-            Assert.Throws<ArgumentOutOfRangeException>(() => new CloudFieldScatter(1UL, new CloudFieldSettings { WanderAmplitude = 200.0 }));
             Assert.Throws<ArgumentOutOfRangeException>(() => new CloudFieldScatter(1UL, new CloudFieldSettings { DissolveShare = 0.0 }));
             Assert.Throws<ArgumentException>(() => new CloudFieldScatter(1UL, new CloudFieldSettings { Classes = new CloudClassSettings[2] }));
             Assert.Throws<ArgumentOutOfRangeException>(() => CloudFieldFrame.Locate(0.0, 0.0, WindVector.Zero, 0.0));
-            Assert.Throws<ArgumentOutOfRangeException>(() => new CloudFieldScatter(1UL, new CloudFieldSettings { CellSize = 64.0, MinSpacing = 30.0, WanderAmplitude = 18.0 }));
-            new CloudFieldSettings { CellSize = 64.0, MinSpacing = 16.0, WanderAmplitude = 12.0 }.Validate();
+            Assert.Throws<ArgumentOutOfRangeException>(() => new CloudFieldScatter(1UL, new CloudFieldSettings { CellSize = 128.0 }));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new CloudFieldScatter(1UL, new CloudFieldSettings { SurgePeriodSeconds = 0.0 }));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new CloudFieldScatter(1UL, new CloudFieldSettings { Classes = WithSmall(surge: 20.0, driftFactor: 1.1) }));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new CloudFieldScatter(1UL, new CloudFieldSettings { Classes = WithSmall(surge: 9.0, driftFactor: 0.0) }));
+            new CloudFieldSettings { Classes = WithSmall(surge: 19.0, driftFactor: 1.3) }.Validate();
         }
 
         // Far enough for a cloud anywhere in the window, dissolving ones included, but within the shipped 1100 m clip.
         [Fact]
         public void FarClipCoversTheWholeWindow() {
-            double slant = Math.Sqrt(Settings.WindowRadius * Settings.WindowRadius + 220.0 * 220.0) + 30.0;
-            Assert.True(Settings.RequiredFarClip > slant);
-            Assert.InRange(Settings.RequiredFarClip, 1090.0, 1100.0);
+            CloudClassSettings large = Settings.ClassOf(CloudClass.Large);
+            double fullTop = Settings.FullRadius + Settings.MaxReach(large);
+            double slant = Math.Sqrt(fullTop * fullTop + Math.Pow(Settings.TopOf(large), 2));
+            Assert.True(Settings.RequiredFarClip >= slant);
+            Assert.True(Settings.RequiredFarClip >= Math.Sqrt(Settings.WindowRadius * Settings.WindowRadius + large.MaxAltitude * large.MaxAltitude));
+            Assert.InRange(Settings.RequiredFarClip, 1050.0, 1100.0);
         }
 
         // Every ray out of a point deep inside a puff crosses the heap's surface: no face was dropped where no puff covers it.
@@ -199,9 +308,10 @@ namespace AlpineLib.Server.Tests.Sky {
             }
         }
 
+        // Round, flat-based, in budget, and inside the reach and height shares the field spaces and stacks clouds by.
         [Fact]
         public void HeapsAreRoundFlatBasedAndInBudget() {
-            for (ulong seed = 1; seed <= 6; seed++) {
+            for (ulong seed = 1; seed <= 24; seed++) {
                 for (int meshIndex = 0; meshIndex < CloudFieldSettings.MeshCount; meshIndex++) CheckHeap(seed, meshIndex);
             }
         }
@@ -210,20 +320,114 @@ namespace AlpineLib.Server.Tests.Sky {
         public void HeapsAreDeterministic() {
             CloudClassSettings large = Settings.ClassOf(CloudClass.Large);
             ulong variantSeed = CloudHeap.VariantSeed(42UL, CloudClass.Large, 2);
-            double diameter = CloudHeap.TargetDiameter(large, Settings, 2);
+            double diameter = CloudHeap.TargetDiameter(large, 2);
             FacetMesh first = CloudHeap.Build(large, diameter, variantSeed, Palette, out BlobPuff[] _);
             FacetMesh second = CloudHeap.Build(large, diameter, variantSeed, Palette, out BlobPuff[] _);
             Assert.Equal(first.ComputePositionHash(), second.ComputePositionHash());
             Assert.NotEqual(first.ComputePositionHash(), CloudHeap.Build(large, diameter, CloudHeap.VariantSeed(43UL, CloudClass.Large, 2), Palette, out BlobPuff[] _).ComputePositionHash());
         }
 
+        private static double[] MeanPerCell(CloudFieldScatter scatter, int half) {
+            var perCell = new double[CloudFieldSettings.ClassCount];
+            int cells = 4 * half * half;
+            foreach (CloudClass cloudClass in Classes) {
+                int clouds = 0;
+                for (long cellZ = -half; cellZ < half; cellZ++) {
+                    for (long cellX = -half; cellX < half; cellX++) clouds += scatter.Cell(cloudClass, cellX, cellZ).Length;
+                }
+                perCell[(int)cloudClass] = clouds / (double)cells;
+            }
+            return perCell;
+        }
+
+        private static List<(double X, double Z, CloudInstance Cloud)> Anchors(CloudFieldScatter scatter, CloudClass cloudClass, int half) {
+            var anchors = new List<(double X, double Z, CloudInstance Cloud)>();
+            for (long cellZ = -half; cellZ < half; cellZ++) {
+                for (long cellX = -half; cellX < half; cellX++) {
+                    foreach (CloudInstance cloud in scatter.Cell(cloudClass, cellX, cellZ)) anchors.Add((cellX * Settings.CellSize + cloud.AnchorX, cellZ * Settings.CellSize + cloud.AnchorZ, cloud));
+                }
+            }
+            return anchors;
+        }
+
+        // Most surge seen; fails when wander or surge leave their bounds or the surge swings past its share in a 10-minute window.
+        private static double CheckMotion(CloudFieldScatter scatter, CloudClassSettings classSettings, CloudInstance cloud) {
+            const double window = 600.0;
+            const double step = 5.0;
+            var surges = new List<double>();
+            double most = 0.0;
+            for (double time = 0.0; time <= 3600.0; time += step) {
+                scatter.Wander(cloud, time, out double wanderX, out double wanderZ);
+                Assert.True(Math.Sqrt(wanderX * wanderX + wanderZ * wanderZ) <= classSettings.WanderAmplitude + 1e-9);
+                double surge = scatter.Surge(cloud, time);
+                Assert.True(Math.Abs(surge) <= classSettings.SurgeAmplitude + 1e-9);
+                most = Math.Max(most, Math.Abs(surge));
+                surges.Add(surge);
+            }
+
+            int span = (int)(window / step);
+            for (int start = 0; start + span < surges.Count; start++) {
+                double low = double.MaxValue;
+                double high = double.MinValue;
+                for (int index = start; index <= start + span; index++) {
+                    low = Math.Min(low, surges[index]);
+                    high = Math.Max(high, surges[index]);
+                }
+                Assert.True(high - low <= CloudFieldSettings.MaxSurgeShare * Settings.CellSize + 1e-9);
+            }
+            return most;
+        }
+
+        // Absolute position of a cloud seen from a camera at the absolute origin, and its own offset (wander + surge).
+        private static void AbsoluteOf(CloudFieldScatter scatter, WindField wind, CloudInstance cloud, long cellX, long cellZ, double time, out double absoluteX, out double absoluteZ, out double offsetX, out double offsetZ) {
+            CloudFieldFrame frame = CloudFieldFrame.Locate(0.0, 0.0, scatter.DriftOf(cloud.Class, wind.Displacement(time)), Settings.CellSize);
+            WindVector heading = wind.Direction(time);
+            scatter.Offset(cloud, time, heading.X, heading.Z, out offsetX, out offsetZ);
+            absoluteX = frame.OffsetX(cellX, cloud.AnchorX) + offsetX;
+            absoluteZ = frame.OffsetZ(cellZ, cloud.AnchorZ) + offsetZ;
+        }
+
+        // Bits of every cloud's absolute position in a 5 x 5 window of each class around a camera at the absolute origin.
+        private static string Placements(CloudFieldScatter scatter, WindField wind, double time) {
+            var text = new System.Text.StringBuilder();
+            WindVector heading = wind.Direction(time);
+            foreach (CloudClass cloudClass in Classes) {
+                CloudFieldFrame frame = CloudFieldFrame.Locate(3.25, -8.5, scatter.DriftOf(cloudClass, wind.Displacement(time)), Settings.CellSize);
+                for (long cellZ = frame.CellZ - 2; cellZ <= frame.CellZ + 2; cellZ++) {
+                    for (long cellX = frame.CellX - 2; cellX <= frame.CellX + 2; cellX++) {
+                        foreach (CloudInstance cloud in scatter.Cell(cloudClass, cellX, cellZ)) {
+                            scatter.Offset(cloud, time, heading.X, heading.Z, out double offsetX, out double offsetZ);
+                            text.Append(BitConverter.DoubleToInt64Bits(frame.OffsetX(cellX, cloud.AnchorX) + offsetX)).Append(',')
+                                .Append(BitConverter.DoubleToInt64Bits(frame.OffsetZ(cellZ, cloud.AnchorZ) + offsetZ)).Append(';');
+                        }
+                    }
+                }
+            }
+            return text.ToString();
+        }
+
+        private static CloudClassSettings[] OverlappingBands() {
+            CloudClassSettings[] classes = CloudFieldSettings.Default.Classes;
+            CloudClassSettings medium = classes[1];
+            classes[1] = new CloudClassSettings(medium.MinDiameter, medium.MaxDiameter, 140.0, medium.MaxAltitude, medium.MinPuffs, medium.MaxPuffs,
+                medium.CandidatesPerCell, medium.FaceBudget, medium.HeightShare, medium.DriftFactor, medium.WanderAmplitude, medium.SurgeAmplitude);
+            return classes;
+        }
+
+        private static CloudClassSettings[] WithSmall(double surge, double driftFactor) {
+            CloudClassSettings[] classes = CloudFieldSettings.Default.Classes;
+            CloudClassSettings small = classes[0];
+            classes[0] = new CloudClassSettings(small.MinDiameter, small.MaxDiameter, small.MinAltitude, small.MaxAltitude, small.MinPuffs, small.MaxPuffs,
+                small.CandidatesPerCell, small.FaceBudget, small.HeightShare, driftFactor, small.WanderAmplitude, surge);
+            return classes;
+        }
+
         private static void CheckHeap(ulong seed, int meshIndex) {
             CloudClass cloudClass = CloudFieldSettings.ClassOfMesh(meshIndex);
             int variant = meshIndex % CloudFieldSettings.VariantsPerClass;
             CloudClassSettings settings = Settings.ClassOf(cloudClass);
-            double diameter = CloudHeap.TargetDiameter(settings, Settings, variant);
-            Assert.InRange(diameter * Settings.MinScale, settings.MinDiameter - 1e-9, settings.MaxDiameter);
-            Assert.InRange(diameter * Settings.MaxScale, settings.MinDiameter, settings.MaxDiameter + 1e-9);
+            double diameter = CloudHeap.TargetDiameter(settings, variant);
+            Assert.InRange(diameter, settings.MinDiameter - 1e-9, settings.MaxDiameter + 1e-9);
 
             FacetMesh mesh = CloudHeap.Build(settings, diameter, CloudHeap.VariantSeed(seed, cloudClass, variant), Palette, out BlobPuff[] puffs);
             Assert.InRange(mesh.FaceCount, 1, settings.FaceBudget);
@@ -232,7 +436,9 @@ namespace AlpineLib.Server.Tests.Sky {
             Assert.InRange(bounds.Min.Y, -1e-3f, 1e-3f);
             double across = Math.Max(bounds.Size.X, bounds.Size.Z);
             Assert.InRange(across, diameter * 0.8, diameter * 1.15);
-            Assert.InRange(bounds.Size.Y / across, 0.3, 0.85);
+            Assert.True(bounds.Size.Y <= diameter * settings.HeightShare, $"mesh {meshIndex} seed {seed}: height {bounds.Size.Y / diameter:0.000} of its diameter");
+            Assert.True(bounds.Size.Y / across >= 0.3, $"mesh {meshIndex} seed {seed}: height {bounds.Size.Y / across:0.000} of its span");
+            foreach (Vector3 corner in mesh.Positions) Assert.True(Math.Sqrt(corner.X * corner.X + corner.Z * corner.Z) <= diameter * CloudHeap.ReachShare);
             foreach (BlobPuff puff in puffs) {
                 Assert.Equal(puff.Radii.X, puff.Radii.Z);
                 Assert.InRange(puff.Radii.Y / puff.Radii.X, 0.9f, 1.2f);
@@ -243,7 +449,7 @@ namespace AlpineLib.Server.Tests.Sky {
             CloudClass cloudClass = CloudFieldSettings.ClassOfMesh(meshIndex);
             int variant = meshIndex % CloudFieldSettings.VariantsPerClass;
             CloudClassSettings settings = Settings.ClassOf(cloudClass);
-            double diameter = CloudHeap.TargetDiameter(settings, Settings, variant);
+            double diameter = CloudHeap.TargetDiameter(settings, variant);
             FacetMesh mesh = CloudHeap.Build(settings, diameter, CloudHeap.VariantSeed(seed, cloudClass, variant), Palette, out BlobPuff[] puffs);
             foreach (BlobPuff puff in puffs) {
                 foreach (Vector3 toward in directions) {
@@ -299,22 +505,25 @@ namespace AlpineLib.Server.Tests.Sky {
             return Vector3.Dot(edgeAc, lift) / determinant > 0.0;
         }
 
-        private static void CheckCloud(CloudInstance cloud, int[] classes) {
-            CloudClassSettings settings = Settings.ClassOf(cloud.Class);
-            classes[(int)cloud.Class]++;
-            Assert.InRange(cloud.AnchorX, Settings.AnchorInset, Settings.CellSize - Settings.AnchorInset);
-            Assert.InRange(cloud.AnchorZ, Settings.AnchorInset, Settings.CellSize - Settings.AnchorInset);
+        private static void CheckCloud(CloudFieldScatter scatter, CloudClass cloudClass, CloudInstance cloud) {
+            CloudClassSettings settings = Settings.ClassOf(cloudClass);
+            double inset = Settings.AnchorInset(settings);
+            Assert.Equal(cloudClass, cloud.Class);
+            Assert.InRange(cloud.AnchorX, inset, Settings.CellSize - inset);
+            Assert.InRange(cloud.AnchorZ, inset, Settings.CellSize - inset);
             Assert.InRange(cloud.Altitude, settings.MinAltitude, settings.MaxAltitude);
             Assert.InRange(cloud.Variant, 0, CloudFieldSettings.VariantsPerClass - 1);
             Assert.InRange(cloud.Scale, Settings.MinScale, Settings.MaxScale);
+            Assert.Equal(CloudFieldSettings.ReachOf(scatter.MeshDiameter(cloudClass, cloud.Variant), cloud.Scale), cloud.Reach);
             Assert.InRange(cloud.Yaw, 0.0, 2.0 * Math.PI);
-            Assert.InRange(cloud.MeshIndex, 0, CloudFieldSettings.MeshCount - 1);
+            Assert.InRange(cloud.MeshIndex, (int)cloudClass * CloudFieldSettings.VariantsPerClass, (int)cloudClass * CloudFieldSettings.VariantsPerClass + 3);
         }
 
-        private static void CheckDrawnSpacing(CloudFieldScatter scatter, (double X, double Z, CloudInstance Cloud) first, (double X, double Z, CloudInstance Cloud) second, double time) {
-            scatter.Wander(first.Cloud, time, out double firstX, out double firstZ);
-            scatter.Wander(second.Cloud, time, out double secondX, out double secondZ);
-            Assert.True(Distance(first.X + firstX, first.Z + firstZ, second.X + secondX, second.Z + secondZ) >= Settings.MinSpacing - 1e-9);
+        private static void CheckDrawnGap(CloudFieldScatter scatter, (double X, double Z, CloudInstance Cloud) first, (double X, double Z, CloudInstance Cloud) second, double time, WindVector heading) {
+            scatter.Offset(first.Cloud, time, heading.X, heading.Z, out double firstX, out double firstZ);
+            scatter.Offset(second.Cloud, time, heading.X, heading.Z, out double secondX, out double secondZ);
+            double centres = Distance(first.X + firstX, first.Z + firstZ, second.X + secondX, second.Z + secondZ);
+            Assert.True(centres >= first.Cloud.Reach + second.Cloud.Reach + Settings.MinGap - 1e-9);
         }
 
         private static double Distance(double ax, double az, double bx, double bz) {
@@ -328,7 +537,7 @@ namespace AlpineLib.Server.Tests.Sky {
             foreach (CloudInstance cloud in clouds) {
                 text.Append(BitConverter.DoubleToInt64Bits(cloud.AnchorX)).Append(',').Append(BitConverter.DoubleToInt64Bits(cloud.AnchorZ)).Append(',')
                     .Append(cloud.Class).Append(cloud.Variant).Append(',').Append(BitConverter.DoubleToInt64Bits(cloud.Altitude)).Append(',')
-                    .Append(cloud.WanderSeed).Append(';');
+                    .Append(BitConverter.DoubleToInt64Bits(cloud.Scale)).Append(',').Append(cloud.WanderSeed).Append(';');
             }
             return text.ToString();
         }
