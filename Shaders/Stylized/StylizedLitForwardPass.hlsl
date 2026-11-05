@@ -7,6 +7,7 @@
 #endif
 
 #include "StylizedLighting.hlsl"
+#include "StylizedSkyGradient.hlsl"
 #if defined(LOD_FADE_CROSSFADE)
     #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/LODCrossFade.hlsl"
 #endif
@@ -66,6 +67,19 @@ half StylizedFogFactor(float3 positionWS, half fogBlend)
     float nearToFarZ = max(viewZ - _ProjectionParams.y, 0.0);
     half fogScale = lerp(_FogScale, _FogScaleAlpha, fogBlend);
     return ComputeFogFactorZ0ToFar(nearToFarZ * fogScale);
+}
+
+// The colour _FOG_SKY fogs toward: the sky (gradient, haze and sun glow) behind the fragment, or the scene fog colour
+// while the sky globals are unset.
+half3 StylizedSkyFogColor(float3 positionWS)
+{
+    if (_AlpineSkyZenith.w < 0.5h) return unity_FogColor.rgb;
+
+    float3 direction = SafeNormalize(positionWS - GetCameraPositionWS());
+    half3 sky = AlpineSkyGradient(direction.y, _AlpineSkyZenith.rgb, _AlpineSkyHorizon.rgb, _AlpineSkyGround.rgb, _AlpineSkyHaze.rgb,
+        _AlpineSkyShape.x, _AlpineSkyShape.y, _AlpineSkyShape.z);
+    if (_AlpineSunDirection.w > 0.5) sky += _AlpineSkyGlow.rgb * AlpineSunGlow(direction, SafeNormalize(_AlpineSunDirection.xyz), _AlpineSkyShape.w);
+    return sky;
 }
 
 // Faceted normal from screen derivatives, turned to the side the mesh normal faces.
@@ -170,7 +184,11 @@ void StylizedLitPassFragment(
 #endif
 
     half3 color = StylizedFragmentColor(inputData, surface, shadowMask);
+#if defined(_FOG_SKY)
+    color = MixFogColor(color, StylizedSkyFogColor(input.positionWS), inputData.fogCoord);
+#else
     color = MixFog(color, inputData.fogCoord);
+#endif
     outColor = half4(color, 1.0h);
 
 #ifdef _WRITE_RENDERING_LAYERS

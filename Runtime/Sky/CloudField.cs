@@ -24,7 +24,12 @@ namespace AlpineLib.Sky {
     /// more than <see cref="JumpMetres"/> from it the clouds glide from the held drift to the live one over
     /// <see cref="FadeSeconds"/>, and after drawing nothing while waiting they condense in over it instead of popping
     /// (steps clamped to <see cref="MaxStepSeconds"/>, so a hitch cannot skip either). Per-cell clouds are pure data,
-    /// built on demand into pooled lists and released once no camera's window holds the cell.
+    /// built on demand into pooled cells (with their offsets at the current and next motion tick) and released once no
+    /// camera's window holds the cell; cells wholly past the window's radius are never built.
+    /// </para>
+    /// <para>
+    /// Shadow footprints are one disc per puff, or one disc enclosing every puff for classes that shadow as one
+    /// (<see cref="CloudClassSettings.OneShadowDisc"/>).
     /// </para>
     /// <para>
     /// Instanced through <c>Graphics.RenderMeshInstanced</c> per camera from <c>beginCameraRendering</c>, on one layer,
@@ -47,8 +52,12 @@ namespace AlpineLib.Sky {
         private const int StaleBatchFrames = 120;
 
         private readonly Dictionary<int, CloudBatch> _batches = new Dictionary<int, CloudBatch>();
-        private readonly Dictionary<(CloudClass Class, long X, long Z), List<CloudInstance>> _cells = new Dictionary<(CloudClass Class, long X, long Z), List<CloudInstance>>();
-        private readonly Stack<List<CloudInstance>> _cellPool = new Stack<List<CloudInstance>>();
+        private readonly Dictionary<(CloudClass Class, long X, long Z), CloudCell> _cells = new Dictionary<(CloudClass Class, long X, long Z), CloudCell>();
+        private readonly Stack<CloudCell> _cellPool = new Stack<CloudCell>();
+        private readonly Vector3[][] _shadowCentres = new Vector3[CloudFieldSettings.MeshCount][];
+        private readonly float[][] _shadowRadii = new float[CloudFieldSettings.MeshCount][];
+        private readonly float[] _shadowSpan = new float[CloudFieldSettings.MeshCount];
+        private readonly float[] _shadowRadius = new float[CloudFieldSettings.MeshCount];
         private readonly List<(CloudClass Class, long X, long Z)> _releasable = new List<(CloudClass Class, long X, long Z)>();
         private readonly List<int> _staleCameras = new List<int>();
         private readonly HashSet<int> _warnedFarClip = new HashSet<int>();
@@ -66,7 +75,9 @@ namespace AlpineLib.Sky {
         private WindVector _displacement;
         private WindVector _glide;
         private double _time;
-        private WindVector _heading;
+        private long _tick = long.MinValue;
+        private WindVector _tickHeading;
+        private WindVector _nextHeading;
         private double _lastStep;
         private bool _hasDisplacement;
         private bool _wasReady;
@@ -89,6 +100,9 @@ namespace AlpineLib.Sky {
 
         /// <summary>Condensing share applied to every cloud: below 1 while the clouds fade in after a wind jump.</summary>
         public float Fade => _fade;
+
+        /// <summary>The frame clouds are placed through (absolute positions), or null for world positions.</summary>
+        public IAbsoluteFrame Frame => _frame;
 
         /// <summary>World y of the ground clouds float over.</summary>
         public float GroundY => _frame != null ? _frame.GroundY : 0f;
@@ -120,13 +134,15 @@ namespace AlpineLib.Sky {
             if (!HasCloudKeywords(material)) Debug.LogWarning($"CloudField::Configure->'{material.name}' lacks the sky keywords; player builds strip variants switched on at runtime.", this);
             EnsureMaterial();
             _reach = (float)LargestExtent(meshes, scatter.Settings);
+            BuildShadowDiscs(meshes, scatter.Settings);
             ResetWind();
             Invalidate();
         }
 
         /// <summary>
         /// True when <paramref name="material"/> is instanced and carries <c>_FLAT_SHADING</c>, <c>_NO_LIGHT_COOKIE</c>,
-        /// <c>_RECEIVE_SHADOWS_OFF</c> and <c>_FOG_RADIAL</c> (so a cloud is as fogged at the screen's edge as dead ahead).
+        /// <c>_RECEIVE_SHADOWS_OFF</c>, <c>_FOG_RADIAL</c> (so a cloud is as fogged at the screen's edge as dead ahead) and
+        /// <c>_FOG_SKY</c> (so a fogged cloud melts into the sky behind it at any height, not into the horizon haze).
         /// </summary>
         public static bool HasCloudKeywords(Material material) {
             if (material == null || !material.enableInstancing) return false;
@@ -134,7 +150,8 @@ namespace AlpineLib.Sky {
             return material.IsKeywordEnabled(StylizedLitShader.FlatShadingKeyword)
                 && material.IsKeywordEnabled(StylizedLitShader.NoLightCookieKeyword)
                 && material.IsKeywordEnabled(StylizedLitShader.ReceiveShadowsOffKeyword)
-                && material.IsKeywordEnabled(StylizedLitShader.FogRadialKeyword);
+                && material.IsKeywordEnabled(StylizedLitShader.FogRadialKeyword)
+                && material.IsKeywordEnabled(StylizedLitShader.FogSkyKeyword);
         }
 
         /// <summary>Sets the fog distance scale the clouds draw with (reviews), through a clone unless the asset already matches.</summary>
@@ -179,11 +196,21 @@ namespace AlpineLib.Sky {
         }
 
         /// <summary>
-        /// Fills <paramref name="footprints"/> (cleared first, no allocation once it has grown) with one footprint per
-        /// puff of every cloud <paramref name="camera"/> draws now: world centre and horizontal radius, scaled with the
-        /// cloud. Empty when the camera is filtered out.
+        /// Fills <paramref name="footprints"/> (cleared first, no allocation once it has grown) with the shadow footprints
+        /// of every cloud <paramref name="camera"/> draws now: world centre and horizontal radius, scaled with the cloud.
+        /// Empty when the camera is filtered out.
         /// </summary>
         public void CopyFootprints(Camera camera, List<CloudFootprint> footprints) {
+            CopyFootprints(camera, footprints, Matrix4x4.identity, Vector2.zero, float.PositiveInfinity, 1f);
+        }
+
+        /// <summary>
+        /// Like <see cref="CopyFootprints(Camera, List{CloudFootprint})"/>, but with centres in the space of the rigid
+        /// <paramref name="worldToSpace"/> and only for clouds whose footprints, radii grown by <paramref name="radiusScale"/>,
+        /// can reach the square of half-size <paramref name="halfSize"/> about <paramref name="centre"/> (that space's x, y):
+        /// one transform per cloud, and no puff of a cloud wholly outside is expanded.
+        /// </summary>
+        public void CopyFootprints(Camera camera, List<CloudFootprint> footprints, Matrix4x4 worldToSpace, Vector2 centre, float halfSize, float radiusScale) {
             if (footprints == null) throw new ArgumentNullException(nameof(footprints));
 
             footprints.Clear();
@@ -191,24 +218,27 @@ namespace AlpineLib.Sky {
             if (batch == null) return;
 
             for (int meshIndex = 0; meshIndex < CloudFieldSettings.MeshCount; meshIndex++) {
-                AppendFootprints(batch.MatricesOf(meshIndex), _meshes.CloudPuffs(meshIndex), footprints);
-            }
-        }
+                float span = _shadowSpan[meshIndex] + _shadowRadius[meshIndex] * radiusScale;
+                foreach (Matrix4x4 matrix in batch.MatricesOf(meshIndex)) {
+                    Matrix4x4 toSpace = worldToSpace * matrix;
+                    float scale = new Vector3(matrix.m00, matrix.m10, matrix.m20).magnitude;
+                    float reach = halfSize + span * scale;
+                    if (Mathf.Abs(toSpace.m03 - centre.x) > reach || Mathf.Abs(toSpace.m13 - centre.y) > reach) continue;
 
-        private static void AppendFootprints(List<Matrix4x4> matrices, IReadOnlyList<BlobPuff> puffs, List<CloudFootprint> footprints) {
-            foreach (Matrix4x4 matrix in matrices) {
-                float scale = new Vector3(matrix.m00, matrix.m10, matrix.m20).magnitude;
-                for (int index = 0; index < puffs.Count; index++) {
-                    System.Numerics.Vector3 centre = puffs[index].Centre;
-                    Vector3 world = matrix.MultiplyPoint3x4(new Vector3(centre.X, centre.Y, centre.Z));
-                    footprints.Add(new CloudFootprint(world, puffs[index].Radii.X * scale));
+                    AppendFootprints(toSpace, scale, meshIndex, footprints);
                 }
             }
         }
 
+        private void AppendFootprints(Matrix4x4 toSpace, float scale, int meshIndex, List<CloudFootprint> footprints) {
+            Vector3[] centres = _shadowCentres[meshIndex];
+            float[] radii = _shadowRadii[meshIndex];
+            for (int index = 0; index < centres.Length; index++) footprints.Add(new CloudFootprint(toSpace.MultiplyPoint3x4(centres[index]), radii[index] * scale));
+        }
+
         /// <summary>Drops every cached cell and camera batch, so the next draw rebuilds.</summary>
         public void Invalidate() {
-            foreach (List<CloudInstance> clouds in _cells.Values) RecycleCell(clouds);
+            foreach (CloudCell cell in _cells.Values) RecycleCell(cell);
             _cells.Clear();
             _batches.Clear();
             _revision++;
@@ -248,7 +278,7 @@ namespace AlpineLib.Sky {
             _displacement = WindVector.Zero;
             _glide = WindVector.Zero;
             _time = 0.0;
-            _heading = WindVector.Zero;
+            _tick = long.MinValue;
             _hasDisplacement = false;
             _wasReady = false;
             _hasWaited = false;
@@ -261,12 +291,12 @@ namespace AlpineLib.Sky {
             if (_wind == null) {
                 _hasDisplacement = true;
                 _time = 0.0;
-                _heading = WindVector.Zero;
+                UpdateTick(null);
                 return;
             }
 
             _time = _wind.Time;
-            _heading = _wind.Field != null ? _wind.Field.Direction(_time) : WindVector.Zero;
+            UpdateTick(_wind.Field);
             if (!_wind.IsReady) {
                 _wasReady = false;
                 _hasWaited |= !_hasDisplacement;
@@ -279,6 +309,16 @@ namespace AlpineLib.Sky {
             AdvanceTransition();
             _displacement = target + _glide * (1.0 - SmoothShare(_glideShare));
             _hasDisplacement = true;
+        }
+
+        // The wind headings of the motion tick the time falls in and the next, which the cells' offsets are sampled under.
+        private void UpdateTick(WindField field) {
+            long tick = CloudFieldScatter.MotionTick(_time);
+            if (tick == _tick) return;
+
+            _tickHeading = tick == _tick + 1 ? _nextHeading : CloudFieldScatter.HeadingAt(field, tick);
+            _nextHeading = CloudFieldScatter.HeadingAt(field, tick + 1);
+            _tick = tick;
         }
 
         // A cold join that drew nothing condenses in; a drawn sky further than the jump limit away glides from where it is.
@@ -367,54 +407,76 @@ namespace AlpineLib.Sky {
             if (hasMoved) ReleaseCells();
         }
 
+        // Every cell of the class's window that comes within the window's radius (its clouds never leave it).
         private void AddWindow(CloudBatch batch, CloudClass cloudClass, CloudFieldFrame frame, Vector3 world, float groundY) {
             int window = _scatter.Settings.WindowCells;
+            double share = CloudFieldScatter.TickShare(_time, _tick);
             for (long cellZ = frame.CellZ - window; cellZ <= frame.CellZ + window; cellZ++) {
+                double nearZ = NearestAcross(frame.OffsetZ(cellZ, 0.0));
                 for (long cellX = frame.CellX - window; cellX <= frame.CellX + window; cellX++) {
-                    AddCell(batch, cloudClass, frame, cellX, cellZ, world, groundY);
+                    if (!IsInWindow(NearestAcross(frame.OffsetX(cellX, 0.0)), nearZ)) continue;
+
+                    AddCell(batch, cloudClass, frame, cellX, cellZ, share, world, groundY);
                 }
             }
         }
 
-        private void AddCell(CloudBatch batch, CloudClass cloudClass, CloudFieldFrame frame, long cellX, long cellZ, Vector3 world, float groundY) {
-            List<CloudInstance> clouds = CellOf(cloudClass, cellX, cellZ);
+        // Distance from the camera to a cell's span along one axis, given the offset of its minimum edge.
+        private double NearestAcross(double edge) {
+            if (edge > 0.0) return edge;
+
+            double far = edge + _scatter.Settings.CellSize;
+            return far < 0.0 ? -far : 0.0;
+        }
+
+        private bool IsInWindow(double nearX, double nearZ) {
+            double radius = _scatter.Settings.WindowRadius;
+            return nearX * nearX + nearZ * nearZ < radius * radius;
+        }
+
+        private void AddCell(CloudBatch batch, CloudClass cloudClass, CloudFieldFrame frame, long cellX, long cellZ, double share, Vector3 world, float groundY) {
+            CloudCell cell = CellOf(cloudClass, cellX, cellZ);
+            cell.Prepare(_scatter, _tick, _tickHeading, _nextHeading);
             double reach = _scatter.Settings.WindowRadius + _scatter.Settings.ClassOf(cloudClass).MotionReach;
+            List<CloudInstance> clouds = cell.Clouds;
             for (int index = 0; index < clouds.Count; index++) {
                 CloudInstance cloud = clouds[index];
                 double offsetX = frame.OffsetX(cellX, cloud.AnchorX);
                 double offsetZ = frame.OffsetZ(cellZ, cloud.AnchorZ);
                 if (offsetX * offsetX + offsetZ * offsetZ >= reach * reach) continue;
 
-                AddCloud(batch, cloud, offsetX, offsetZ, world, groundY);
+                cell.OffsetOf(index, share, out double moveX, out double moveZ);
+                AddCloud(batch, cloud, offsetX + moveX, offsetZ + moveZ, world, groundY);
             }
         }
 
-        // Wandered and surged about its anchor, shrunk about its flat base by its presence and the fade.
+        // Shrunk about its flat base by its presence and the fade; turned by its cached heading.
         private void AddCloud(CloudBatch batch, in CloudInstance cloud, double offsetX, double offsetZ, Vector3 world, float groundY) {
-            _scatter.Offset(cloud, _time, _heading.X, _heading.Z, out double moveX, out double moveZ);
-            offsetX += moveX;
-            offsetZ += moveZ;
             double presence = _scatter.Presence(Math.Sqrt(offsetX * offsetX + offsetZ * offsetZ)) * _fade;
             if (presence <= 0.0) return;
 
-            var position = new Vector3(world.x + (float)offsetX, groundY + (float)cloud.Altitude, world.z + (float)offsetZ);
-            var yaw = Quaternion.Euler(0f, (float)(cloud.Yaw * (180.0 / Math.PI)), 0f);
             float scale = (float)(cloud.Scale * presence);
-            batch.Add(cloud.MeshIndex, Matrix4x4.TRS(position, yaw, new Vector3(scale, scale, scale)));
+            float cos = (float)cloud.YawCos * scale;
+            float sin = (float)cloud.YawSin * scale;
+            var matrix = new Matrix4x4 {
+                m00 = cos, m02 = sin, m11 = scale, m20 = -sin, m22 = cos, m33 = 1f,
+                m03 = world.x + (float)offsetX, m13 = groundY + (float)cloud.Altitude, m23 = world.z + (float)offsetZ,
+            };
+            batch.Add(cloud.MeshIndex, matrix);
         }
 
-        private List<CloudInstance> CellOf(CloudClass cloudClass, long cellX, long cellZ) {
-            if (_cells.TryGetValue((cloudClass, cellX, cellZ), out List<CloudInstance> clouds)) return clouds;
+        private CloudCell CellOf(CloudClass cloudClass, long cellX, long cellZ) {
+            if (_cells.TryGetValue((cloudClass, cellX, cellZ), out CloudCell cell)) return cell;
 
-            clouds = _cellPool.Count > 0 ? _cellPool.Pop() : new List<CloudInstance>(_scatter.Settings.ClassOf(cloudClass).CandidatesPerCell);
-            _scatter.AppendCell(cloudClass, cellX, cellZ, clouds);
-            _cells.Add((cloudClass, cellX, cellZ), clouds);
-            return clouds;
+            cell = _cellPool.Count > 0 ? _cellPool.Pop() : new CloudCell();
+            _scatter.AppendCell(cloudClass, cellX, cellZ, cell.Clouds);
+            _cells.Add((cloudClass, cellX, cellZ), cell);
+            return cell;
         }
 
-        private void RecycleCell(List<CloudInstance> clouds) {
-            clouds.Clear();
-            _cellPool.Push(clouds);
+        private void RecycleCell(CloudCell cell) {
+            cell.Clear();
+            _cellPool.Push(cell);
         }
 
         // Cameras that stopped drawing (destroyed, disabled) let go of their cells on a timer too, not only when one moves.
@@ -432,9 +494,9 @@ namespace AlpineLib.Sky {
             foreach ((CloudClass Class, long X, long Z) cell in _cells.Keys) {
                 if (!IsHeld(cell)) _releasable.Add(cell);
             }
-            foreach ((CloudClass Class, long X, long Z) cell in _releasable) {
-                RecycleCell(_cells[cell]);
-                _cells.Remove(cell);
+            foreach ((CloudClass Class, long X, long Z) key in _releasable) {
+                RecycleCell(_cells[key]);
+                _cells.Remove(key);
             }
         }
 
@@ -452,6 +514,56 @@ namespace AlpineLib.Sky {
                 if (Time.frameCount - entry.Value.LastUsedFrame > StaleBatchFrames) _staleCameras.Add(entry.Key);
             }
             foreach (int id in _staleCameras) _batches.Remove(id);
+        }
+
+        // Each mesh's shadow discs at scale 1, and how far its farthest disc centre and widest disc reach (for culling).
+        private void BuildShadowDiscs(SkyMeshVariants meshes, CloudFieldSettings settings) {
+            for (int meshIndex = 0; meshIndex < CloudFieldSettings.MeshCount; meshIndex++) {
+                IReadOnlyList<BlobPuff> puffs = meshes.CloudPuffs(meshIndex);
+                bool isOne = settings.ClassOf(CloudFieldSettings.ClassOfMesh(meshIndex)).OneShadowDisc;
+                if (isOne) BuildOneDisc(meshIndex, puffs);
+                else BuildPuffDiscs(meshIndex, puffs);
+
+                _shadowSpan[meshIndex] = 0f;
+                _shadowRadius[meshIndex] = 0f;
+                for (int index = 0; index < _shadowCentres[meshIndex].Length; index++) {
+                    _shadowSpan[meshIndex] = Mathf.Max(_shadowSpan[meshIndex], _shadowCentres[meshIndex][index].magnitude);
+                    _shadowRadius[meshIndex] = Mathf.Max(_shadowRadius[meshIndex], _shadowRadii[meshIndex][index]);
+                }
+            }
+        }
+
+        private void BuildPuffDiscs(int meshIndex, IReadOnlyList<BlobPuff> puffs) {
+            int count = puffs != null ? puffs.Count : 0;
+            _shadowCentres[meshIndex] = new Vector3[count];
+            _shadowRadii[meshIndex] = new float[count];
+            for (int index = 0; index < count; index++) {
+                _shadowCentres[meshIndex][index] = ToUnity(puffs[index].Centre);
+                _shadowRadii[meshIndex][index] = puffs[index].Radii.X;
+            }
+        }
+
+        // One disc about the puffs' mean centre, wide enough to enclose every puff's footprint.
+        private void BuildOneDisc(int meshIndex, IReadOnlyList<BlobPuff> puffs) {
+            if (puffs == null || puffs.Count == 0) {
+                BuildPuffDiscs(meshIndex, puffs);
+                return;
+            }
+
+            Vector3 mean = Vector3.zero;
+            foreach (BlobPuff puff in puffs) mean += ToUnity(puff.Centre) / puffs.Count;
+            float radius = 0f;
+            foreach (BlobPuff puff in puffs) radius = Mathf.Max(radius, HorizontalDistance(ToUnity(puff.Centre), mean) + puff.Radii.X);
+            _shadowCentres[meshIndex] = new[] { mean };
+            _shadowRadii[meshIndex] = new[] { radius };
+        }
+
+        private static float HorizontalDistance(Vector3 point, Vector3 other) {
+            return new Vector2(point.x - other.x, point.z - other.z).magnitude;
+        }
+
+        private static Vector3 ToUnity(System.Numerics.Vector3 vector) {
+            return new Vector3(vector.X, vector.Y, vector.Z);
         }
 
         // The largest horizontal half-extent or height of any cloud at the largest scale, for bounds.

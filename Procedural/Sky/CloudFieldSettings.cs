@@ -9,8 +9,8 @@ namespace AlpineLib.Procedural.Sky {
     /// <remarks>
     /// A cloud is shown at full size within (1 − <see cref="DissolveShare"/>) of <see cref="WindowRadius"/> and
     /// condenses or evaporates across the rest, past the fog's reach, so the field never dissolves in view. Classes
-    /// drift at different speeds and so pass each other: their altitude bands are kept apart, tops included
-    /// (<see cref="TopOf"/>), so two clouds of different classes never meet.
+    /// drift at different speeds and so pass each other; their altitude bands overlap as in a real sky, so two clouds
+    /// of different classes may run through each other for a while as one overtakes the other.
     /// </remarks>
     public sealed class CloudFieldSettings {
         /// <summary>Mesh variants per class.</summary>
@@ -151,7 +151,6 @@ namespace AlpineLib.Procedural.Sky {
 
                 cloudClass.Validate();
                 ValidateMotion(cloudClass);
-                if (index > 0 && !(TopOf(Classes[index - 1]) < cloudClass.MinAltitude)) throw new ArgumentOutOfRangeException(nameof(Classes), cloudClass.MinAltitude, $"Class {(CloudClass)index} starts below the top of class {(CloudClass)(index - 1)} ({TopOf(Classes[index - 1]):0.0} m); classes drift apart, so their bands must not overlap.");
             }
         }
 
@@ -161,7 +160,25 @@ namespace AlpineLib.Procedural.Sky {
             if (!(2.0 * cloudClass.SurgeAmplitude <= MaxSurgeShare * CellSize)) throw new ArgumentOutOfRangeException(nameof(Classes), cloudClass.SurgeAmplitude, $"A surge may swing at most {MaxSurgeShare:P0} of a cell.");
 
             double widest = MaxReach(cloudClass);
-            if (!(Exclusion(cloudClass, widest, widest) <= CellSize)) throw new ArgumentOutOfRangeException(nameof(Classes), cloudClass.MaxDiameter, "Two of the largest clouds plus gap and motion must fit in one cell.");
+            if (!(Exclusion(cloudClass, widest, widest) <= CellSize)) throw new ArgumentOutOfRangeException(nameof(Classes), cloudClass.MaxDiameter, $"Two of the largest clouds plus gap and motion must fit in one cell (scale at most {MaxScaleThatFits():0.000}).");
+        }
+
+        /// <summary>
+        /// Largest <see cref="MaxScale"/> the classes, gap, motion and cell allow: two of a class's largest clouds plus
+        /// the gap and both clouds' motion still fit one cell. Editors clamp to it so a slider never empties the sky.
+        /// </summary>
+        public double MaxScaleThatFits() {
+            double fits = double.MaxValue;
+            if (Classes == null) return fits;
+
+            foreach (CloudClassSettings cloudClass in Classes) {
+                if (cloudClass == null || !(cloudClass.MaxDiameter > 0.0)) continue;
+
+                double room = CellSize - MinGap - 2.0 * cloudClass.MotionReach;
+                fits = Math.Min(fits, room / (2.0 * cloudClass.MaxDiameter * CloudHeap.ReachShare));
+            }
+
+            return fits;
         }
 
         // A cloud centred d out reaches d + p·R across and alt + p·H up at presence p; sampled every metre of the window.
@@ -179,12 +196,13 @@ namespace AlpineLib.Procedural.Sky {
             return farthest;
         }
 
-        // Mesh diameters (instances scale 0.6–1.6 on top): Small 10–26 m low, Medium 24–48 m, Large 44–90 m high and slow.
+        // Mesh diameters (instances scale 0.6–1.6 on top): Small 10–26 m at 120–160 m, Medium 24–48 m at 140–190 m,
+        // Large 44–90 m at 170–220 m and slow; small clouds shadow as one disc each.
         private static CloudClassSettings[] DefaultClasses() {
             return new[] {
-                new CloudClassSettings(10.0, 26.0, 100.0, 125.0, 3, 7, 20, 300, 0.9, 1.1, 3.0, 9.0),
-                new CloudClassSettings(24.0, 48.0, 170.0, 200.0, 6, 11, 12, 500, 0.72, 0.8, 4.0, 11.0),
-                new CloudClassSettings(44.0, 90.0, 262.0, 300.0, 10, 15, 3, 800, 0.58, 0.55, 8.0, 14.0),
+                new CloudClassSettings(10.0, 26.0, 120.0, 160.0, 3, 7, 20, 300, 0.9, 1.1, 3.0, 9.0, true),
+                new CloudClassSettings(24.0, 48.0, 140.0, 190.0, 6, 11, 12, 500, 0.72, 0.8, 4.0, 11.0),
+                new CloudClassSettings(44.0, 90.0, 170.0, 220.0, 10, 15, 3, 800, 0.58, 0.55, 8.0, 14.0),
             };
         }
     }

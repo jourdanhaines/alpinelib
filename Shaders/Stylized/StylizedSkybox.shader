@@ -41,6 +41,7 @@ Shader "AlpineLib/Stylized/Skybox"
             #pragma fragment StylizedSkyboxFragment
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "StylizedSkyGradient.hlsl"
 
             CBUFFER_START(UnityPerMaterial)
                 half4 _ZenithColor;
@@ -90,28 +91,17 @@ Shader "AlpineLib/Stylized/Skybox"
                 return SafeNormalize(chosen);
             }
 
-            half3 SkyGradient(float height)
-            {
-                half exponent = max(_GradientExponent, 0.05h);
-                half3 sky = lerp(_HorizonColor.rgb, _ZenithColor.rgb, pow(saturate(height), exponent));
-                half3 ground = lerp(_HorizonColor.rgb, _GroundColor.rgb, pow(saturate(-height), exponent));
-                half3 color = height >= 0.0 ? sky : ground;
-
-                half haze = pow(saturate(1.0h - abs(height) / max(_HazeHeight, 0.001h)), max(_HazeSharpness, 0.1h));
-                return lerp(color, _HazeColor.rgb, haze);
-            }
-
             half4 StylizedSkyboxFragment(Varyings input) : SV_Target
             {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
                 float3 direction = SafeNormalize(input.directionWS);
-                half3 color = SkyGradient(direction.y);
+                half3 color = AlpineSkyGradient(direction.y, _ZenithColor.rgb, _HorizonColor.rgb, _GroundColor.rgb, _HazeColor.rgb,
+                    _GradientExponent, _HazeHeight, _HazeSharpness);
 
                 float3 sun = SunDirection();
                 half distanceToSun = length(direction - sun);
                 half disc = 1.0h - smoothstep(_SunSize * 0.85h, max(_SunSize, 1e-4h), distanceToSun);
-                half glowFalloff = saturate(1.0h - distanceToSun / max(_SunGlowSize, 0.001h));
-                half glow = glowFalloff * glowFalloff * _SunGlowStrength;
+                half glow = AlpineSunGlow(direction, sun, _SunGlowSize) * _SunGlowStrength;
                 half discVisible = _AlpineSunDirection.w > 0.5 ? 1.0h : 0.0h;
                 color += _SunColor.rgb * ((disc + glow) * discVisible);
                 return half4(color, 1.0h);

@@ -32,4 +32,14 @@ half4 _AlpineLightParams;
 // xyz toward the sun, w 1 when set.
 float4 _AlpineSunDirection;
 
+// The skybox's gradient for _FOG_SKY (StylizedLightingGlobals.SetSky): linear rgb, zenith w 1 when set.
+half4 _AlpineSkyZenith;
+half4 _AlpineSkyHorizon;
+half4 _AlpineSkyGround;
+half4 _AlpineSkyHaze;
+// x gradient exponent, y haze height, z haze sharpness, w sun glow size.
+half4 _AlpineSkyShape;
+// Sun glow colour times its strength.
+half4 _AlpineSkyGlow;
+
 #endif

@@ -21,9 +21,12 @@ namespace AlpineLib.Rendering {
         /// <summary>Fog by the distance to the camera, not the view depth (sky objects, so they fog alike across the screen).</summary>
         public const string FogRadialKeyword = "_FOG_RADIAL";
 
+        /// <summary>Fog toward the sky behind the fragment (the skybox's gradient, <see cref="StylizedLightingGlobals.SetSky"/>), not the flat fog colour.</summary>
+        public const string FogSkyKeyword = "_FOG_SKY";
+
         /// <summary>Every material keyword the shader declares.</summary>
         public static readonly string[] MaterialKeywords = {
-            VertexColorKeyword, FlatShadingKeyword, EmissionKeyword, AlphaTestKeyword, ReceiveShadowsOffKeyword, NoLightCookieKeyword, FogScaleBlendKeyword, FogRadialKeyword
+            VertexColorKeyword, FlatShadingKeyword, EmissionKeyword, AlphaTestKeyword, ReceiveShadowsOffKeyword, NoLightCookieKeyword, FogScaleBlendKeyword, FogRadialKeyword, FogSkyKeyword
         };
 
         public static readonly int BaseMap = Shader.PropertyToID("_BaseMap");
@@ -48,11 +51,18 @@ namespace AlpineLib.Rendering {
         public static readonly int NoLightCookieToggle = Shader.PropertyToID("_NoLightCookie");
         public static readonly int FogScaleBlendToggle = Shader.PropertyToID("_FogScaleBlend");
         public static readonly int FogRadialToggle = Shader.PropertyToID("_FogRadial");
+        public static readonly int FogSkyToggle = Shader.PropertyToID("_FogSky");
 
         public static readonly int ShadowTintGlobal = Shader.PropertyToID("_AlpineShadowTint");
         public static readonly int RimColorGlobal = Shader.PropertyToID("_AlpineRimColor");
         public static readonly int LightParamsGlobal = Shader.PropertyToID("_AlpineLightParams");
         public static readonly int SunDirectionGlobal = Shader.PropertyToID("_AlpineSunDirection");
+        public static readonly int SkyZenithGlobal = Shader.PropertyToID("_AlpineSkyZenith");
+        public static readonly int SkyHorizonGlobal = Shader.PropertyToID("_AlpineSkyHorizon");
+        public static readonly int SkyGroundGlobal = Shader.PropertyToID("_AlpineSkyGround");
+        public static readonly int SkyHazeGlobal = Shader.PropertyToID("_AlpineSkyHaze");
+        public static readonly int SkyShapeGlobal = Shader.PropertyToID("_AlpineSkyShape");
+        public static readonly int SkyGlowGlobal = Shader.PropertyToID("_AlpineSkyGlow");
 
         /// <summary>The shader, or null when it is not in the build or project.</summary>
         public static Shader Find() {
@@ -88,6 +98,7 @@ namespace AlpineLib.Rendering {
                 case NoLightCookieKeyword: return NoLightCookieToggle;
                 case FogScaleBlendKeyword: return FogScaleBlendToggle;
                 case FogRadialKeyword: return FogRadialToggle;
+                case FogSkyKeyword: return FogSkyToggle;
                 default: return 0;
             }
         }

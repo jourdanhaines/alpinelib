@@ -19,7 +19,9 @@ namespace AlpineLib.Procedural.Sky {
     /// <para>
     /// A cloud's centre sits at its anchor plus a bounded wander (<see cref="Wander"/>) plus a bounded surge along the
     /// wind (<see cref="Surge"/>, its own speed variance); anchors sit at least both amplitudes inside their cell, so a
-    /// cloud never leaves its cell and drawn clouds of one class never touch. Thread safe.
+    /// cloud never leaves its cell and drawn clouds of one class never touch. The field draws the offset sampled at
+    /// <see cref="MotionTickSeconds"/> ticks and blended between them (<see cref="SmoothOffset"/>), which keeps both
+    /// bounds. Thread safe.
     /// </para>
     /// </remarks>
     public sealed class CloudFieldScatter {
@@ -31,6 +33,12 @@ namespace AlpineLib.Procedural.Sky {
 
         /// <summary>Gain on the surge noise before it is clamped to ±1, so a cloud spends its time across the whole swing.</summary>
         public const double SurgeGain = 2.0;
+
+        /// <summary>Step of the motion ticks the wander and surge are sampled at and blended between, seconds (they move millimetres a frame).</summary>
+        public const double MotionTickSeconds = 0.1;
+
+        /// <summary>Steps per metre (or unit) values from libm are rounded to, so every runtime gets the same bits.</summary>
+        public const double QuantumSteps = 1024.0;
 
         private readonly ulong _seed;
         private readonly ulong[] _coverageSeeds = new ulong[CloudFieldSettings.ClassCount];
@@ -175,6 +183,54 @@ namespace AlpineLib.Procedural.Sky {
             offsetZ += surge * headingZ;
         }
 
+        /// <summary>The motion tick <paramref name="time"/> falls in: the wander and surge blend from it to the next.</summary>
+        public static long MotionTick(double time) {
+            return (long)Math.Floor(time / MotionTickSeconds);
+        }
+
+        /// <summary>Session time of motion tick <paramref name="tick"/>, seconds.</summary>
+        public static double TickTime(long tick) {
+            return tick * MotionTickSeconds;
+        }
+
+        /// <summary>How far <paramref name="time"/> is from motion tick <paramref name="tick"/> to the next, [0, 1).</summary>
+        public static double TickShare(double time, long tick) {
+            return Math.Min(1.0, Math.Max(0.0, time / MotionTickSeconds - tick));
+        }
+
+        /// <summary>Linear blend of two tick offsets; convex, so the blend keeps within the wander and surge bounds.</summary>
+        public static double Blend(double from, double to, double share) {
+            return from + (to - from) * share;
+        }
+
+        /// <summary><paramref name="value"/> rounded to 1/<see cref="QuantumSteps"/>.</summary>
+        public static double Quantise(double value) {
+            return Math.Round(value * QuantumSteps) / QuantumSteps;
+        }
+
+        /// <summary><see cref="Offset"/> at motion tick <paramref name="tick"/>, under the wind heading of that tick (<paramref name="heading"/>).</summary>
+        public void OffsetAtTick(in CloudInstance cloud, long tick, WindVector heading, out double offsetX, out double offsetZ) {
+            Offset(cloud, TickTime(tick), heading.X, heading.Z, out offsetX, out offsetZ);
+        }
+
+        /// <summary>
+        /// Where the field draws <paramref name="cloud"/>'s centre from its anchor at <paramref name="time"/>, metres: its
+        /// offset at the two motion ticks about the time (headings from <paramref name="wind"/>, none when null), blended.
+        /// </summary>
+        public void SmoothOffset(in CloudInstance cloud, double time, WindField wind, out double offsetX, out double offsetZ) {
+            long tick = MotionTick(time);
+            OffsetAtTick(cloud, tick, HeadingAt(wind, tick), out double fromX, out double fromZ);
+            OffsetAtTick(cloud, tick + 1, HeadingAt(wind, tick + 1), out double toX, out double toZ);
+            double share = TickShare(time, tick);
+            offsetX = Blend(fromX, toX, share);
+            offsetZ = Blend(fromZ, toZ, share);
+        }
+
+        /// <summary>The unit wind heading at motion tick <paramref name="tick"/>, or none without a wind.</summary>
+        public static WindVector HeadingAt(WindField wind, long tick) {
+            return wind != null ? wind.Direction(TickTime(tick)) : WindVector.Zero;
+        }
+
         /// <summary>Size share a cloud <paramref name="distance"/> metres (horizontal) from the camera is drawn at (<see cref="CloudFieldSettings.Presence"/>).</summary>
         public double Presence(double distance) {
             return Settings.Presence(distance);
@@ -203,7 +259,7 @@ namespace AlpineLib.Procedural.Sky {
             return _candidatePriority[other] > _candidatePriority[index] || (_candidatePriority[other] == _candidatePriority[index] && other < index);
         }
 
-        // The first draws of a slot: where it sits, its priority, its coverage roll, its mesh and its scale (log-uniform).
+        // The first draws of a slot: where it sits, its priority, its coverage roll, its mesh and its scale (log-uniform, quantised).
         private void ReadPlace(SplitMix64 random, CloudClassSettings classSettings, out double localX, out double localZ, out ulong priority, out double keepRoll, out int variant, out double scale) {
             double inset = Settings.AnchorInset(classSettings);
             double span = Settings.CellSize - 2.0 * inset;
@@ -212,7 +268,7 @@ namespace AlpineLib.Procedural.Sky {
             priority = random.NextULong();
             keepRoll = random.NextDouble();
             variant = random.NextInt(CloudFieldSettings.VariantsPerClass);
-            scale = Math.Exp(_logMinScale + _logScaleSpan * random.NextDouble());
+            scale = Math.Max(Settings.MinScale, Math.Min(Settings.MaxScale, Quantise(Math.Exp(_logMinScale + _logScaleSpan * random.NextDouble()))));
         }
 
         // Every slot reads the same draws in the same order whatever it ends up as.

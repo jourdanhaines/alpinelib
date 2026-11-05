@@ -1,3 +1,5 @@
+using System;
+
 namespace AlpineLib.Procedural.Sky {
     /// <summary>
     /// One seeded cloud of a field cell of its class's lattice: where it is anchored in that wind frame, how high,
@@ -13,6 +15,8 @@ namespace AlpineLib.Procedural.Sky {
             Scale = scale;
             Reach = reach;
             Yaw = yaw;
+            YawCos = Math.Cos(yaw);
+            YawSin = Math.Sin(yaw);
             WanderSeed = wanderSeed;
             Seed = seed;
         }
@@ -37,6 +41,10 @@ namespace AlpineLib.Procedural.Sky {
 
         /// <summary>Heading of the mesh, radians.</summary>
         public double Yaw { get; }
+
+        /// <summary>Cosine and sine of <see cref="Yaw"/>, for building the cloud's matrix without trig per frame.</summary>
+        public double YawCos { get; }
+        public double YawSin { get; }
 
         /// <summary>Seed of the bounded wander and surge about the anchor (<see cref="CloudFieldScatter.Offset"/>).</summary>
         public ulong WanderSeed { get; }

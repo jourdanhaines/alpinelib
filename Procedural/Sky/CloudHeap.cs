@@ -51,13 +51,13 @@ namespace AlpineLib.Procedural.Sky {
 
         /// <summary>
         /// Footprint diameter of mesh <paramref name="variant"/> of a class, metres: spread geometrically across the
-        /// class's diameter range (instances scale it on top).
+        /// class's diameter range (instances scale it on top), quantised so every runtime's <c>Math.Pow</c> gives the same bits.
         /// </summary>
         public static double TargetDiameter(CloudClassSettings cloudClass, int variant) {
             if (cloudClass == null) throw new ArgumentNullException(nameof(cloudClass));
 
             double share = CloudFieldSettings.VariantsPerClass > 1 ? variant / (double)(CloudFieldSettings.VariantsPerClass - 1) : 0.5;
-            return cloudClass.MinDiameter * Math.Pow(cloudClass.MaxDiameter / cloudClass.MinDiameter, share);
+            return CloudFieldScatter.Quantise(cloudClass.MinDiameter * Math.Pow(cloudClass.MaxDiameter / cloudClass.MinDiameter, share));
         }
 
         /// <summary>

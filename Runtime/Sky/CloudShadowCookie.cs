@@ -7,8 +7,8 @@ using UnityEngine.Rendering.Universal;
 
 namespace AlpineLib.Sky {
     /// <summary>
-    /// Casts the drifting clouds' shadows on the ground through the sun's light cookie: per render it clears a
-    /// square R8 texture to white and min-splats one soft disc per cloud puff (<see cref="CloudField.CopyFootprints"/>)
+    /// Casts the drifting clouds' shadows on the ground through the sun's light cookie: it clears a square R8 texture
+    /// to white and min-splats one soft disc per cloud footprint (<see cref="CloudField.CopyFootprints(Camera, List{CloudFootprint}, Matrix4x4, Vector2, float, float)"/>)
     /// in the sun's light space, centred on the drawing camera's ground point, then hands it to the main light.
     /// </summary>
     /// <remarks>
@@ -17,7 +17,9 @@ namespace AlpineLib.Sky {
     /// camera's ground point in light space snapped to whole texels, so the shadows do not swim as the camera moves.
     /// A puff splats at its own light-space position, which is where its shadow falls on the ground along the sun,
     /// and fades out over the cookie's outer <see cref="CloudShadowSettings.EdgeShare"/> (beyond the cookie the clamped
-    /// edge texels are white).
+    /// edge texels are white). A pipeline render re-splats only when the snapped offset, the sun or the camera changed or
+    /// the last splat has served <see cref="ReuseRenders"/> more renders (clouds move a few centimetres a frame), and
+    /// otherwise keeps the texture (<see cref="IsReused"/>).
     /// </para>
     /// <para>
     /// While the sun is off (a <c>CaptureEnvironmentScope</c> disables scene lights) the cookie is cleared to white
@@ -32,6 +34,9 @@ namespace AlpineLib.Sky {
     public sealed class CloudShadowCookie : MonoBehaviour {
         /// <summary>Most discs one instanced draw carries.</summary>
         public const int BatchSize = 1023;
+
+        /// <summary>Renders a pipeline splat is kept for after its own before the cookie re-splats regardless.</summary>
+        public const int ReuseRenders = 1;
 
         private static readonly int ShadowLightId = Shader.PropertyToID("_ShadowLight");
         private static readonly int EdgeShareId = Shader.PropertyToID("_EdgeShare");
@@ -54,6 +59,9 @@ namespace AlpineLib.Sky {
         private Vector2 _savedOffset;
         private bool _isApplied;
         private bool _isSubscribed;
+        private bool _canReuse;
+        private int _splatCamera;
+        private int _rendersSinceSplat;
 
         /// <summary>The cookie texture, or null before <see cref="Configure"/>, after destroy and (edit mode) while disabled.</summary>
         public RenderTexture Texture => _texture;
@@ -75,6 +83,9 @@ namespace AlpineLib.Sky {
         /// <summary>True while the cookie sits on the sun.</summary>
         public bool IsApplied => _isApplied;
 
+        /// <summary>True when the last <see cref="PrepareFrame"/> kept the previous splat instead of recording a new one.</summary>
+        public bool IsReused { get; private set; }
+
         /// <summary>
         /// Shadows <paramref name="field"/>'s clouds through <paramref name="sun"/>'s cookie, splatted with
         /// <paramref name="splatMaterial"/> (<c>AlpineLib/Sky/CloudShadowSplat</c>, not owned) as <paramref name="settings"/> say.
@@ -85,6 +96,7 @@ namespace AlpineLib.Sky {
 
             settings.Validate();
             Restore();
+            _canReuse = false;
             _field = field ?? throw new ArgumentNullException(nameof(field));
             _sun = sun != null ? sun : throw new ArgumentNullException(nameof(sun));
             _lightData = sun.GetComponent<UniversalAdditionalLightData>();
@@ -129,10 +141,41 @@ namespace AlpineLib.Sky {
         /// main thread before handing them to the pipeline) and returns the discs recorded, or −1 when not ready.
         /// </summary>
         public int Prepare(Camera camera) {
+            _canReuse = false;
             return BuildCommands(camera, null) ? LastSplatCount : -1;
         }
 
+        /// <summary>
+        /// What a pipeline render records for <paramref name="camera"/> on the main thread: keeps the last frame splat
+        /// (<see cref="IsReused"/>) while it may, else records a new one. Returns the discs the cookie holds, or −1 when not ready.
+        /// </summary>
+        public int PrepareFrame(Camera camera) {
+            IsReused = CanReuse(camera);
+            if (IsReused) {
+                _rendersSinceSplat++;
+                return LastSplatCount;
+            }
+
+            _canReuse = false;
+            if (!BuildCommands(camera, null)) return -1;
+
+            _canReuse = !IsCleared;
+            _splatCamera = camera != null ? camera.GetInstanceID() : 0;
+            _rendersSinceSplat = 0;
+            return LastSplatCount;
+        }
+
+        // The last frame splat is for this camera, sun and snapped offset and has not served its renders yet.
+        private bool CanReuse(Camera camera) {
+            if (!_canReuse || !IsReady || camera == null || !_sun.isActiveAndEnabled || _texture == null || !_texture.IsCreated()) return false;
+            if (camera.GetInstanceID() != _splatCamera || _rendersSinceSplat >= ReuseRenders) return false;
+
+            Matrix4x4 worldToLight = WorldToLight(_sun.transform);
+            return worldToLight == _worldToLight && SnappedOffset(camera.transform.position, worldToLight) == CookieOffset;
+        }
+
         private bool Execute(Camera camera, IReadOnlyList<CloudFootprint> footprints) {
+            _canReuse = false;
             if (!BuildCommands(camera, footprints)) return false;
 
             Graphics.ExecuteCommandBuffer(_command);
@@ -172,10 +215,12 @@ namespace AlpineLib.Sky {
 
             Camera camera = PickCamera(cameras);
             if (camera == null && _sun.isActiveAndEnabled) return;
-            if (!BuildCommands(camera, null)) return;
+            if (PrepareFrame(camera) < 0) return;
 
-            context.ExecuteCommandBuffer(_command);
-            _texture.IncrementUpdateCount();
+            if (!IsReused) {
+                context.ExecuteCommandBuffer(_command);
+                _texture.IncrementUpdateCount();
+            }
             if (!IsCleared) Apply();
         }
 
@@ -195,7 +240,8 @@ namespace AlpineLib.Sky {
             return sceneView;
         }
 
-        // Clears to white, then (sun on) splats every footprint inside the cookie (the field's unless given); false when nothing can render.
+        // Clears to white, then (sun on) splats every footprint inside the cookie (the field's, culled per cloud, unless
+        // given in world space); false when nothing can render.
         private bool BuildCommands(Camera camera, IReadOnlyList<CloudFootprint> footprints) {
             if (!IsReady) return false;
 
@@ -210,15 +256,18 @@ namespace AlpineLib.Sky {
             // Plain matrices: the native side applies the platform's render-into-texture flip itself, as URP relies on.
             _command.SetViewProjectionMatrices(Matrix4x4.identity, Matrix4x4.identity);
             _worldToLight = WorldToLight(_sun.transform);
-            CookieOffset = SnappedOffset(camera.transform.position);
-            if (footprints == null) {
-                _field.CopyFootprints(camera, _footprints);
+            CookieOffset = SnappedOffset(camera.transform.position, _worldToLight);
+            bool isWorld = footprints != null;
+            if (!isWorld) {
+                _field.CopyFootprints(camera, _footprints, _worldToLight, CookieOffset, _settings.CookieSize * 0.5f, _settings.FootprintScale);
                 footprints = _footprints;
             }
 
             int count = 0;
             for (int index = 0; index < footprints.Count; index++) {
-                if (!TryPlace(footprints[index], out Matrix4x4 matrix)) continue;
+                CloudFootprint footprint = footprints[index];
+                Vector3 local = isWorld ? _worldToLight.MultiplyPoint3x4(footprint.Centre) : footprint.Centre;
+                if (!TryPlace(local, footprint.Radius, out Matrix4x4 matrix)) continue;
 
                 _matrices[count++] = matrix;
                 if (count == BatchSize) count = Flush(count);
@@ -233,20 +282,19 @@ namespace AlpineLib.Sky {
         }
 
         // The camera's ground point in light space, snapped to whole texels.
-        private Vector2 SnappedOffset(Vector3 cameraWorld) {
+        private Vector2 SnappedOffset(Vector3 cameraWorld, Matrix4x4 worldToLight) {
             Vector3 ground = new Vector3(cameraWorld.x, _field.GroundY, cameraWorld.z);
-            Vector3 local = _worldToLight.MultiplyPoint3x4(ground);
+            Vector3 local = worldToLight.MultiplyPoint3x4(ground);
             float texel = _settings.TexelSize;
             return new Vector2(Mathf.Round(local.x / texel) * texel, Mathf.Round(local.y / texel) * texel);
         }
 
-        // A disc in cookie clip space ([−1, 1] across the cookie), or false when it lies wholly outside.
-        private bool TryPlace(CloudFootprint footprint, out Matrix4x4 matrix) {
-            Vector3 local = _worldToLight.MultiplyPoint3x4(footprint.Centre);
+        // A disc at light-space centre local in cookie clip space ([−1, 1] across the cookie), or false when it lies wholly outside.
+        private bool TryPlace(Vector3 local, float footprintRadius, out Matrix4x4 matrix) {
             float size = _settings.CookieSize;
             float clipX = 2f * (local.x - CookieOffset.x) / size;
             float clipY = 2f * (local.y - CookieOffset.y) / size;
-            float radius = 2f * footprint.Radius * _settings.FootprintScale / size;
+            float radius = 2f * footprintRadius * _settings.FootprintScale / size;
             matrix = Matrix4x4.identity;
             if (Mathf.Abs(clipX) > 1f + radius || Mathf.Abs(clipY) > 1f + radius) return false;
 
@@ -322,6 +370,7 @@ namespace AlpineLib.Sky {
         }
 
         private void ReleaseTexture() {
+            _canReuse = false;
             if (_texture == null) return;
 
             _texture.Release();

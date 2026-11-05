@@ -9,7 +9,8 @@ namespace AlpineLib.Rendering {
     /// optional post profile. <see cref="Apply"/> writes it all into <see cref="RenderSettings"/>.
     /// </summary>
     /// <remarks>
-    /// The sky's haze is always the fog colour, so the fogged world melts into the horizon band. In play mode the
+    /// The sky's haze is always the fog colour, so the fogged world melts into the horizon band; the drawn sky's
+    /// gradient goes to the shader globals too, so <c>_FOG_SKY</c> materials melt into the sky behind them. In play mode the
     /// skybox is an instanced copy of <see cref="SkyboxMaterial"/>, so applying never dirties the asset; edit mode
     /// draws the asset as baked.
     /// </remarks>
@@ -93,6 +94,7 @@ namespace AlpineLib.Rendering {
             TrilightProbe.Apply(ambientSky, ambientEquator, ambientGround);
             ApplyFog(fogEndOverride);
             ApplySkybox();
+            StylizedLightingGlobals.SetSky(RenderSettings.skybox);
             StylizedLightingGlobals.Apply(shadowTint, rimColor, wrap, rampSoftness, rimPower, metalReflection);
             StylizedLightingGlobals.SetSunDirection(sun != null ? -sun.transform.forward : TowardSun);
             if (Application.isPlaying) DynamicGI.UpdateEnvironment();

@@ -4,10 +4,11 @@ namespace AlpineLib.Procedural.Sky {
     /// <summary>
     /// One <see cref="CloudClass"/>: the mesh diameters and altitude band its clouds take, how many puffs its meshes are
     /// heaped from, how many candidates each field cell draws of it, the triangle budget of one mesh, and how it moves:
-    /// the share of the wind's drift its own lattice slides by, its bounded wander and its bounded along-wind surge.
+    /// the share of the wind's drift its own lattice slides by, its bounded wander and its bounded along-wind surge, and
+    /// whether its ground shadow is one soft disc per cloud rather than one per puff.
     /// </summary>
     public sealed class CloudClassSettings {
-        public CloudClassSettings(double minDiameter, double maxDiameter, double minAltitude, double maxAltitude, int minPuffs, int maxPuffs, int candidatesPerCell, int faceBudget, double heightShare, double driftFactor, double wanderAmplitude, double surgeAmplitude) {
+        public CloudClassSettings(double minDiameter, double maxDiameter, double minAltitude, double maxAltitude, int minPuffs, int maxPuffs, int candidatesPerCell, int faceBudget, double heightShare, double driftFactor, double wanderAmplitude, double surgeAmplitude, bool oneShadowDisc = false) {
             MinDiameter = minDiameter;
             MaxDiameter = maxDiameter;
             MinAltitude = minAltitude;
@@ -20,6 +21,7 @@ namespace AlpineLib.Procedural.Sky {
             DriftFactor = driftFactor;
             WanderAmplitude = wanderAmplitude;
             SurgeAmplitude = surgeAmplitude;
+            OneShadowDisc = oneShadowDisc;
         }
 
         /// <summary>Footprint diameter range of the class's meshes, metres; each instance scales its mesh on top.</summary>
@@ -51,6 +53,9 @@ namespace AlpineLib.Procedural.Sky {
 
         /// <summary>Most a cloud runs ahead of or behind its lattice along the wind, metres: its own speed variance.</summary>
         public double SurgeAmplitude { get; }
+
+        /// <summary>True when a cloud's shadow is one disc enclosing its puffs (small clouds, whose puffs are finer than a shadow texel's blur).</summary>
+        public bool OneShadowDisc { get; }
 
         /// <summary>Most a cloud's centre ever sits from its anchor, metres (wander plus surge).</summary>
         public double MotionReach => WanderAmplitude + SurgeAmplitude;
