@@ -30,6 +30,9 @@ namespace AlpineLib.Sky {
 
         private const ulong FocusObserver = 1UL;
 
+        /// <summary>A failed prepare is retried 1 s later, doubling to at most 30 s while it keeps failing.</summary>
+        public static readonly RetryBackoff PrepareRetry = new RetryBackoff(1.0, 30.0);
+
         private readonly Dictionary<CellCoord, FarPropLayerCell> _cells = new Dictionary<CellCoord, FarPropLayerCell>();
         private readonly List<CellCoord> _added = new List<CellCoord>();
         private readonly List<CellCoord> _removed = new List<CellCoord>();
@@ -82,24 +85,41 @@ namespace AlpineLib.Sky {
             _interest = new CellInterestSet(radius, KeepMargin);
             _visibility = new FarCellVisibility(radius);
             _layer = layer;
+            ConfigureFade(fadeMaterials, fadeSeconds, maxOffsetSeconds, clock);
+        }
+
+        /// <summary>
+        /// Cells that begin to show from now on fade in over <paramref name="fadeSeconds"/> with twins from
+        /// <paramref name="fadeMaterials"/> (null: they show at once) on <paramref name="clock"/>; cells already drawn keep their fade.
+        /// </summary>
+        public void ConfigureFade(DitherFadeMaterials fadeMaterials, double fadeSeconds, float maxOffsetSeconds, Func<double> clock) {
             _fadeMaterials = fadeMaterials;
             _fadeSeconds = fadeSeconds > 0.0 ? fadeSeconds : 1.0;
             _maxOffsetSeconds = Mathf.Max(0f, maxOffsetSeconds);
             _clock = clock ?? DitherFade.DefaultClock;
         }
 
+        /// <summary>True when cells fade in as they begin to show.</summary>
+        public bool IsFading => _fadeMaterials != null;
+
         /// <summary>The built cell shows its own copies: this cell stops drawing now.</summary>
         public void Suppress(CellCoord cell) {
             _visibility?.Suppress(cell);
         }
 
-        /// <summary>The built cell is gone: this cell draws again now, fully shown, when ready and in range.</summary>
-        public void Unsuppress(CellCoord cell) {
+        /// <summary>
+        /// The built cell is gone: this cell draws again now when ready and in range, carrying on the fade the built
+        /// copies began at <paramref name="shownSince"/> (NaN, the default: fully shown).
+        /// </summary>
+        public void Unsuppress(CellCoord cell, double shownSince = double.NaN) {
             if (_visibility == null) return;
 
-            _visibility.Unsuppress(cell, _clock());
+            _visibility.Unsuppress(cell, _clock(), shownSince);
             if (_cells.TryGetValue(cell, out FarPropLayerCell tracked)) SyncFade(tracked);
         }
+
+        /// <summary>Prepares that failed so far (each is retried with <see cref="PrepareRetry"/>).</summary>
+        public int FailedPrepares { get; private set; }
 
         /// <summary>True when the cell draws, with the clock time it began to show.</summary>
         public bool TryGetShownSince(CellCoord cell, out double since) {
@@ -146,11 +166,12 @@ namespace AlpineLib.Sky {
             if (!IsConfigured) return;
 
             RefreshInterest();
+            double now = _clock();
             foreach (FarPropLayerCell cell in _cells.Values) {
-                if (cell.IsReady) continue;
+                if (cell.IsReady || cell.RetryAt > now) continue;
 
                 WaitQuietly(cell.PrepareTask);
-                if (cell.PrepareTask == null || !cell.PrepareTask.IsCompleted) Adopt(cell, PrepareNow(cell.Coord));
+                if (cell.PrepareTask == null || !cell.PrepareTask.IsCompleted) AdoptOrRetry(cell, PrepareNow(cell.Coord, out bool isFailed), isFailed);
             }
             CollectPrepared();
             RefreshVisibility();
@@ -220,21 +241,37 @@ namespace AlpineLib.Sky {
             foreach (FarPropLayerCell cell in _cells.Values) {
                 if (cell.IsReady || cell.PrepareTask == null || !cell.PrepareTask.IsCompleted) continue;
 
-                Adopt(cell, ResultOf(cell));
+                FarPropCell result = ResultOf(cell, out bool isFailed);
+                AdoptOrRetry(cell, result, isFailed);
             }
         }
 
-        private FarPropCell ResultOf(FarPropLayerCell cell) {
-            if (cell.PrepareTask.Status == TaskStatus.RanToCompletion) return cell.PrepareTask.Result;
-            if (cell.PrepareTask.IsFaulted) Debug.LogException(cell.PrepareTask.Exception, this);
+        private FarPropCell ResultOf(FarPropLayerCell cell, out bool isFailed) {
+            isFailed = cell.PrepareTask.Status != TaskStatus.RanToCompletion;
+            if (!isFailed) return cell.PrepareTask.Result;
+            if (cell.PrepareTask.IsFaulted) Debug.LogWarning($"FarPropLayer: cell {cell.Coord} prepare failed: {cell.PrepareTask.Exception?.GetBaseException()}", this);
 
             return null;
         }
 
-        // A failed prepare leaves the cell ready and empty: it is not retried until it leaves and re-enters the square.
+        // A failed prepare leaves the cell unready (its built twin, if any, still covers it) and retries it later.
+        private void AdoptOrRetry(FarPropLayerCell cell, FarPropCell result, bool isFailed) {
+            if (!isFailed) {
+                Adopt(cell, result);
+                return;
+            }
+
+            cell.PrepareTask = null;
+            cell.Cancellation = null;
+            cell.Failures++;
+            cell.RetryAt = _clock() + PrepareRetry.DelayAfter(cell.Failures);
+            FailedPrepares++;
+        }
+
         private void Adopt(FarPropLayerCell cell, FarPropCell result) {
             cell.PrepareTask = null;
             cell.Cancellation = null;
+            cell.Failures = 0;
             cell.Batches.Clear();
             cell.InstanceCount = 0;
             if (result != null) {
@@ -248,11 +285,13 @@ namespace AlpineLib.Sky {
             _visibility.MarkReady(cell.Coord);
         }
 
-        private FarPropCell PrepareNow(CellCoord coord) {
+        private FarPropCell PrepareNow(CellCoord coord, out bool isFailed) {
+            isFailed = false;
             try {
                 return _source.Prepare(coord, CancellationToken.None);
             } catch (Exception exception) {
-                Debug.LogException(exception, this);
+                Debug.LogWarning($"FarPropLayer: cell {coord} prepare failed: {exception}", this);
+                isFailed = true;
                 return null;
             }
         }
@@ -276,8 +315,9 @@ namespace AlpineLib.Sky {
         private FarPropLayerCell NextToPrepare() {
             FarPropLayerCell best = null;
             long bestRank = long.MaxValue;
+            double now = _clock();
             foreach (FarPropLayerCell cell in _cells.Values) {
-                if (cell.IsReady || cell.PrepareTask != null) continue;
+                if (cell.IsReady || cell.PrepareTask != null || cell.RetryAt > now) continue;
 
                 long rank = CellInterestSet.ChebyshevDistance(cell.Coord, _visibility.Focus) + (_visibility.IsSuppressed(cell.Coord) ? 1000L : 0L);
                 if (rank >= bestRank) continue;

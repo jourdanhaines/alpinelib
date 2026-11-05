@@ -19,6 +19,12 @@ namespace AlpineLib.Sky {
         public List<InstancedBatch> Batches { get; } = new List<InstancedBatch>();
 
         public bool IsReady { get; set; }
+
+        /// <summary>Prepares in a row that failed.</summary>
+        public int Failures { get; set; }
+
+        /// <summary>Clock time before which a failed prepare is not retried.</summary>
+        public double RetryAt { get; set; } = double.NegativeInfinity;
         public int InstanceCount { get; set; }
 
         /// <summary>The shown-since time the batches' fades were set up for (NaN: none).</summary>

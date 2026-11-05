@@ -37,6 +37,22 @@ namespace AlpineLib.Server.Tests.Procedural {
         }
 
         [Fact]
+        public void UnsuppressingMidFadeCarriesOnTheTwinsFade() {
+            FarCellVisibility visibility = Create();
+            visibility.MarkReady(Near);
+            visibility.Suppress(Near);
+
+            visibility.Unsuppress(Near, 5.0, 4.6);
+            Assert.True(visibility.TryGetShownSince(Near, out double since));
+            Assert.Equal(4.6, since);
+
+            visibility.Suppress(Near);
+            visibility.Unsuppress(Near, 5.0, 7.0);
+            Assert.True(visibility.TryGetShownSince(Near, out since));
+            Assert.Equal(5.0 - FarCellVisibility.ShownLongAgoSeconds, since);
+        }
+
+        [Fact]
         public void ASuppressedCellStaysHiddenWhenItBecomesReady() {
             FarCellVisibility visibility = Create();
             visibility.Suppress(Near);

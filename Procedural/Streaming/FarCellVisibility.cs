@@ -65,10 +65,18 @@ namespace AlpineLib.Procedural.Streaming {
         /// (otherwise it fades in later like any other).
         /// </summary>
         public void Unsuppress(CellCoord cell, double now) {
+            Unsuppress(cell, now, double.NaN);
+        }
+
+        /// <summary>
+        /// The built twin is gone: the cell draws again at once, carrying on a fade that began at
+        /// <paramref name="shownSince"/> (the twin's own; NaN or later than <paramref name="now"/>: fully shown).
+        /// </summary>
+        public void Unsuppress(CellCoord cell, double now, double shownSince) {
             if (!_suppressed.Remove(cell)) return;
             if (!IsDrawable(cell)) return;
 
-            _shownSince[cell] = now - ShownLongAgoSeconds;
+            _shownSince[cell] = shownSince <= now ? shownSince : now - ShownLongAgoSeconds;
         }
 
         public bool IsSuppressed(CellCoord cell) {
