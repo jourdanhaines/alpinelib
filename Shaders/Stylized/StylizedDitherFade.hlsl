@@ -2,12 +2,17 @@
 #define ALPINE_STYLIZED_DITHER_FADE_INCLUDED
 
 // Screen-door fade-in (_DITHER_FADE): _FadeAmount 0 clips every pixel, 1 none. Per instance when drawn instanced
-// (a MaterialPropertyBlock array), a plain uniform otherwise. Every pass clips the same pixels, so colour, depth
-// and the shadow map fade together.
+// (a MaterialPropertyBlock array), else UnityPerMaterial's (StylizedLitInput). Every pass clips the same pixels, so
+// colour, depth and the shadow map fade together.
 #if defined(_DITHER_FADE)
+#if defined(UNITY_INSTANCING_ENABLED)
 UNITY_INSTANCING_BUFFER_START(AlpineDitherFade)
     UNITY_DEFINE_INSTANCED_PROP(float, _FadeAmount)
 UNITY_INSTANCING_BUFFER_END(AlpineDitherFade)
+    #define ALPINE_FADE_AMOUNT UNITY_ACCESS_INSTANCED_PROP(AlpineDitherFade, _FadeAmount)
+#else
+    #define ALPINE_FADE_AMOUNT _FadeAmount
+#endif
 
 // 4x4 ordered (Bayer) threshold in (0, 1) for a pixel, built from two 2x2 levels without a table.
 float AlpineDitherThreshold(float2 pixel)
@@ -21,7 +26,7 @@ float AlpineDitherThreshold(float2 pixel)
 
 void AlpineDitherFadeClip(float4 positionCS)
 {
-    float amount = UNITY_ACCESS_INSTANCED_PROP(AlpineDitherFade, _FadeAmount);
+    float amount = ALPINE_FADE_AMOUNT;
     clip(amount - AlpineDitherThreshold(positionCS.xy));
 }
 

@@ -20,6 +20,8 @@ CBUFFER_START(UnityPerMaterial)
     half _VertexColorStrength;
     half _FogScale;
     half _FogScaleAlpha;
+    // The screen-door amount of a non-instanced fading draw (kept here in every variant: SRP Batcher layout).
+    float _FadeAmount;
     UNITY_TEXTURE_STREAMING_DEBUG_VARS;
 CBUFFER_END
 

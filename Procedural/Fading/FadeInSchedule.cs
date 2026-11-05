@@ -53,6 +53,17 @@ namespace AlpineLib.Procedural.Fading {
             RefreshMaxDelay();
         }
 
+        /// <summary>Moves the delay of every item whose <paramref name="which"/> entry is true by <paramref name="seconds"/> (one rescan).</summary>
+        public void ShiftDelays(bool[] which, float seconds) {
+            if (which == null) throw new ArgumentNullException(nameof(which));
+            if (which.Length != _delays.Length) throw new ArgumentException($"Expected {_delays.Length} flags, got {which.Length}.", nameof(which));
+
+            for (int index = 0; index < which.Length; index++) {
+                if (which[index]) _delays[index] += seconds;
+            }
+            RefreshMaxDelay();
+        }
+
         /// <summary>Begins the fade at clock time <paramref name="start"/>.</summary>
         public void StartAt(double start) {
             if (double.IsNaN(start) || double.IsInfinity(start)) throw new ArgumentOutOfRangeException(nameof(start), start, "Fade start must be finite.");

@@ -38,6 +38,19 @@ namespace AlpineLib.Server.Tests.Procedural {
         }
 
         [Fact]
+        public void ABulkShiftMovesOnlyTheFlaggedItems() {
+            var schedule = new FadeInSchedule(1.0, new[] { 0.1f, 0.2f, 0.3f });
+            schedule.StartAt(20.0);
+            schedule.ShiftDelays(new[] { true, false, true }, -0.5f);
+
+            Assert.Equal(-0.4f, schedule.DelayOf(0), 5);
+            Assert.Equal(0.2f, schedule.DelayOf(1), 5);
+            Assert.Equal(-0.2f, schedule.DelayOf(2), 5);
+            Assert.Equal(0.2f, schedule.MaxDelay, 5);
+            Assert.Throws<ArgumentException>(() => schedule.ShiftDelays(new[] { true }, 1f));
+        }
+
+        [Fact]
         public void OffsetsAreStableBoundedAndSpread() {
             float first = FadeInSchedule.OffsetFor(12.3456, -78.9, 0.3);
             Assert.Equal(first, FadeInSchedule.OffsetFor(12.3456, -78.9, 0.3));

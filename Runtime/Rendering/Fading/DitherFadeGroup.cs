@@ -11,7 +11,8 @@ namespace AlpineLib.Rendering {
     /// Things built over several frames are captured right after each step and held hidden, then
     /// <see cref="StartAt"/> fades them all together, each after a small stable delay so a cell does not blink as one.
     /// Renderers whose materials cannot fade are left drawing as they are. Capture cameras (map tiles, portraits) see
-    /// everything in full on the renderers' own materials, so a bake never keeps a fade.
+    /// everything in full on the renderers' own materials, so a bake never keeps a fade. Property blocks others set
+    /// are merged into, never cleared; a renderer whose materials someone else replaces mid-fade leaves the fade.
     /// </summary>
     [ExecuteAlways]
     public sealed class DitherFadeGroup : MonoBehaviour {
@@ -21,6 +22,7 @@ namespace AlpineLib.Rendering {
         private readonly List<FadeInSchedule> _schedules = new List<FadeInSchedule>();
         private readonly List<MeshRenderer> _scratch = new List<MeshRenderer>();
         private readonly List<InstancedMeshRenderer> _scratchInstanced = new List<InstancedMeshRenderer>();
+        private readonly List<Material> _scratchMaterials = new List<Material>();
         private MaterialPropertyBlock _block;
         private DitherFadeMaterials _materials;
         private double _duration = 1.0;
@@ -118,9 +120,24 @@ namespace AlpineLib.Rendering {
 
             for (int index = 0; index < _renderers.Count; index++) {
                 DitherFadeEntry entry = _renderers[index];
-                if (entry.Renderer == null) continue;
+                if (entry.Renderer == null || entry.IsReleased) continue;
+                if (!HasOwnTwins(entry)) {
+                    Release(entry);
+                    continue;
+                }
 
                 SetAmount(entry, FadeInSchedule.Amount(now - _start - entry.Delay, _duration));
+            }
+        }
+
+        /// <summary>Renderers that left the fade because someone else replaced their materials mid-fade.</summary>
+        public int ReleasedCount {
+            get {
+                int released = 0;
+                foreach (DitherFadeEntry entry in _renderers) {
+                    if (entry.IsReleased) released++;
+                }
+                return released;
             }
         }
 
@@ -150,7 +167,7 @@ namespace AlpineLib.Rendering {
 
         private void SwapMaterials(bool toTwins) {
             foreach (DitherFadeEntry entry in _renderers) {
-                if (entry.Renderer != null) entry.Renderer.sharedMaterials = toTwins ? entry.Twins : entry.Originals;
+                if (entry.Renderer != null && !entry.IsReleased) entry.Renderer.sharedMaterials = toTwins ? entry.Twins : entry.Originals;
             }
         }
 
@@ -166,7 +183,7 @@ namespace AlpineLib.Rendering {
             var entry = new DitherFadeEntry(renderer, originals, twins, renderer.HasPropertyBlock(), FadeInSchedule.OffsetFor(local.x, local.z, _maxOffset));
             _maxDelay = Mathf.Max(_maxDelay, entry.Delay);
             renderer.sharedMaterials = twins;
-            SetAmount(entry, 0f);
+            SetAmount(entry, 0f, true);
             _renderers.Add(entry);
             IsRestored = false;
             return true;
@@ -185,21 +202,47 @@ namespace AlpineLib.Rendering {
             return true;
         }
 
-        private void SetAmount(DitherFadeEntry entry, float amount) {
+        // Merges into whatever block the renderer holds now; a block without our amount was put there by someone else.
+        private void SetAmount(DitherFadeEntry entry, float amount, bool isFirst = false) {
             _block ??= new MaterialPropertyBlock();
             _block.Clear();
-            if (entry.HadBlock) entry.Renderer.GetPropertyBlock(_block);
+            entry.Renderer.GetPropertyBlock(_block);
+            if (!isFirst && !_block.isEmpty && !_block.HasFloat(DitherFade.AmountId)) entry.HasForeignBlock = true;
             _block.SetFloat(DitherFade.AmountId, amount);
             entry.Renderer.SetPropertyBlock(_block);
         }
 
+        private bool HasOwnTwins(DitherFadeEntry entry) {
+            entry.Renderer.GetSharedMaterials(_scratchMaterials);
+            bool isOwn = _scratchMaterials.Count == entry.Twins.Length;
+            for (int index = 0; isOwn && index < entry.Twins.Length; index++) isOwn = _scratchMaterials[index] == entry.Twins[index];
+
+            _scratchMaterials.Clear();
+            return isOwn;
+        }
+
+        // Leaves the renderer's materials alone; a foreign block keeps its values (ours reads full), ours goes.
+        private void Release(DitherFadeEntry entry) {
+            entry.IsReleased = true;
+            ClearAmount(entry);
+        }
+
+        private void ClearAmount(DitherFadeEntry entry) {
+            if (entry.HasForeignBlock) SetAmount(entry, 1f);
+            else entry.Renderer.SetPropertyBlock(null);
+        }
+
         private void Restore() {
             foreach (DitherFadeEntry entry in _renderers) {
-                if (entry.Renderer == null) continue;
+                if (entry.Renderer == null || entry.IsReleased) continue;
+                if (!HasOwnTwins(entry)) {
+                    Release(entry);
+                    continue;
+                }
 
+                SetAmount(entry, 1f);
                 entry.Renderer.sharedMaterials = entry.Originals;
-                if (entry.HadBlock) SetAmount(entry, 1f);
-                else entry.Renderer.SetPropertyBlock(null);
+                ClearAmount(entry);
             }
             IsRestored = true;
         }

@@ -2,12 +2,12 @@ using UnityEngine;
 
 namespace AlpineLib.Rendering {
     /// <summary>One mesh renderer a <see cref="DitherFadeGroup"/> fades: its own materials and fade delay.</summary>
-    internal readonly struct DitherFadeEntry {
+    internal sealed class DitherFadeEntry {
         public DitherFadeEntry(MeshRenderer renderer, Material[] originals, Material[] twins, bool hadBlock, float delay) {
             Renderer = renderer;
             Originals = originals;
             Twins = twins;
-            HadBlock = hadBlock;
+            HasForeignBlock = hadBlock;
             Delay = delay;
         }
 
@@ -19,8 +19,11 @@ namespace AlpineLib.Rendering {
         /// <summary>The fading twins drawn meanwhile.</summary>
         public Material[] Twins { get; }
 
-        /// <summary>Whether the renderer carried a property block of its own before the fade.</summary>
-        public bool HadBlock { get; }
+        /// <summary>Whether someone else put a property block on the renderer (before or during the fade): it is kept, never cleared.</summary>
+        public bool HasForeignBlock { get; set; }
+
+        /// <summary>Someone else replaced the renderer's materials mid-fade: it left the fade and is no longer touched.</summary>
+        public bool IsReleased { get; set; }
 
         /// <summary>Seconds after the group's start this renderer begins to show.</summary>
         public float Delay { get; }
