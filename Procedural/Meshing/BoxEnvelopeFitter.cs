@@ -15,7 +15,6 @@ namespace AlpineLib.Procedural.Meshing {
     /// results are data, not something every runtime must reproduce.
     /// </remarks>
     public static class BoxEnvelopeFitter {
-        private const double WeldScale = 1e4;
         private const int QuarterTurn = 90;
 
         /// <summary>The boxes around the faces in <paramref name="corners"/> (three per face).</summary>
@@ -26,7 +25,7 @@ namespace AlpineLib.Procedural.Meshing {
 
             settings.Validate();
             var boxes = new List<BoxEnvelopeCandidate>();
-            foreach (List<int> piece in Pieces(corners)) {
+            foreach (List<int> piece in TrianglePieces.Split(corners)) {
                 AddBands(corners, piece, BestYaw(corners, piece, settings.YawStepDegrees), settings.BandEdges, boxes);
             }
             Merge(boxes, KeepOutCeilings(boxes, settings), settings);
@@ -43,59 +42,13 @@ namespace AlpineLib.Procedural.Meshing {
             return best;
         }
 
-        // Faces joined through welded corners, each piece in ascending face order.
-        private static List<List<int>> Pieces(IReadOnlyList<Vector3> corners) {
-            int faces = corners.Count / 3;
-            var parent = new int[faces];
-            for (int face = 0; face < faces; face++) parent[face] = face;
-            var owner = new Dictionary<(long, long, long), int>();
-            for (int corner = 0; corner < corners.Count; corner++) {
-                var key = Weld(corners[corner]);
-                if (owner.TryGetValue(key, out int face)) Union(parent, face, corner / 3);
-                else owner.Add(key, corner / 3);
-            }
-
-            var byRoot = new Dictionary<int, List<int>>();
-            var pieces = new List<List<int>>();
-            for (int face = 0; face < faces; face++) {
-                int root = Find(parent, face);
-                if (!byRoot.TryGetValue(root, out List<int> piece)) {
-                    piece = new List<int>();
-                    byRoot.Add(root, piece);
-                    pieces.Add(piece);
-                }
-                piece.Add(face);
-            }
-            return pieces;
-        }
-
-        private static (long, long, long) Weld(Vector3 point) {
-            return ((long)Math.Round(point.X * WeldScale), (long)Math.Round(point.Y * WeldScale), (long)Math.Round(point.Z * WeldScale));
-        }
-
-        private static int Find(int[] parent, int face) {
-            while (parent[face] != face) {
-                parent[face] = parent[parent[face]];
-                face = parent[face];
-            }
-            return face;
-        }
-
-        private static void Union(int[] parent, int first, int second) {
-            int firstRoot = Find(parent, first);
-            int secondRoot = Find(parent, second);
-            if (firstRoot != secondRoot) parent[Math.Max(firstRoot, secondRoot)] = Math.Min(firstRoot, secondRoot);
-        }
-
         // The yaw in [0, 90) whose plan box around the piece is smallest; ties keep the lower yaw.
         private static int BestYaw(IReadOnlyList<Vector3> corners, List<int> piece, int step) {
             int best = 0;
             double bestArea = double.PositiveInfinity;
             for (int yaw = 0; yaw < QuarterTurn; yaw += step) {
                 var box = new BoxEnvelopeCandidate(yaw);
-                foreach (int face in piece) {
-                    for (int corner = 0; corner < 3; corner++) Include(box, corners[face * 3 + corner]);
-                }
+                foreach (int face in piece) IncludeFace(box, corners, face);
                 double area = (box.MaxX - box.MinX) * (box.MaxZ - box.MinZ);
                 if (area >= bestArea) continue;
 
@@ -105,6 +58,10 @@ namespace AlpineLib.Procedural.Meshing {
             return best;
         }
 
+        private static void IncludeFace(BoxEnvelopeCandidate box, IReadOnlyList<Vector3> corners, int face) {
+            for (int corner = 0; corner < 3; corner++) Include(box, corners[face * 3 + corner]);
+        }
+
         // One box per band the piece reaches, holding the piece's faces clipped to that band.
         private static void AddBands(IReadOnlyList<Vector3> corners, List<int> piece, int yaw, IReadOnlyList<double> edges, List<BoxEnvelopeCandidate> boxes) {
             var clipped = new List<Vector3>(8);
@@ -112,14 +69,16 @@ namespace AlpineLib.Procedural.Meshing {
                 double bottom = band == 0 ? double.NegativeInfinity : edges[band - 1];
                 double top = band == edges.Count ? double.PositiveInfinity : edges[band];
                 var box = new BoxEnvelopeCandidate(yaw);
-                foreach (int face in piece) {
-                    ClipToBand(corners[face * 3], corners[face * 3 + 1], corners[face * 3 + 2], bottom, top, clipped);
-                    if (LiesOnBottom(clipped, bottom)) continue;
-
-                    foreach (Vector3 point in clipped) Include(box, point);
-                }
+                foreach (int face in piece) IncludeClipped(box, corners, face, bottom, top, clipped);
                 if (!box.IsEmpty) boxes.Add(box);
             }
+        }
+
+        private static void IncludeClipped(BoxEnvelopeCandidate box, IReadOnlyList<Vector3> corners, int face, double bottom, double top, List<Vector3> clipped) {
+            ClipToBand(corners[face * 3], corners[face * 3 + 1], corners[face * 3 + 2], bottom, top, clipped);
+            if (LiesOnBottom(clipped, bottom)) return;
+
+            foreach (Vector3 point in clipped) Include(box, point);
         }
 
         // A polygon flat on the band's bottom edge already belongs to the band below.
@@ -132,16 +91,16 @@ namespace AlpineLib.Procedural.Meshing {
             return true;
         }
 
-        // The polygon of triangle (a, b, c) between heights bottom and top (empty when it misses the band).
-        private static void ClipToBand(Vector3 a, Vector3 b, Vector3 c, double bottom, double top, List<Vector3> output) {
+        // The polygon of triangle (first, second, third) between heights bottom and top (empty when it misses the band).
+        private static void ClipToBand(Vector3 first, Vector3 second, Vector3 third, double bottom, double top, List<Vector3> output) {
             output.Clear();
-            float low = Math.Min(a.Y, Math.Min(b.Y, c.Y));
-            float high = Math.Max(a.Y, Math.Max(b.Y, c.Y));
+            float low = Math.Min(first.Y, Math.Min(second.Y, third.Y));
+            float high = Math.Max(first.Y, Math.Max(second.Y, third.Y));
             if (high < bottom || low > top) return;
 
-            output.Add(a);
-            output.Add(b);
-            output.Add(c);
+            output.Add(first);
+            output.Add(second);
+            output.Add(third);
             if (low >= bottom && high <= top) return;
 
             var input = new List<Vector3>(output);
@@ -175,14 +134,16 @@ namespace AlpineLib.Procedural.Meshing {
         // tallest starting box that already holds it (the geometry needs that much, a merge may not add more).
         private static List<Vector4> KeepOutCeilings(List<BoxEnvelopeCandidate> boxes, BoxEnvelopeSettings settings) {
             var ceilings = new List<Vector4>(settings.KeepOut.Count);
-            foreach (Vector3 point in settings.KeepOut) {
-                double ceiling = point.Y;
-                foreach (BoxEnvelopeCandidate box in boxes) {
-                    if (box.Holds(point, settings.KeepOutTolerance)) ceiling = Math.Max(ceiling, box.MaxY);
-                }
-                ceilings.Add(new Vector4(point, (float)ceiling));
-            }
+            foreach (Vector3 point in settings.KeepOut) ceilings.Add(new Vector4(point, (float)CeilingOf(point, boxes, settings.KeepOutTolerance)));
             return ceilings;
+        }
+
+        private static double CeilingOf(Vector3 point, List<BoxEnvelopeCandidate> boxes, double tolerance) {
+            double ceiling = point.Y;
+            foreach (BoxEnvelopeCandidate box in boxes) {
+                if (box.Holds(point, tolerance)) ceiling = Math.Max(ceiling, box.MaxY);
+            }
+            return ceiling;
         }
 
         // Greedy: merge the cheapest pair until the count fits. A pair that would swallow a keep-out point is refused
@@ -211,16 +172,22 @@ namespace AlpineLib.Procedural.Meshing {
                 boxes[keep] = merged[keep, drop];
                 alive[drop] = false;
                 live--;
-                for (int other = 0; other < count; other++) {
-                    if (!alive[other] || other == keep) continue;
-
-                    refused[Math.Min(keep, other), Math.Max(keep, other)] = false;
-                    Price(boxes, settings, merged, cost, Math.Min(keep, other), Math.Max(keep, other));
-                }
+                Reprice(boxes, settings, merged, cost, refused, alive, keep);
             }
 
             for (int index = count - 1; index >= 0; index--) {
                 if (!alive[index]) boxes.RemoveAt(index);
+            }
+        }
+
+        // Every live pair with the grown box gets a fresh price and loses any earlier refusal.
+        private static void Reprice(List<BoxEnvelopeCandidate> boxes, BoxEnvelopeSettings settings, BoxEnvelopeCandidate[,] merged, double[,] cost, bool[,] refused,
+                                    bool[] alive, int keep) {
+            for (int other = 0; other < alive.Length; other++) {
+                if (!alive[other] || other == keep) continue;
+
+                refused[Math.Min(keep, other), Math.Max(keep, other)] = false;
+                Price(boxes, settings, merged, cost, Math.Min(keep, other), Math.Max(keep, other));
             }
         }
 
@@ -231,41 +198,43 @@ namespace AlpineLib.Procedural.Meshing {
             double best = double.PositiveInfinity;
             int count = alive.Length;
             for (int first = 0; first < count; first++) {
-                if (!alive[first]) continue;
-
-                for (int second = first + 1; second < count; second++) {
-                    if (!alive[second] || cost[first, second] >= best || (refused != null && refused[first, second])) continue;
-
-                    best = cost[first, second];
-                    keep = first;
-                    drop = second;
-                }
+                if (alive[first]) CheapestWith(first, alive, cost, refused, ref best, ref keep, ref drop);
             }
             return keep >= 0;
+        }
+
+        private static void CheapestWith(int first, bool[] alive, double[,] cost, bool[,] refused, ref double best, ref int keep, ref int drop) {
+            for (int second = first + 1; second < alive.Length; second++) {
+                if (!alive[second] || cost[first, second] >= best || (refused != null && refused[first, second])) continue;
+
+                best = cost[first, second];
+                keep = first;
+                drop = second;
+            }
         }
 
         // The cheaper of the two yaw frames for the pair's merge, priced by the volume it adds, volume below the
         // weighted height counting extra (keep-out is checked once picked).
         private static void Price(List<BoxEnvelopeCandidate> boxes, BoxEnvelopeSettings settings, BoxEnvelopeCandidate[,] merged, double[,] cost, int first, int second) {
-            BoxEnvelopeCandidate a = boxes[first];
-            BoxEnvelopeCandidate b = boxes[second];
-            BoxEnvelopeCandidate inA = Union(a, b, a.YawDegrees);
-            BoxEnvelopeCandidate union = inA;
-            if (b.YawDegrees != a.YawDegrees) {
-                BoxEnvelopeCandidate inB = Union(a, b, b.YawDegrees);
-                if (inB.Volume < inA.Volume) union = inB;
+            BoxEnvelopeCandidate firstBox = boxes[first];
+            BoxEnvelopeCandidate secondBox = boxes[second];
+            BoxEnvelopeCandidate inFirst = Union(firstBox, secondBox, firstBox.YawDegrees);
+            BoxEnvelopeCandidate union = inFirst;
+            if (secondBox.YawDegrees != firstBox.YawDegrees) {
+                BoxEnvelopeCandidate inSecond = Union(firstBox, secondBox, secondBox.YawDegrees);
+                if (inSecond.Volume < inFirst.Volume) union = inSecond;
             }
             merged[first, second] = union;
-            double added = union.Volume - a.Volume - b.Volume + a.Overlap(b);
+            double added = union.Volume - firstBox.Volume - secondBox.Volume + firstBox.Overlap(secondBox);
             double height = settings.WeightedBelow;
-            double addedLow = union.VolumeBelow(height) - a.VolumeBelow(height) - b.VolumeBelow(height) + a.OverlapBelow(b, height);
+            double addedLow = union.VolumeBelow(height) - firstBox.VolumeBelow(height) - secondBox.VolumeBelow(height) + firstBox.OverlapBelow(secondBox, height);
             cost[first, second] = added + (settings.WeightBelow - 1.0) * Math.Max(0.0, addedLow);
         }
 
-        private static BoxEnvelopeCandidate Union(BoxEnvelopeCandidate a, BoxEnvelopeCandidate b, int yaw) {
+        private static BoxEnvelopeCandidate Union(BoxEnvelopeCandidate first, BoxEnvelopeCandidate second, int yaw) {
             var union = new BoxEnvelopeCandidate(yaw);
-            union.IncludeBox(a);
-            union.IncludeBox(b);
+            union.IncludeBox(first);
+            union.IncludeBox(second);
             return union;
         }
 

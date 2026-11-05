@@ -106,12 +106,6 @@ namespace AlpineLib.Procedural.Meshing {
             return new EnvelopeBox(new Vector3((float)centreX, (float)centreY, (float)centreZ), half, YawDegrees);
         }
 
-        public BoxEnvelopeCandidate Copy() {
-            var copy = new BoxEnvelopeCandidate(YawDegrees);
-            copy.IncludeBox(this);
-            return copy;
-        }
-
         private static double Round(double value, double snap) {
             return Math.Round(value / snap, MidpointRounding.AwayFromZero) * snap;
         }
