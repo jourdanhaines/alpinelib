@@ -27,6 +27,7 @@ Shader "AlpineLib/Stylized/Lit"
         [Toggle(_FOG_SCALE_BLEND)] _FogScaleBlend("Blend Fog Scale By Vertex Alpha", Float) = 0.0
         [Toggle(_FOG_RADIAL)] _FogRadial("Fog By Radial Distance", Float) = 0.0
         [Toggle(_FOG_SKY)] _FogSky("Fog Toward The Sky Behind", Float) = 0.0
+        [Toggle(_DITHER_FADE)] _DitherFade("Dither Fade (per-instance _FadeAmount)", Float) = 0.0
     }
 
     SubShader
@@ -63,6 +64,8 @@ Shader "AlpineLib/Stylized/Lit"
             #pragma shader_feature_local _FOG_SCALE_BLEND
             #pragma shader_feature_local_fragment _FOG_RADIAL
             #pragma shader_feature_local_fragment _FOG_SKY
+            // Screen-door fade-in; multi_compile because only runtime twin materials (DitherFadeMaterials) turn it on.
+            #pragma multi_compile_local_fragment _ _DITHER_FADE
 
             // Universal Pipeline keywords (URP Simple Lit's set minus SSAO, decals, screen-space irradiance and
             // probe-volume SH: this shader does not read them)
@@ -106,9 +109,10 @@ Shader "AlpineLib/Stylized/Lit"
             HLSLPROGRAM
             #pragma target 2.0
             #pragma vertex ShadowPassVertex
-            #pragma fragment ShadowPassFragment
+            #pragma fragment StylizedShadowPassFragment
 
             #pragma shader_feature_local _ALPHATEST_ON
+            #pragma multi_compile_local_fragment _ _DITHER_FADE
             #pragma multi_compile _ LOD_FADE_CROSSFADE
             #pragma multi_compile_instancing
             // Directional and punctual shadows apply normal bias differently.
@@ -116,6 +120,13 @@ Shader "AlpineLib/Stylized/Lit"
 
             #include "StylizedLitInput.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/Shaders/ShadowCasterPass.hlsl"
+
+            half4 StylizedShadowPassFragment(Varyings input) : SV_TARGET
+            {
+                UNITY_SETUP_INSTANCE_ID(input);
+                ALPINE_DITHER_FADE_CLIP(input.positionCS);
+                return ShadowPassFragment(input);
+            }
             ENDHLSL
         }
 
@@ -131,14 +142,22 @@ Shader "AlpineLib/Stylized/Lit"
             HLSLPROGRAM
             #pragma target 2.0
             #pragma vertex DepthOnlyVertex
-            #pragma fragment DepthOnlyFragment
+            #pragma fragment StylizedDepthOnlyFragment
 
             #pragma shader_feature_local _ALPHATEST_ON
+            #pragma multi_compile_local_fragment _ _DITHER_FADE
             #pragma multi_compile _ LOD_FADE_CROSSFADE
             #pragma multi_compile_instancing
 
             #include "StylizedLitInput.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/Shaders/DepthOnlyPass.hlsl"
+
+            half StylizedDepthOnlyFragment(Varyings input) : SV_TARGET
+            {
+                UNITY_SETUP_INSTANCE_ID(input);
+                ALPINE_DITHER_FADE_CLIP(input.positionCS);
+                return DepthOnlyFragment(input);
+            }
             ENDHLSL
         }
 
@@ -154,9 +173,10 @@ Shader "AlpineLib/Stylized/Lit"
             HLSLPROGRAM
             #pragma target 2.0
             #pragma vertex DepthNormalsVertex
-            #pragma fragment DepthNormalsFragment
+            #pragma fragment StylizedDepthNormalsFragment
 
             #pragma shader_feature_local _ALPHATEST_ON
+            #pragma multi_compile_local_fragment _ _DITHER_FADE
             #pragma multi_compile _ LOD_FADE_CROSSFADE
             #pragma multi_compile_fragment _ _GBUFFER_NORMALS_OCT
             #include_with_pragmas "Packages/com.unity.render-pipelines.universal/ShaderLibrary/RenderingLayers.hlsl"
@@ -164,6 +184,23 @@ Shader "AlpineLib/Stylized/Lit"
 
             #include "StylizedLitInput.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/Shaders/DepthNormalsPass.hlsl"
+
+            void StylizedDepthNormalsFragment(
+                Varyings input
+                , out half4 outNormalWS : SV_Target0
+            #ifdef _WRITE_RENDERING_LAYERS
+                , out uint outRenderingLayers : SV_Target1
+            #endif
+            )
+            {
+                UNITY_SETUP_INSTANCE_ID(input);
+                ALPINE_DITHER_FADE_CLIP(input.positionCS);
+            #ifdef _WRITE_RENDERING_LAYERS
+                DepthNormalsFragment(input, outNormalWS, outRenderingLayers);
+            #else
+                DepthNormalsFragment(input, outNormalWS);
+            #endif
+            }
             ENDHLSL
         }
     }

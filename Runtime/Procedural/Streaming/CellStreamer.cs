@@ -66,6 +66,8 @@ namespace AlpineLib.Procedural.Streaming {
         private ICellBuilder _builder;
         private StreamedCell _instantiating;
         private bool _tearingDown;
+        private CellCoord _focusCell;
+        private bool _hasFocus;
 
         /// <summary>Raised on the main thread when a cell finishes instantiating.</summary>
         public event Action<StreamedCell> CellLoaded;
@@ -124,6 +126,15 @@ namespace AlpineLib.Procedural.Streaming {
         /// tick. Lets lower-priority main-thread work wait until streaming has settled.
         /// </summary>
         public int QuietTicks { get; private set; } = int.MaxValue;
+
+        /// <summary>
+        /// The cell of the first local observer (of any observer when none is local) as of the last interest refresh;
+        /// false before any observer was seen. Layers drawn around the player (far props) centre on it.
+        /// </summary>
+        public bool TryGetFocusCell(out CellCoord cell) {
+            cell = _focusCell;
+            return _hasFocus;
+        }
 
         /// <summary>Sets the grid and radii; releases every cell first. The origin cell is kept.</summary>
         public void Configure(double newCellSize, int newRadius, int newUnloadMargin) {
@@ -348,6 +359,10 @@ namespace AlpineLib.Procedural.Streaming {
             }
 
             if (_priorityPoints.Count == 0) AddAllObserverPoints();
+            if (_priorityPoints.Count > 0) {
+                _focusCell = space.CellOf(_priorityPoints[0].x, _priorityPoints[0].z);
+                _hasFocus = true;
+            }
 
             foreach (ulong previousId in _previousObserverIds) {
                 if (!_observerIds.Contains(previousId)) _interest.RemoveObserver(previousId);

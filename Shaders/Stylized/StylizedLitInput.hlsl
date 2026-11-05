@@ -42,4 +42,6 @@ half4 _AlpineSkyShape;
 // Sun glow colour times its strength.
 half4 _AlpineSkyGlow;
 
+#include "StylizedDitherFade.hlsl"
+
 #endif

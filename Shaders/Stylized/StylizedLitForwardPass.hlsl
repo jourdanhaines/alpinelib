@@ -189,6 +189,8 @@ void StylizedLitPassFragment(
 #else
     color = MixFog(color, inputData.fogCoord);
 #endif
+    // Last, so the flat normal's and the texture's screen derivatives are taken with the whole pixel quad alive.
+    ALPINE_DITHER_FADE_CLIP(input.positionCS);
     outColor = half4(color, 1.0h);
 
 #ifdef _WRITE_RENDERING_LAYERS

@@ -2,6 +2,7 @@
   "name": "FluxInteractive.AlpineLib.Rendering",
   "rootNamespace": "AlpineLib.Rendering",
   "references": [
+    "FluxInteractive.AlpineLib.Procedural",
     "Unity.RenderPipelines.Core.Runtime",
     "Unity.RenderPipelines.Universal.Runtime"
   ],
