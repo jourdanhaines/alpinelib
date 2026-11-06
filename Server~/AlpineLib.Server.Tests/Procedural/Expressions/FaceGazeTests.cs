@@ -123,6 +123,22 @@ namespace AlpineLib.Server.Tests.Procedural.Expressions {
             Assert.True(mixer.WeightOf(FaceChannel.Worried) > 0.1f);
         }
 
+        [Theory]
+        [InlineData(-1f)]
+        [InlineData(1f)]
+        public void StraightBackAfterADiagonalDartsTheSideJustWalkedFirst(float side) {
+            var gaze = new FaceGaze();
+            var tuning = new FaceExpressionTuning();
+            for (float time = 0f; time < tuning.backScanSeconds * 1.5f; time += Step) {
+                gaze.Step(new FaceSignalFrame { MoveForward = -0.7f, MoveRight = 0.7f * side }, 0f, Step, tuning);
+            }
+
+            for (float time = 0f; time < tuning.backScanSeconds * 0.9f; time += Step) {
+                gaze.Step(new FaceSignalFrame { MoveForward = -1f }, 0f, Step, tuning);
+                Assert.True(gaze.MoveLook * side > 0f, $"at {time:0.00} s straight back looked {gaze.MoveLook} with the walked side {side}");
+            }
+        }
+
         [Fact]
         public void SourcesAddButStayInsideTheSquare() {
             var mixer = Quiet();

@@ -53,9 +53,29 @@ namespace AlpineLib.Server.Tests.Procedural.Expressions {
             Assert.Equal(rate, tracker.Sample(2f, float.NaN));
             Assert.Equal(rate, tracker.Sample(2f, -1f));
             Assert.Equal(rate, tracker.Sample(2f, float.PositiveInfinity));
-            Assert.True(tracker.Sample(3f, 1e-6f) <= 1f / FaceTurnTracker.MinStepSeconds + 1e-3f);
-            Assert.Equal(FaceTurnTracker.MaxRate, tracker.Sample(80f, 1e-6f));
-            Assert.Equal(2f, tracker.Sample(82f, 1f), 3);
+            Assert.Equal(rate, tracker.Sample(3f, 1e-6f));
+            Assert.Equal(rate, tracker.Sample(80f, 1e-6f));
+            Assert.Equal(80f, tracker.Sample(82f, 1f), 2);
+            Assert.Equal(FaceTurnTracker.MaxRate, tracker.Sample(170f, FaceTurnTracker.MinStepSeconds));
+        }
+
+        [Theory]
+        [InlineData(30)]
+        [InlineData(60)]
+        [InlineData(144)]
+        [InlineData(360)]
+        [InlineData(500)]
+        [InlineData(1000)]
+        public void MeasuresTheSameRateAtAnyFrameRate(int framesPerSecond) {
+            var tracker = new FaceTurnTracker();
+            float step = 1f / framesPerSecond;
+            float yaw = 0f;
+            tracker.Sample(yaw, step);
+            for (int frame = 1; frame < framesPerSecond; frame++) {
+                yaw += 300f * step;
+                float rate = tracker.Sample(yaw, step);
+                if (frame > 10) Assert.Equal(300f, rate, 0);
+            }
         }
 
         [Fact]

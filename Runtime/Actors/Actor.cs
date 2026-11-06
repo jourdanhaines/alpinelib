@@ -167,9 +167,9 @@ namespace AlpineLib.Actors {
         public float AnimatedSpeed { get; private set; }
 
         /// <summary>
-        /// The locomotion asked of the body on the last frame relative to its own facing (x right, y forward), in
-        /// multiples of the base move speed: what the animator's strafe is fed, recorded the same way as
-        /// <see cref="AnimatedSpeed"/> and, like it, never including a carrier's motion.
+        /// The locomotion asked of the body on the last frame relative to its facing at the end of that frame (x right,
+        /// y forward), in multiples of the base move speed: recorded the same way as <see cref="AnimatedSpeed"/> and,
+        /// like it, never including a carrier's motion. Measured after the frame's turn, so turning is not strafing.
         /// </summary>
         public Vector2 AnimatedStrafe { get; private set; }
 
@@ -270,6 +270,7 @@ namespace AlpineLib.Actors {
         private float _currentSpeed;
         private float _currentTurn;
         private Vector2 _currentStrafe;
+        private Vector3 _currentIntent;
         private bool _isLocomotionSuppressed;
         private bool _isRotationLocked;
         private bool _externalGrounded;
@@ -514,10 +515,11 @@ namespace AlpineLib.Actors {
             _previousRenderPosition = transform.position;
 
             AnimatedSpeed = _currentSpeed;
-            AnimatedStrafe = _currentStrafe;
+            AnimatedStrafe = FacingRelative(_currentIntent);
             _currentSpeed = 0f;
             _currentTurn = 0f;
             _currentStrafe = Vector2.zero;
+            _currentIntent = Vector3.zero;
             _moveDirection = Vector3.zero;
             CommandedMoveDirection = Vector3.zero;
         }
@@ -601,8 +603,13 @@ namespace AlpineLib.Actors {
         private void RecordLocomotionIntent(Vector3 direction, float speedRatio) {
             _currentSpeed = direction.magnitude * speedRatio;
 
-            Vector3 localDirection = Quaternion.Inverse(transform.rotation) * direction;
-            _currentStrafe = new Vector2(localDirection.x, localDirection.z) * speedRatio;
+            _currentIntent = direction * speedRatio;
+            _currentStrafe = FacingRelative(_currentIntent);
+        }
+
+        private Vector2 FacingRelative(Vector3 worldDirection) {
+            Vector3 localDirection = Quaternion.Inverse(transform.rotation) * worldDirection;
+            return new Vector2(localDirection.x, localDirection.z);
         }
 
         /// <summary>

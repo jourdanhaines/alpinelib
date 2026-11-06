@@ -12,9 +12,9 @@ namespace AlpineLib.Procedural.Expressions {
     /// The expression channels share <see cref="FaceExpressionTuning.expressionBudget"/>: the newest pulse first, then
     /// the older one, worried and squint, so the reaction of the moment wins and the sum never exceeds the budget.
     /// Whatever the budget cuts carries on from the weight shown, so nothing re-rises once a reaction ends it.
-    /// The back-up bias goes through the budget like the rest. Blink and the looks are independent of it: the gaze is
-    /// clamped to the square |x|, |y| ≤ 1 and split onto the four look channels. Every weight is clamped to 0..1, and a face with no signals
-    /// settles to exact zeros between blinks.
+    /// The back-up bias goes through the budget like the rest. Blink and the looks are independent of it: the gaze
+    /// is clamped to the square |x|, |y| ≤ 1 and split onto the four look channels. Every weight is clamped to 0..1,
+    /// and a face with no signals settles to exact zeros between blinks.
     /// </remarks>
     public sealed class FaceExpressionMixer {
         /// <summary>Number of <see cref="FaceChannel"/> values.</summary>

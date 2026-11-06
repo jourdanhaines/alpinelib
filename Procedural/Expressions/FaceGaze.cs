@@ -8,7 +8,8 @@ namespace AlpineLib.Procedural.Expressions {
     /// </summary>
     /// <remarks>
     /// Every source has a dead zone and an ease-out curve that tops out below full, so small motion reads as nothing
-    /// and large motion reads without pinning. A held sheet's downward glance (<see cref="Step"/>'s glance) is
+    /// and large motion reads without pinning. The turn rate is low-passed first, over a fixed time, so a jittery or
+    /// coarsely polled turn leads by its average speed whatever the frame rate. A held sheet's downward glance (<see cref="Step"/>'s glance) is
     /// subtracted from the vertical and damps the pitch to <see cref="FaceExpressionTuning.glancePitchKeep"/> of itself.
     /// </remarks>
     public sealed class FaceGaze {
@@ -23,13 +24,18 @@ namespace AlpineLib.Procedural.Expressions {
         private readonly FaceFollower _backward = new FaceFollower();
         private readonly FaceFollower _directRight = new FaceFollower();
         private readonly FaceFollower _directUp = new FaceFollower();
+        private float _turnRate;
         private float _scanElapsed;
+        private float _scanSide = 1f;
 
         /// <summary>Gaze across after the last step, -1 full left to 1 full right (the body's own left and right).</summary>
         public float Right { get; private set; }
 
         /// <summary>Gaze up and down after the last step, -1 full down to 1 full up.</summary>
         public float Up { get; private set; }
+
+        /// <summary>The turn rate the lead is shaped from, low-passed, degrees per second.</summary>
+        public float SmoothedTurnRate => _turnRate;
 
         /// <summary>The turn's share of <see cref="Right"/>, before the clamp.</summary>
         public float TurnLook => _turn.Value;
@@ -49,7 +55,8 @@ namespace AlpineLib.Procedural.Expressions {
         /// </summary>
         public void Step(in FaceSignalFrame signals, float glanceDown, float deltaTime, FaceExpressionTuning tuning) {
             float step = FaceMath.StepSeconds(deltaTime);
-            float turn = _turn.Step(TurnTarget(signals.TurnRate, tuning), step, tuning.turnLeadSeconds, tuning.turnSettleSeconds);
+            float turnTarget = TurnTarget(SmoothTurnRate(signals.TurnRate, step, tuning.turnRateSeconds), tuning);
+            float turn = _turn.Step(turnTarget, step, tuning.turnLeadSeconds, tuning.turnSettleSeconds, tuning.turnTrackBand);
             float pitch = _pitch.Step(PitchTarget(signals.LookPitch, tuning), step, tuning.pitchLookSeconds, tuning.pitchSettleSeconds);
             float move = _move.Step(MoveTarget(in signals, step, tuning, out float backward), step, tuning.moveLookSeconds, tuning.moveSettleSeconds);
             _backward.Step(backward, step, tuning.backAttack, tuning.backRelease);
@@ -71,7 +78,9 @@ namespace AlpineLib.Procedural.Expressions {
             _backward.Reset();
             _directRight.Reset();
             _directUp.Reset();
+            _turnRate = 0f;
             _scanElapsed = 0f;
+            _scanSide = 1f;
             Right = 0f;
             Up = 0f;
         }
@@ -92,7 +101,9 @@ namespace AlpineLib.Procedural.Expressions {
             return pitchDegrees > 0f ? -share * FaceMath.Clamp01(tuning.pitchLookDown) : share * FaceMath.Clamp01(tuning.pitchLookUp);
         }
 
-        /// <summary>How much a move of <paramref name="right"/>, <paramref name="forward"/> (facing-relative, base speeds) backs up, 0..1.</summary>
+        /// <summary>
+        /// How much a move of <paramref name="right"/>, <paramref name="forward"/> (facing-relative, base speeds) backs up, 0..1.
+        /// </summary>
         public static float BackwardShare(float right, float forward, FaceExpressionTuning tuning) {
             float speed = Speed(right, forward);
             if (speed <= 0f) return 0f;
@@ -100,28 +111,40 @@ namespace AlpineLib.Procedural.Expressions {
             return Presence(speed, tuning) * Ramp(-forward / speed, BackwardFrom, BackwardFull);
         }
 
-        // Strafing glances the way the body slides; backing up adds a dart to the side walked, or side to side.
+        // A frame-rate independent low-pass; a bad rate counts as no turn.
+        private float SmoothTurnRate(float degreesPerSecond, float step, float smoothingSeconds) {
+            float rate = float.IsNaN(degreesPerSecond) || float.IsInfinity(degreesPerSecond) ? 0f : degreesPerSecond;
+            float share = smoothingSeconds > 0f ? 1f - (float)Math.Exp(-step / smoothingSeconds) : 1f;
+            _turnRate += (rate - _turnRate) * share;
+            return _turnRate;
+        }
+
+        // Strafing glances the way the body slides; backing up adds a dart to the side walked, or side to side
+        // starting on the side last walked.
         private float MoveTarget(in FaceSignalFrame signals, float step, FaceExpressionTuning tuning, out float backward) {
             float speed = Speed(signals.MoveRight, signals.MoveForward);
             backward = speed > 0f ? BackwardShare(signals.MoveRight, signals.MoveForward, tuning) : 0f;
-            if (backward <= 0f) _scanElapsed = 0f;
-            if (speed <= 0f) return 0f;
+            if (speed <= 0f) {
+                _scanElapsed = 0f;
+                return 0f;
+            }
 
             float across = signals.MoveRight / speed;
             float strafe = across * Presence(speed, tuning) * FaceMath.Clamp01(tuning.strafeLook);
+            bool sided = Math.Abs(across) >= SidedScan;
+            if (sided) _scanSide = Math.Sign(across);
+            if (sided || backward <= 0f) _scanElapsed = 0f;
             if (backward <= 0f) return strafe;
 
-            _scanElapsed += step;
-            return strafe + ScanSide(across, tuning) * backward * FaceMath.Clamp01(tuning.backGlance);
+            if (!sided) _scanElapsed += step;
+            return strafe + ScanSide(sided, tuning) * backward * FaceMath.Clamp01(tuning.backGlance);
         }
 
-        private float ScanSide(float across, FaceExpressionTuning tuning) {
-            if (Math.Abs(across) >= SidedScan) return Math.Sign(across);
-
+        private float ScanSide(bool sided, FaceExpressionTuning tuning) {
             float period = tuning.backScanSeconds;
-            if (!(period > 0f)) return 1f;
+            if (sided || !(period > 0f)) return _scanSide;
 
-            return ((long)(_scanElapsed / period) & 1L) == 0L ? 1f : -1f;
+            return ((long)(_scanElapsed / period) & 1L) == 0L ? _scanSide : -_scanSide;
         }
 
         private static float Speed(float right, float forward) {
