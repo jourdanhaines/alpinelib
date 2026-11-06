@@ -11,7 +11,8 @@ namespace AlpineLib.Procedural.Expressions {
     /// have a dead zone, a full point and a peak look below 1 (see <see cref="FaceGaze"/>); turn rates are degrees per
     /// second, pitch degrees, move speeds multiples of the base move speed. The turn rate is low-passed over
     /// <see cref="turnRateSeconds"/> before it is shaped, and dips under <see cref="turnTrackBand"/> are tracked at
-    /// the lead time rather than settled, so a noisy turn leads like a smooth one. Public fields so engines can serialize it.
+    /// the lead time rather than settled, so a noisy turn leads like a smooth one. Public fields so engines can
+    /// serialize it.
     /// </remarks>
     [Serializable]
     public sealed class FaceExpressionTuning {

@@ -20,7 +20,9 @@ namespace AlpineLib.Procedural.Expressions {
         /// <summary>Number of <see cref="FaceChannel"/> values.</summary>
         public const int ChannelCount = 9;
 
-        private static readonly FaceChannel[] BudgetChannels = { FaceChannel.Squash, FaceChannel.Wide, FaceChannel.Worried, FaceChannel.Squint };
+        private static readonly FaceChannel[] BudgetChannels = {
+            FaceChannel.Squash, FaceChannel.Wide, FaceChannel.Worried, FaceChannel.Squint,
+        };
 
         private readonly float[] _weights = new float[ChannelCount];
         private readonly FaceBlinkScheduler _blink;

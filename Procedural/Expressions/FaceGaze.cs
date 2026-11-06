@@ -9,8 +9,9 @@ namespace AlpineLib.Procedural.Expressions {
     /// <remarks>
     /// Every source has a dead zone and an ease-out curve that tops out below full, so small motion reads as nothing
     /// and large motion reads without pinning. The turn rate is low-passed first, over a fixed time, so a jittery or
-    /// coarsely polled turn leads by its average speed whatever the frame rate. A held sheet's downward glance (<see cref="Step"/>'s glance) is
-    /// subtracted from the vertical and damps the pitch to <see cref="FaceExpressionTuning.glancePitchKeep"/> of itself.
+    /// coarsely polled turn leads by its average speed whatever the frame rate. A held sheet's downward glance
+    /// (<see cref="Step"/>'s glance) is subtracted from the vertical and damps the pitch to
+    /// <see cref="FaceExpressionTuning.glancePitchKeep"/> of itself.
     /// </remarks>
     public sealed class FaceGaze {
         // Below this share of straight back the walk counts as sideways, and the darting follows the side walked.

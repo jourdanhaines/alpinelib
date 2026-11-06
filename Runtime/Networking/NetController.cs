@@ -65,6 +65,9 @@ namespace AlpineLib.Networking {
         [Tooltip("Degrees per second the pawn may turn towards its reported facing.")]
         [SerializeField] private float turnSpeed = 720f;
 
+        [Tooltip("Metres a sample may land from where the pawn stands, beyond its reported travel, before it is a snap (a respawn, a teleport): placed facing and all, as a break in its motion.")]
+        [SerializeField] private float snapDistance = 3f;
+
         /// <summary>
         /// Raised for every discrete event the authority reported for this pawn — jumps, emotes,
         /// anything a game defines — with the event id and its argument.
@@ -120,6 +123,7 @@ namespace AlpineLib.Networking {
         private float _heldSinceTime;
         private bool _isHeld;
         private bool _hasDriven;
+        private bool _hasFollowed;
         private readonly HashSet<ushort> _warnedCarrierIds = new HashSet<ushort>();
 
         /// <inheritdoc />
@@ -137,6 +141,7 @@ namespace AlpineLib.Networking {
             _character.Possess(this);
             _isHeld = false;
             _hasDriven = false;
+            _hasFollowed = false;
             IsCarrierUnresolved = false;
 
             _view = character.GetComponent<NetEntityView>();
@@ -267,6 +272,20 @@ namespace AlpineLib.Networking {
             if (ReleaseIfLocallyOwned(replication)) return;
             if (!replication.SampleRemote(_view.EntityId, out PawnState sampled)) return;
 
+            Follow(in sampled, replication, Time.deltaTime);
+        }
+
+        /// <summary>
+        /// Applies one state sampled from the remote stream, <paramref name="deltaTime"/> seconds after the last,
+        /// exactly as the per-frame follow does: for a game or a gate feeding a stream of its own.
+        /// </summary>
+        public void ApplySample(in PawnState sampled, float deltaTime) {
+            if (_character == null) return;
+
+            Follow(in sampled, null, deltaTime);
+        }
+
+        private void Follow(in PawnState sampled, ClientReplication replication, float deltaTime) {
             bool wasCarrierRelative = sampled.IsCarrierRelative;
             ushort carrierId = sampled.CarrierId;
 
@@ -277,11 +296,30 @@ namespace AlpineLib.Networking {
             // offset, or it trails across the deck by the interpolation delay's worth of travel. Only
             // the drawn position moves; velocity, yaw and flags stay the sampled ones. A carrier's rider
             // is already anchored to the carrier's own transform, so the mover probe has nothing to add.
-            if (!wasCarrierRelative && replication.TryGetMoverRenderOffset(in state, out System.Numerics.Vector3 moverOffset)) {
+            if (!wasCarrierRelative && replication != null
+                && replication.TryGetMoverRenderOffset(in state, out System.Numerics.Vector3 moverOffset)) {
                 state.Position += moverOffset;
             }
 
-            Drive(in state, ResolveCarrierRoot(carrierId));
+            bool snapped = IsSnap(in state, deltaTime);
+            _hasFollowed = true;
+            Drive(in state, ResolveCarrierRoot(carrierId), snapped, deltaTime);
+        }
+
+        /// <summary>
+        /// True when <paramref name="state"/> lands further from where the pawn stands than its reported speed
+        /// could carry it this frame, or is the first state followed: a respawn, a teleport, not a stride.
+        /// </summary>
+        /// <remarks>
+        /// Measured against the pawn's own transform, which rides its carrier and every origin shift, so neither a
+        /// moving deck nor a rebased world reads as a jump.
+        /// </remarks>
+        private bool IsSnap(in PawnState state, float deltaTime) {
+            if (!_hasFollowed) return true;
+
+            float frameSeconds = Mathf.Clamp(float.IsNaN(deltaTime) ? 0f : deltaTime, 0f, 0.25f);
+            float reach = Mathf.Max(0f, snapDistance) + state.Velocity.Length() * frameSeconds * 2f;
+            return (state.Position.ToUnity() - _character.transform.position).sqrMagnitude > reach * reach;
         }
 
         /// <summary>
@@ -322,12 +360,18 @@ namespace AlpineLib.Networking {
 
         /// <summary>
         /// Applies one sampled pose: gait and crouch first, then the transform, then grounding and the
-        /// animator's view of the motion.
+        /// animator's view of the motion. A snap is placed facing and all and declared a break in the motion,
+        /// so a respawn neither swings round at the turn speed nor reads as a fall or a turn.
         /// </summary>
-        private void Drive(in PawnState state, Transform carrierRoot) {
+        private void Drive(in PawnState state, Transform carrierRoot, bool snapped, float deltaTime) {
             ApplyLocomotionState(in state);
 
-            _character.PlaceAt(state.Position.ToUnity(), carrierRoot);
+            if (snapped) {
+                _character.PlaceAt(state.Position.ToUnity(), state.YawDegrees, carrierRoot);
+            } else {
+                _character.PlaceAt(state.Position.ToUnity(), carrierRoot);
+            }
+
             _character.SetExternalGrounded(state.IsGrounded);
             _character.SetLookPitch(state.LookPitchDegrees);
             // The first driven sample is adopted, not played: a late joiner sees the held pose already up.
@@ -335,7 +379,8 @@ namespace AlpineLib.Networking {
             _hasDriven = true;
 
             AnimateFromState(in state);
-            ApplyFacing(state.YawDegrees);
+            ApplyFacing(state.YawDegrees, deltaTime);
+            if (snapped) _character.MarkDiscontinuity();
         }
 
         private void ApplyLocomotionState(in PawnState state) {
@@ -372,9 +417,9 @@ namespace AlpineLib.Networking {
             _character.AnimateLocomotion(horizontalVelocity / speed * speedRatio, 1f);
         }
 
-        private void ApplyFacing(float yawDegrees) {
+        private void ApplyFacing(float yawDegrees, float deltaTime) {
             Vector3 forward = Quaternion.Euler(0f, yawDegrees, 0f) * Vector3.forward;
-            _character.LookAt(_character.transform.position + forward, turnSpeed);
+            _character.LookAt(_character.transform.position + forward, turnSpeed, deltaTime);
         }
 
         /// <summary>
