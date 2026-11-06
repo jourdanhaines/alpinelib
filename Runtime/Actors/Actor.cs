@@ -166,6 +166,19 @@ namespace AlpineLib.Actors {
         /// </summary>
         public float AnimatedSpeed { get; private set; }
 
+        /// <summary>
+        /// The locomotion asked of the body on the last frame relative to its own facing (x right, y forward), in
+        /// multiples of the base move speed: what the animator's strafe is fed, recorded the same way as
+        /// <see cref="AnimatedSpeed"/> and, like it, never including a carrier's motion.
+        /// </summary>
+        public Vector2 AnimatedStrafe { get; private set; }
+
+        /// <summary>
+        /// Facing in degrees relative to the heading of the carrier the actor stands on (the world yaw on the ground):
+        /// constant for a rider standing still on a turning deck. Re-expressed when the carrier changes.
+        /// </summary>
+        public float LocalYaw => _current.LocalYaw;
+
         public float CapsuleHeight => _capsule != null ? _capsule.height : 0f;
         public float CapsuleRadius => _capsule != null ? _capsule.radius : 0f;
 
@@ -501,6 +514,7 @@ namespace AlpineLib.Actors {
             _previousRenderPosition = transform.position;
 
             AnimatedSpeed = _currentSpeed;
+            AnimatedStrafe = _currentStrafe;
             _currentSpeed = 0f;
             _currentTurn = 0f;
             _currentStrafe = Vector2.zero;
@@ -744,6 +758,14 @@ namespace AlpineLib.Actors {
         /// camera owns it and never wants it interpolated. Rotation locks still win.
         /// </summary>
         public virtual void LookAt(Vector3 position, float maxDegreesPerSecond) {
+            LookAt(position, maxDegreesPerSecond, Time.deltaTime);
+        }
+
+        /// <summary>
+        /// <see cref="LookAt(Vector3, float)"/> over an explicit <paramref name="deltaTime"/>, so a gate can turn the
+        /// actor without a player loop.
+        /// </summary>
+        public void LookAt(Vector3 position, float maxDegreesPerSecond, float deltaTime) {
             if (_isRotationLocked) return;
 
             Vector3 lookDirection = position - transform.position;
@@ -753,7 +775,7 @@ namespace AlpineLib.Actors {
             Quaternion targetRotation = Quaternion.LookRotation(lookDirection);
             float signedAngle = Vector3.SignedAngle(transform.forward, lookDirection, Vector3.up);
             _currentTurn = Mathf.Clamp(signedAngle / 90f, -1f, 1f);
-            transform.rotation = Quaternion.RotateTowards(transform.rotation, targetRotation, maxDegreesPerSecond * Time.deltaTime);
+            transform.rotation = Quaternion.RotateTowards(transform.rotation, targetRotation, maxDegreesPerSecond * deltaTime);
 
             float localYaw = transform.eulerAngles.y - CarrierFrame.Heading(_current.CarrierRoot);
             _current.LocalYaw = localYaw;

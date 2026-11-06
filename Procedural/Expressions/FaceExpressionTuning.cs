@@ -7,7 +7,9 @@ namespace AlpineLib.Procedural.Expressions {
     /// </summary>
     /// <remarks>
     /// Pulses rise fast with a small overshoot, hold, then ease out slowly; held expressions follow their target
-    /// with a short time constant going up and a longer one coming down. Public fields so engines can serialize it.
+    /// with a short time constant going up and a longer one coming down. The look sources (turn, pitch, move) each
+    /// have a dead zone, a full point and a peak look below 1 (see <see cref="FaceGaze"/>); turn rates are degrees per
+    /// second, pitch degrees, move speeds multiples of the base move speed. Public fields so engines can serialize it.
     /// </remarks>
     [Serializable]
     public sealed class FaceExpressionTuning {
@@ -53,6 +55,33 @@ namespace AlpineLib.Procedural.Expressions {
         public float gazeRelease = 0.15f;
 
         public float expressionBudget = 1f;
+
+        public float turnDeadZone = 15f;
+        public float turnFullRate = 300f;
+        public float turnLook = 0.75f;
+        public float turnLeadSeconds = 0.06f;
+        public float turnSettleSeconds = 0.25f;
+
+        public float pitchDeadZone = 8f;
+        public float pitchFullDegrees = 70f;
+        public float pitchLookUp = 0.55f;
+        public float pitchLookDown = 0.5f;
+        public float pitchLookSeconds = 0.1f;
+        public float pitchSettleSeconds = 0.15f;
+        public float glancePitchKeep = 0.5f;
+
+        public float moveDeadZone = 0.15f;
+        public float moveFullSpeed = 0.8f;
+        public float strafeLook = 0.45f;
+        public float moveLookSeconds = 0.12f;
+        public float moveSettleSeconds = 0.25f;
+
+        public float backGlance = 0.35f;
+        public float backScanSeconds = 1.4f;
+        public float backWorried = 0.3f;
+        public float backWide = 0.12f;
+        public float backAttack = 0.2f;
+        public float backRelease = 0.35f;
 
         /// <summary>A fresh copy, so a caller can tweak values without touching a shared instance.</summary>
         public FaceExpressionTuning Clone() {
