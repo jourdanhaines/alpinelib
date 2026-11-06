@@ -8,6 +8,10 @@ namespace AlpineLib.Server.Tests.Procedural.Expressions {
         private const float MousePollHertz = 48f;
 
         [Theory]
+        [InlineData(20, 90f)]
+        [InlineData(20, 180f)]
+        [InlineData(30, 90f)]
+        [InlineData(30, 180f)]
         [InlineData(60, 90f)]
         [InlineData(60, 180f)]
         [InlineData(144, 90f)]
@@ -25,6 +29,7 @@ namespace AlpineLib.Server.Tests.Procedural.Expressions {
         }
 
         [Theory]
+        [InlineData(20)]
         [InlineData(30)]
         [InlineData(60)]
         [InlineData(144)]
@@ -38,6 +43,8 @@ namespace AlpineLib.Server.Tests.Procedural.Expressions {
         }
 
         [Theory]
+        [InlineData(20)]
+        [InlineData(30)]
         [InlineData(60)]
         [InlineData(144)]
         [InlineData(240)]
@@ -64,6 +71,8 @@ namespace AlpineLib.Server.Tests.Procedural.Expressions {
         }
 
         [Theory]
+        [InlineData(20)]
+        [InlineData(30)]
         [InlineData(60)]
         [InlineData(144)]
         [InlineData(240)]
@@ -77,6 +86,8 @@ namespace AlpineLib.Server.Tests.Procedural.Expressions {
         }
 
         [Theory]
+        [InlineData(20, false)]
+        [InlineData(30, false)]
         [InlineData(60, false)]
         [InlineData(144, false)]
         [InlineData(240, false)]
@@ -95,17 +106,80 @@ namespace AlpineLib.Server.Tests.Procedural.Expressions {
         }
 
         [Theory]
-        [InlineData(0f)]
-        [InlineData(0.15f)]
-        public void SpringNeverOvershootsADroppingTarget(float trackBand) {
+        [InlineData(20)]
+        [InlineData(30)]
+        [InlineData(60)]
+        [InlineData(144)]
+        [InlineData(240)]
+        public void TheReturnAfterATurnIsTheSameAtAnyFrameRate(int framesPerSecond) {
+            float[] reference = ReturnTimes(500, 0.6f, 0.4f, 0.2f, 0.05f);
+            float[] times = ReturnTimes(framesPerSecond, 0.6f, 0.4f, 0.2f, 0.05f);
+
+            for (int index = 0; index < times.Length; index++) {
+                float ratio = times[index] / reference[index];
+                Assert.True(ratio > 0.85f && ratio < 1.15f, $"level {index}: {times[index]:F3} s vs {reference[index]:F3} s at 500 fps");
+            }
+        }
+
+        [Theory]
+        [InlineData(20)]
+        [InlineData(30)]
+        [InlineData(60)]
+        [InlineData(144)]
+        [InlineData(240)]
+        public void TheReturnDecaysOnOneSmoothCurve(int framesPerSecond) {
+            float[] times = ReturnTimes(framesPerSecond, 0.45f, 0.15f, 0.05f);
+            float tail = (times[2] - times[1]) / (times[1] - times[0]);
+            Assert.InRange(tail, 0.6f, 1.5f);
+
+            var rig = new LeadRig(framesPerSecond);
+            for (int frame = 0; frame < framesPerSecond / 2; frame++) rig.Turn(300f * rig.StepSeconds);
+
+            // Once falling it never rises, and below 0.6 its speed never drops faster than a 30 ms ease would allow.
+            float minimumKeep = (float)Math.Exp(-rig.StepSeconds / 0.03f);
+            float previous = rig.Gaze.TurnLook;
+            float previousSpeed = 0f;
+            for (int frame = 0; frame < framesPerSecond * 2 && previous > 0.05f; frame++) {
+                float now = rig.Turn(0f);
+                float speed = (previous - now) / rig.StepSeconds;
+                Assert.True(now <= previous + 1e-5f, $"frame {frame}: rose {previous} -> {now}");
+                bool collapsed = now > 0.05f && now < 0.6f && previousSpeed > 0.5f && speed < previousSpeed * minimumKeep;
+                Assert.False(collapsed, $"frame {frame} at {now}: easing back slowed {previousSpeed} -> {speed}/s");
+                previous = now;
+                previousSpeed = speed;
+            }
+        }
+
+        [Theory]
+        [InlineData(30)]
+        [InlineData(60)]
+        [InlineData(144)]
+        public void AReversedTurnSwingsAcrossWithoutAJump(int framesPerSecond) {
+            var rig = new LeadRig(framesPerSecond);
+            for (int frame = 0; frame < framesPerSecond / 2; frame++) rig.Turn(300f * rig.StepSeconds);
+
+            float previous = rig.Gaze.TurnLook;
+            float fastest = 0f;
+            for (int frame = 0; frame < framesPerSecond; frame++) {
+                float now = rig.Turn(-300f * rig.StepSeconds);
+                fastest = Math.Max(fastest, Math.Abs(now - previous) / rig.StepSeconds);
+                previous = now;
+            }
+
+            Assert.True(previous < -0.7f, $"reversed lead {previous}");
+            Assert.True(fastest < 10f, $"swung across at {fastest}/s");
+        }
+
+        [Fact]
+        public void SpringNeverOvershootsADroppingTarget() {
             foreach (float drop in new[] { 0.5f, 0.3f, 0.1f, 0f, -0.3f }) {
                 var spring = new FaceSpring();
-                for (int frame = 0; frame < 3; frame++) spring.Step(0.75f, 1f / 60f, 0.06f, 0.25f, trackBand);
+                for (int frame = 0; frame < 3; frame++) spring.Step(0.75f, 1f / 60f, 0.06f, 0.25f);
 
                 float atDrop = spring.Value;
                 float low = Math.Min(drop, atDrop);
                 for (int frame = 0; frame < 120; frame++) {
-                    float now = spring.Step(drop, 1f / 60f, 0.06f, 0.25f, trackBand);
+                    float now = spring.Step(drop, 1f / 60f, 0.06f, 0.25f);
                     Assert.True(now <= Math.Max(atDrop, drop) + 1e-6f, $"drop {drop}: rose {atDrop} -> {now}");
                     Assert.True(now >= low - 1e-6f, $"drop {drop}: undershot to {now}");
                 }
@@ -114,22 +188,30 @@ namespace AlpineLib.Server.Tests.Procedural.Expressions {
             }
         }
 
-        [Fact]
-        public void SpringSettlesSmallDipsAtTheOutTimeOnlyInsideTheBand() {
-            var banded = new FaceSpring();
-            var plain = new FaceSpring();
-            for (int frame = 0; frame < 120; frame++) {
-                banded.Step(0.6f, 1f / 60f, 0.02f, 0.25f, 0.15f);
-                plain.Step(0.6f, 1f / 60f, 0.02f, 0.25f);
+        // Seconds after a half-second 300 deg/s turn stops until the lead falls under each level, between frames.
+        private static float[] ReturnTimes(int framesPerSecond, params float[] levels) {
+            var rig = new LeadRig(framesPerSecond);
+            int turnFrames = framesPerSecond / 2;
+            for (int frame = 0; frame < turnFrames; frame++) rig.Turn(300f * rig.StepSeconds);
+
+            var times = new float[levels.Length];
+            float previous = rig.Gaze.TurnLook;
+            for (int frame = 1; frame <= framesPerSecond * 2; frame++) {
+                float now = rig.Turn(0f);
+                RecordCrossings(levels, times, previous, now, frame, rig.StepSeconds);
+                previous = now;
             }
 
-            for (int frame = 0; frame < 6; frame++) {
-                banded.Step(0.5f, 1f / 60f, 0.02f, 0.25f, 0.15f);
-                plain.Step(0.5f, 1f / 60f, 0.02f, 0.25f);
-            }
+            foreach (float time in times) Assert.True(time > 0f, $"never eased back under a level at {framesPerSecond} fps");
+            return times;
+        }
 
-            Assert.Equal(0.5f, banded.Value);
-            Assert.True(plain.Value > 0.55f, $"plain {plain.Value}");
+        private static void RecordCrossings(float[] levels, float[] times, float before, float after, int frame, float step) {
+            for (int index = 0; index < levels.Length; index++) {
+                if (times[index] > 0f || before < levels[index] || after >= levels[index]) continue;
+
+                times[index] = (frame - 1 + (before - levels[index]) / (before - after)) * step;
+            }
         }
 
         // Hand tremor: five random 4-12 Hz waves, scaled so the turn rate peaks at exactly the given rate.

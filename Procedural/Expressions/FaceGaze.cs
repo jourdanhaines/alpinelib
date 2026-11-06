@@ -9,7 +9,8 @@ namespace AlpineLib.Procedural.Expressions {
     /// <remarks>
     /// Every source has a dead zone and an ease-out curve that tops out below full, so small motion reads as nothing
     /// and large motion reads without pinning. The turn rate is low-passed first, over a fixed time, so a jittery or
-    /// coarsely polled turn leads by its average speed whatever the frame rate. A held sheet's downward glance
+    /// coarsely polled turn leads by its average speed whatever the frame rate; the lead then eases back on one
+    /// smooth curve (<see cref="FaceLeadFollower"/>) that is the same at any frame rate. A held sheet's downward glance
     /// (<see cref="Step"/>'s glance) is subtracted from the vertical and damps the pitch to
     /// <see cref="FaceExpressionTuning.glancePitchKeep"/> of itself.
     /// </remarks>
@@ -19,7 +20,7 @@ namespace AlpineLib.Procedural.Expressions {
         private const float BackwardFull = 0.9f;
         private const float SidedScan = 0.3f;
 
-        private readonly FaceSpring _turn = new FaceSpring();
+        private readonly FaceLeadFollower _turn = new FaceLeadFollower();
         private readonly FaceSpring _pitch = new FaceSpring();
         private readonly FaceSpring _move = new FaceSpring();
         private readonly FaceFollower _backward = new FaceFollower();
@@ -57,7 +58,7 @@ namespace AlpineLib.Procedural.Expressions {
         public void Step(in FaceSignalFrame signals, float glanceDown, float deltaTime, FaceExpressionTuning tuning) {
             float step = FaceMath.StepSeconds(deltaTime);
             float turnTarget = TurnTarget(SmoothTurnRate(signals.TurnRate, step, tuning.turnRateSeconds), tuning);
-            float turn = _turn.Step(turnTarget, step, tuning.turnLeadSeconds, tuning.turnSettleSeconds, tuning.turnTrackBand);
+            float turn = _turn.Step(turnTarget, step, tuning.turnLeadSeconds, tuning.turnSettleSeconds);
             float pitch = _pitch.Step(PitchTarget(signals.LookPitch, tuning), step, tuning.pitchLookSeconds, tuning.pitchSettleSeconds);
             float move = _move.Step(MoveTarget(in signals, step, tuning, out float backward), step, tuning.moveLookSeconds, tuning.moveSettleSeconds);
             _backward.Step(backward, step, tuning.backAttack, tuning.backRelease);

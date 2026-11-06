@@ -10,9 +10,9 @@ namespace AlpineLib.Procedural.Expressions {
     /// with a short time constant going up and a longer one coming down. The look sources (turn, pitch, move) each
     /// have a dead zone, a full point and a peak look below 1 (see <see cref="FaceGaze"/>); turn rates are degrees per
     /// second, pitch degrees, move speeds multiples of the base move speed. The turn rate is low-passed over
-    /// <see cref="turnRateSeconds"/> before it is shaped, and dips under <see cref="turnTrackBand"/> are tracked at
-    /// the lead time rather than settled, so a noisy turn leads like a smooth one. Public fields so engines can
-    /// serialize it.
+    /// <see cref="turnRateSeconds"/> before it is shaped, so a noisy turn leads like a smooth one; the lead follows
+    /// out over <see cref="turnLeadSeconds"/> (a time constant) and eases 95 % of the way back in
+    /// <see cref="turnSettleSeconds"/>. Public fields so engines can serialize it.
     /// </remarks>
     [Serializable]
     public sealed class FaceExpressionTuning {
@@ -87,7 +87,6 @@ namespace AlpineLib.Procedural.Expressions {
         public float backRelease = 0.35f;
 
         public float turnRateSeconds = 0.08f;
-        public float turnTrackBand = 0.15f;
 
         /// <summary>A fresh copy, so a caller can tweak values without touching a shared instance.</summary>
         public FaceExpressionTuning Clone() {
