@@ -66,6 +66,12 @@ namespace AlpineLib.Actors {
         /// </summary>
         public event Action JumpStarted;
 
+        /// <summary>
+        /// Raised when the actor's motion breaks off and starts over (see <see cref="MarkDiscontinuity"/>): what it was
+        /// doing before, a fall in particular, is not to be read as leading into what it does next.
+        /// </summary>
+        public event Action Discontinuity;
+
         /// <inheritdoc />
         public bool IsAlive { get; private set; } = true;
 
@@ -154,8 +160,9 @@ namespace AlpineLib.Actors {
         public float AirTime => _airState.AirTime;
 
         /// <summary>
-        /// Locomotion speed published to the animator on the last frame, as a multiple of the base move speed (0 standing):
-        /// a self-driven actor's commanded move, an externally driven one's replicated motion. Never includes a carrier's.
+        /// Locomotion speed asked of the body on the last frame, as a multiple of the base move speed (0 standing): a
+        /// self-driven actor's commanded move, an externally driven one's replicated motion. Never includes a carrier's.
+        /// What the animator's speed is fed, yet recorded with no animator or while <see cref="SuppressLocomotion"/> holds.
         /// </summary>
         public float AnimatedSpeed { get; private set; }
 
@@ -665,6 +672,7 @@ namespace AlpineLib.Actors {
             }
 
             transform.SetPositionAndRotation(worldPosition, Quaternion.Euler(0f, yawDegrees, 0f));
+            if (!IsExternallyDriven) MarkDiscontinuity();
         }
 
         /// <summary>Places the actor at a world position on a carrier, keeping its facing.</summary>
@@ -756,7 +764,19 @@ namespace AlpineLib.Actors {
         /// Hands control of this actor to a brain. The previous brain is simply replaced.
         /// </summary>
         public virtual void Possess(Controller controller) {
+            bool changed = !ReferenceEquals(Brain, controller);
             Brain = controller;
+            if (changed) MarkDiscontinuity();
+        }
+
+        /// <summary>
+        /// Declares a break in the actor's motion: the air state starts over from the current ground contact and
+        /// <see cref="Discontinuity"/> is raised. Self-driven placements and a change of brain do it already; a game
+        /// that snaps an externally driven actor somewhere new (a scripted teleport) calls it itself.
+        /// </summary>
+        public void MarkDiscontinuity() {
+            _airState.Restart(IsGrounded);
+            Discontinuity?.Invoke();
         }
 
         /// <summary>

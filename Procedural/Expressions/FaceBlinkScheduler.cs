@@ -1,5 +1,3 @@
-using System;
-
 namespace AlpineLib.Procedural.Expressions {
     /// <summary>
     /// When a face blinks: a random pause inside the tuning's interval, now and then a second blink right
@@ -39,9 +37,9 @@ namespace AlpineLib.Procedural.Expressions {
         /// <summary>Seconds until the next blink starts; 0 while one is under way.</summary>
         public float SecondsUntilNext => IsBlinking ? 0f : _untilNext;
 
-        /// <summary>Advances by <paramref name="deltaTime"/> seconds and returns the lid closure.</summary>
+        /// <summary>Advances by <paramref name="deltaTime"/> seconds (a bad step counts as 0) and returns the lid closure.</summary>
         public float Step(float deltaTime, FaceExpressionTuning tuning) {
-            float step = Math.Max(deltaTime, 0f);
+            float step = FaceMath.StepSeconds(deltaTime);
             if (IsBlinking) return AdvanceBlink(step, tuning);
 
             _untilNext -= step;
@@ -58,9 +56,9 @@ namespace AlpineLib.Procedural.Expressions {
 
         private float AdvanceBlink(float step, FaceExpressionTuning tuning) {
             _blinkElapsed += step;
-            float close = Math.Max(tuning.blinkCloseSeconds, 0f);
-            float shut = Math.Max(tuning.blinkShutSeconds, 0f);
-            float open = Math.Max(tuning.blinkOpenSeconds, 0f);
+            float close = FaceMath.NonNegative(tuning.blinkCloseSeconds);
+            float shut = FaceMath.NonNegative(tuning.blinkShutSeconds);
+            float open = FaceMath.NonNegative(tuning.blinkOpenSeconds);
             if (_blinkElapsed >= close + shut + open) {
                 EndBlink(_blinkElapsed - (close + shut + open), tuning);
                 return Value = 0f;
@@ -74,7 +72,7 @@ namespace AlpineLib.Procedural.Expressions {
             if (_doublePending) {
                 _doublePending = false;
                 DoubleBlinkCount++;
-                _untilNext = Math.Max(tuning.doubleBlinkGap, 0f) - overrun;
+                _untilNext = FaceMath.NonNegative(tuning.doubleBlinkGap) - overrun;
                 return;
             }
 
@@ -97,8 +95,8 @@ namespace AlpineLib.Procedural.Expressions {
         }
 
         private float NextPause(FaceExpressionTuning tuning) {
-            float shortest = Math.Max(tuning.blinkIntervalMin, 0f);
-            float longest = Math.Max(tuning.blinkIntervalMax, shortest);
+            float shortest = FaceMath.NonNegative(tuning.blinkIntervalMin);
+            float longest = tuning.blinkIntervalMax > shortest ? tuning.blinkIntervalMax : shortest;
             return shortest + (longest - shortest) * NextUnit();
         }
 

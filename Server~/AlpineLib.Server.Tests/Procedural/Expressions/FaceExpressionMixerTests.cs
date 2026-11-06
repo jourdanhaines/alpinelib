@@ -107,10 +107,79 @@ namespace AlpineLib.Server.Tests.Procedural.Expressions {
             foreach (float weight in mixer.Weights) Assert.False(float.IsNaN(weight));
         }
 
+        [Fact]
+        public void LandingEndsTheWorryWithoutItComingBack() {
+            var mixer = Quiet();
+            Fall(mixer, 1.5f);
+            float before = mixer.WeightOf(FaceChannel.Worried);
+            mixer.Step(new FaceSignalFrame { Landed = true, LandAirTime = 1.5f }, Step);
+            float previous = mixer.WeightOf(FaceChannel.Worried);
+            for (int frame = 0; frame < 120; frame++) {
+                mixer.Step(new FaceSignalFrame(), Step);
+                float worried = mixer.WeightOf(FaceChannel.Worried);
+
+                Assert.True(worried <= previous + 1e-6f, $"frame {frame}: worried rose {previous} -> {worried}");
+                Assert.True(mixer.ExpressionSum() <= 1f + 1e-5f);
+                previous = worried;
+            }
+
+            Assert.True(before > mixer.Tuning.worriedPeak * 0.9f, $"fell worried {before}");
+            Assert.Equal(0f, previous);
+        }
+
+        [Fact]
+        public void HopRightAfterAHardLandingOpensWide() {
+            var mixer = Quiet();
+            Fall(mixer, 1.5f);
+            mixer.Step(new FaceSignalFrame { Landed = true, LandAirTime = 1.5f }, Step);
+            Run(mixer, new FaceSignalFrame(), 0.1f, FaceChannel.Squash);
+            float squashBefore = mixer.WeightOf(FaceChannel.Squash);
+            mixer.Step(new FaceSignalFrame { Jumped = true, Airborne = true }, Step);
+            float wide = 0f;
+            float squash = mixer.WeightOf(FaceChannel.Squash);
+            for (int frame = 0; frame < 30; frame++) {
+                mixer.Step(new FaceSignalFrame { Airborne = true, AirTime = frame * Step }, Step);
+                float next = mixer.WeightOf(FaceChannel.Squash);
+
+                Assert.True(next <= squash + 1e-6f, $"frame {frame}: squash rose {squash} -> {next}");
+                Assert.True(mixer.ExpressionSum() <= 1f + 1e-5f);
+                squash = next;
+                wide = Math.Max(wide, mixer.WeightOf(FaceChannel.Wide));
+            }
+
+            Assert.True(squashBefore > 0.7f, $"squash before the hop {squashBefore}");
+            Assert.True(wide >= mixer.Tuning.jumpWide * 0.95f, $"wide {wide}");
+        }
+
+        [Fact]
+        public void LandingRightAfterATakeOffSquashes() {
+            var mixer = Quiet();
+            mixer.Step(new FaceSignalFrame { Jumped = true, Airborne = true }, Step);
+            Run(mixer, new FaceSignalFrame { Airborne = true, AirTime = 0.3f }, 0.1f, FaceChannel.Wide);
+            mixer.Step(new FaceSignalFrame { Landed = true, LandAirTime = 1.2f }, Step);
+            float squash = Run(mixer, new FaceSignalFrame(), 0.1f, FaceChannel.Squash);
+
+            Assert.True(squash >= mixer.Tuning.landSquashMax * 0.95f, $"squash {squash}");
+        }
+
+        [Fact]
+        public void JumpOnTheLandingStepIsTheNewerReaction() {
+            var mixer = Quiet();
+            mixer.Step(new FaceSignalFrame { Landed = true, Jumped = true, Airborne = true, LandAirTime = 1.5f }, Step);
+            float wide = Run(mixer, new FaceSignalFrame { Airborne = true }, 0.1f, FaceChannel.Wide);
+
+            Assert.True(wide >= mixer.Tuning.jumpWide * 0.95f, $"wide {wide}");
+            Assert.True(mixer.ExpressionSum() <= 1f + 1e-5f);
+        }
+
         // Blinks pushed far away so the other channels read alone.
         private static FaceExpressionMixer Quiet() {
             var tuning = new FaceExpressionTuning { blinkIntervalMin = 1000f, blinkIntervalMax = 1000f };
             return new FaceExpressionMixer(tuning, 1u);
+        }
+
+        private static void Fall(FaceExpressionMixer mixer, float seconds) {
+            for (float time = 0f; time < seconds; time += Step) mixer.Step(new FaceSignalFrame { Airborne = true, AirTime = time }, Step);
         }
 
         private static float LandPeak(float airTime) {

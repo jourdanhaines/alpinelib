@@ -15,7 +15,9 @@ namespace AlpineLib.Face {
     /// drivers, after the pose stack. A piece drawn as shadows only (first person) keeps stepping but is not
     /// written, so it is right again the frame it shows. Disabling the driver puts every piece back at rest.
     /// Each driver draws its own blink seed, so every client's faces blink on their own; pieces on one face
-    /// share the seed and blink together. Play mode only; gates call <see cref="Refresh"/> and <see cref="Step"/>.
+    /// share the seed and blink together. The signals are sampled every step, worn eyes or not, so their edges never
+    /// go stale; a refresh mid-flight lets that flight pass unremarked (no worry, no landing). Play mode only; gates
+    /// call <see cref="Refresh"/> and <see cref="Step"/>.
     /// </remarks>
     [DefaultExecutionOrder(ActorExecutionOrder.BlendShapeDrivers)]
     [DisallowMultipleComponent]
@@ -30,6 +32,7 @@ namespace AlpineLib.Face {
         private CharacterAppearance _subscribed;
         private IFaceSignals _signals;
         private bool _hasSignalsOverride;
+        private bool _ignoringFlight;
         private uint _seed;
 
         /// <summary>Worn pieces being driven.</summary>
@@ -68,6 +71,7 @@ namespace AlpineLib.Face {
         public void Refresh() {
             WriteRest();
             _targets.Clear();
+            _ignoringFlight = true;
             if (_seed == 0u) _seed = (uint)Random.Range(1, int.MaxValue);
 
             foreach (FacePoseSet poseSet in GetComponentsInChildren<FacePoseSet>(true)) {
@@ -82,9 +86,9 @@ namespace AlpineLib.Face {
 
         /// <summary>Samples the signals once and advances every piece by <paramref name="deltaTime"/> seconds.</summary>
         public void Step(float deltaTime) {
+            LastSignals = SkipUnseenFlight(ResolveSignals()?.Sample(deltaTime) ?? default);
             if (_targets.Count == 0) return;
 
-            LastSignals = ResolveSignals()?.Sample(deltaTime) ?? default;
             FaceSignalFrame signals = LastSignals;
             foreach (FaceExpressionTarget target in _targets) {
                 target.Mixer.Step(in signals, deltaTime);
@@ -112,6 +116,16 @@ namespace AlpineLib.Face {
                 Debug.LogWarning($"{nameof(FaceExpressionDriver)} on '{name}': '{signalSource.GetType().Name}' does not implement {nameof(IFaceSignals)}.", this);
                 signalSource = null;
             }
+        }
+
+        // Until the body takes off or stands after a refresh, the flight under way began before these faces did.
+        private FaceSignalFrame SkipUnseenFlight(FaceSignalFrame signals) {
+            if (!_ignoringFlight) return signals;
+
+            _ignoringFlight = signals.Airborne && !signals.Jumped;
+            signals.Landed = false;
+            if (_ignoringFlight) signals.AirTime = 0f;
+            return signals;
         }
 
         private IFaceSignals ResolveSignals() {

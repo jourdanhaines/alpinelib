@@ -29,6 +29,13 @@ namespace AlpineLib.Actors {
             Grounded = false;
         }
 
+        /// <summary>Starts over from <paramref name="isGrounded"/>: no air time, no jump grace (a teleport, a new brain).</summary>
+        public void Restart(bool isGrounded) {
+            _graceRemaining = 0f;
+            Grounded = isGrounded;
+            AirTime = 0f;
+        }
+
         /// <summary>Advances by one frame of real ground contact.</summary>
         public void Tick(bool isGrounded, float deltaTime) {
             if (!isGrounded) {

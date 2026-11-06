@@ -59,6 +59,29 @@ namespace AlpineLib.Server.Tests.Procedural.Expressions {
             Assert.InRange(TimeToFirstBlink(blink, tuning), tuning.blinkIntervalMin - Step, tuning.blinkIntervalMax + Step);
         }
 
+        [Fact]
+        public void BadStepsNeverStopTheBlinking() {
+            var tuning = new FaceExpressionTuning { blinkIntervalMin = 0.5f, blinkIntervalMax = 0.5f, doubleBlinkChance = 0f };
+            var blink = new FaceBlinkScheduler(7u, tuning);
+            blink.Step(float.NaN, tuning);
+            blink.Step(float.PositiveInfinity, tuning);
+            blink.Step(-1f, tuning);
+            Assert.False(float.IsNaN(blink.Value));
+            Assert.Equal(0.5f, blink.SecondsUntilNext, 4);
+
+            for (float time = 0f; time < 3f; time += Step) Assert.False(float.IsNaN(blink.Step(Step, tuning)));
+            Assert.True(blink.BlinkCount >= 4, $"{blink.BlinkCount} blinks");
+        }
+
+        [Fact]
+        public void BadTuningNeverPoisonsTheLids() {
+            var tuning = new FaceExpressionTuning { blinkIntervalMin = 0.2f, blinkIntervalMax = float.NaN, blinkCloseSeconds = float.NaN, doubleBlinkGap = float.NaN };
+            var blink = new FaceBlinkScheduler(3u, tuning);
+            for (float time = 0f; time < 3f; time += Step) Assert.False(float.IsNaN(blink.Step(Step, tuning)));
+
+            Assert.True(blink.BlinkCount > 0);
+        }
+
         private static float TimeToFirstBlink(FaceBlinkScheduler blink, FaceExpressionTuning tuning) {
             for (float time = 0f; time < tuning.blinkIntervalMax * 2f; time += Step) {
                 blink.Step(Step, tuning);
