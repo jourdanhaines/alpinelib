@@ -60,6 +60,12 @@ namespace AlpineLib.Actors {
         /// </summary>
         public event Action<bool, bool> OnHoldingPropChanged;
 
+        /// <summary>
+        /// Raised when a jump starts: on the step the motor takes off, or when an externally driven actor is told
+        /// to jump. Fires whether or not there is an animator.
+        /// </summary>
+        public event Action JumpStarted;
+
         /// <inheritdoc />
         public bool IsAlive { get; private set; } = true;
 
@@ -140,6 +146,18 @@ namespace AlpineLib.Actors {
         /// the held pose runs one code path whoever the brain is.
         /// </summary>
         public bool HoldingProp { get; private set; }
+
+        /// <summary>Ground contact as the animator sees it: a jump reads as airborne from take-off (see <see cref="AnimatorAirState"/>).</summary>
+        public bool AnimatorGrounded => _airState.Grounded;
+
+        /// <summary>Seconds spent really off the ground, zero on it; what the animator's air time reads.</summary>
+        public float AirTime => _airState.AirTime;
+
+        /// <summary>
+        /// Locomotion speed published to the animator on the last frame, as a multiple of the base move speed (0 standing):
+        /// a self-driven actor's commanded move, an externally driven one's replicated motion. Never includes a carrier's.
+        /// </summary>
+        public float AnimatedSpeed { get; private set; }
 
         public float CapsuleHeight => _capsule != null ? _capsule.height : 0f;
         public float CapsuleRadius => _capsule != null ? _capsule.radius : 0f;
@@ -458,16 +476,24 @@ namespace AlpineLib.Actors {
         }
 
         protected virtual void LateUpdate() {
-            _airState.Tick(IsGrounded, Time.deltaTime);
+            FinishFrame(Time.deltaTime);
+        }
+
+        /// <summary>
+        /// Ends a frame of <paramref name="deltaTime"/> seconds: ticks the air state, publishes the locomotion parameters
+        /// and clears this frame's intent; what <c>LateUpdate</c> runs, public so gates can step it with explicit times.
+        /// </summary>
+        public void FinishFrame(float deltaTime) {
+            _airState.Tick(IsGrounded, deltaTime);
 
             if (!_isLocomotionSuppressed) {
-                WriteLocomotionParameters();
+                WriteLocomotionParameters(deltaTime);
             }
 
-            float deltaTime = Time.deltaTime;
             _measuredVelocity = deltaTime > 0f ? (transform.position - _previousRenderPosition) / deltaTime : Vector3.zero;
             _previousRenderPosition = transform.position;
 
+            AnimatedSpeed = _currentSpeed;
             _currentSpeed = 0f;
             _currentTurn = 0f;
             _currentStrafe = Vector2.zero;
@@ -475,10 +501,10 @@ namespace AlpineLib.Actors {
             CommandedMoveDirection = Vector3.zero;
         }
 
-        private void WriteLocomotionParameters() {
+        private void WriteLocomotionParameters(float deltaTime) {
             if (Animator == null) return;
 
-            Animator.SetFloat(_speedParameterHash, _currentSpeed, speedDampTime, Time.deltaTime);
+            Animator.SetFloat(_speedParameterHash, _currentSpeed, speedDampTime, deltaTime);
             Animator.SetFloat(_turnParameterHash, _currentTurn);
 
             if (_hasGroundedParameter) {
@@ -491,8 +517,8 @@ namespace AlpineLib.Actors {
 
             if (!_hasStrafeParameters) return;
 
-            Animator.SetFloat(_strafeXHash, _currentStrafe.x, StrafeDampTime, Time.deltaTime);
-            Animator.SetFloat(_strafeYHash, _currentStrafe.y, StrafeDampTime, Time.deltaTime);
+            Animator.SetFloat(_strafeXHash, _currentStrafe.x, StrafeDampTime, deltaTime);
+            Animator.SetFloat(_strafeYHash, _currentStrafe.y, StrafeDampTime, deltaTime);
         }
 
         /// <summary>
@@ -515,6 +541,7 @@ namespace AlpineLib.Actors {
         }
 
         private void TriggerJumpAnimation() {
+            JumpStarted?.Invoke();
             if (Animator == null) return;
 
             // Ground contact lags the jump it belongs to; the air state bridges the gap.
