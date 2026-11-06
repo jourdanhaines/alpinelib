@@ -65,7 +65,9 @@ namespace AlpineLib.Networking {
         [Tooltip("Degrees per second the pawn may turn towards its reported facing.")]
         [SerializeField] private float turnSpeed = 720f;
 
-        [Tooltip("Metres a sample may land from where the pawn stands, beyond its reported travel, before it is a snap (a respawn, a teleport): placed facing and all, as a break in its motion.")]
+        [Tooltip("Metres a sample may land from where the pawn stands, beyond a quarter second of its reported travel, "
+            + "before it is a snap (a respawn, a teleport): placed facing and all, as a break in its motion. "
+            + "Boarding or leaving a carrier is never a snap.")]
         [SerializeField] private float snapDistance = 3f;
 
         /// <summary>
@@ -84,6 +86,9 @@ namespace AlpineLib.Networking {
 
         /// <summary>Speed below which a pawn is animated as standing rather than travelling, in m/s.</summary>
         public const float RestSpeedThreshold = 0.05f;
+
+        /// <summary>Seconds of reported travel a sample may land beyond <c>snapDistance</c> and still be a stride.</summary>
+        public const float SnapReachSeconds = 0.25f;
 
         /// <summary>
         /// How long this pawn may be held on an unresolvable carrier before
@@ -124,6 +129,8 @@ namespace AlpineLib.Networking {
         private bool _isHeld;
         private bool _hasDriven;
         private bool _hasFollowed;
+        private bool _followedOnCarrier;
+        private ushort _followedCarrierId;
         private readonly HashSet<ushort> _warnedCarrierIds = new HashSet<ushort>();
 
         /// <inheritdoc />
@@ -277,7 +284,9 @@ namespace AlpineLib.Networking {
 
         /// <summary>
         /// Applies one state sampled from the remote stream, <paramref name="deltaTime"/> seconds after the last,
-        /// exactly as the per-frame follow does: for a game or a gate feeding a stream of its own.
+        /// through the per-frame follow's frame resolve, snap test and drive: for a game or a gate feeding a stream
+        /// of its own. Unlike the per-frame follow it skips the alive, bound and ownership guards, and the mover
+        /// render offset (which needs the session's replication).
         /// </summary>
         public void ApplySample(in PawnState sampled, float deltaTime) {
             if (_character == null) return;
@@ -301,24 +310,30 @@ namespace AlpineLib.Networking {
                 state.Position += moverOffset;
             }
 
-            bool snapped = IsSnap(in state, deltaTime);
+            // Boarding or leaving swaps the frame the pawn is drawn in, which jumps it by the carrier's travel
+            // over the interpolation delay; that is a stride, not a respawn.
+            bool carrierChanged = _hasFollowed && (wasCarrierRelative != _followedOnCarrier
+                || (wasCarrierRelative && carrierId != _followedCarrierId));
+            bool snapped = !carrierChanged && IsSnap(in state);
             _hasFollowed = true;
+            _followedOnCarrier = wasCarrierRelative;
+            _followedCarrierId = carrierId;
             Drive(in state, ResolveCarrierRoot(carrierId), snapped, deltaTime);
         }
 
         /// <summary>
         /// True when <paramref name="state"/> lands further from where the pawn stands than its reported speed
-        /// could carry it this frame, or is the first state followed: a respawn, a teleport, not a stride.
+        /// could carry it in <see cref="SnapReachSeconds"/>, or is the first state followed: a respawn, a teleport,
+        /// not a stride. A fixed reach, so the same jump reads the same at any frame rate.
         /// </summary>
         /// <remarks>
         /// Measured against the pawn's own transform, which rides its carrier and every origin shift, so neither a
         /// moving deck nor a rebased world reads as a jump.
         /// </remarks>
-        private bool IsSnap(in PawnState state, float deltaTime) {
+        private bool IsSnap(in PawnState state) {
             if (!_hasFollowed) return true;
 
-            float frameSeconds = Mathf.Clamp(float.IsNaN(deltaTime) ? 0f : deltaTime, 0f, 0.25f);
-            float reach = Mathf.Max(0f, snapDistance) + state.Velocity.Length() * frameSeconds * 2f;
+            float reach = Mathf.Max(0f, snapDistance) + state.Velocity.Length() * SnapReachSeconds;
             return (state.Position.ToUnity() - _character.transform.position).sqrMagnitude > reach * reach;
         }
 
