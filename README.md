@@ -138,6 +138,35 @@ the same session on the same process. Both are ordinary clients — the host has
 session that outlives its host simply transfers ownership, and the launcher's idle window stops an
 orphaned server once everybody has gone.
 
+### Mono and CoreCLR parity
+
+The collision narrow phase and `PawnMotor` must produce the same bits on the server (CoreCLR) and in
+the Unity editor (Mono, which evaluates float expressions in double and rounds once). Every `+ - * /`
+and `MathF.Sqrt` on that path is wrapped in an explicit `(float)` cast; keep it that way when editing
+`Netcode/Collision/**` or `PawnMotor`. `MonoParityGoldens` (in `Server~/AlpineLib.Server.Tests`, no
+test-framework dependency) hashes integer-built inputs; `MonoParityGoldenTests` pins the .NET values
+and the game re-runs the same class under the editor to gate them.
+
+To reproduce the editor's Mono without Unity running, compile `Netcode/**/*.cs`, `MonoParityGoldens.cs`
+and a small `Main` with the .NET SDK's Roslyn against Unity's Mono profile, then run it with the
+float32 optimisation off:
+
+```sh
+EDITOR=$HOME/Unity/Hub/Editor/<version>/Editor/Data/MonoBleedingEdge
+PROFILE=$EDITOR/lib/mono/unityjit-linux
+CSC=$(ls /usr/share/dotnet/sdk/*/Roslyn/bincore/csc.dll | tail -1)
+dotnet "$CSC" -nostdlib -noconfig -unsafe -t:exe -out:parity.exe \
+  -r:$PROFILE/mscorlib.dll -r:$PROFILE/System.dll -r:$PROFILE/System.Core.dll \
+  -r:$PROFILE/System.Numerics.dll -r:$PROFILE/System.Runtime.Serialization.dll -r:$PROFILE/System.Xml.dll \
+  -r:$PROFILE/Facades/netstandard.dll -r:$PROFILE/Facades/System.Memory.dll \
+  $(find Netcode -name '*.cs') Server~/AlpineLib.Server.Tests/MonoParityGoldens.cs Main.cs
+$EDITOR/bin/mono -O=-float32 parity.exe   # the editor's behaviour; plain `mono` matches CoreCLR
+```
+
+`Main.cs` only prints `MonoParityGoldens.ShapeHash()` and `MotorHash()`; both must equal the constants in
+`MonoParityGoldenTests`. `MathF.Atan2`/`Cos`/`Exp` come from each runtime's libm, so yaw is left out of
+the motor hash and those calls should stay off any path that feeds a position bit for bit.
+
 ## Animator contract
 
 An animator controller driven by the actor systems must satisfy the following. Nothing validates
