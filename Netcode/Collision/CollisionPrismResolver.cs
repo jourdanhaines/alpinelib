@@ -10,7 +10,10 @@ namespace AlpineLib.Netcode.Collision {
     /// The capsule is always upright, so its segment is one plan point with a height range and the test
     /// splits exactly into a plan query and a vertical clamp. The resolver's determinism rules hold here:
     /// floats only, fixed order, componentwise arithmetic, <c>+ - * /</c> plus Sqrt, Min, Max and Abs. Edges
-    /// are visited in index order and ties keep the lower index, so both ends pick the same face.
+    /// are visited in index order and ties keep the lower index, so both ends pick the same face. Every
+    /// arithmetic result is narrowed with an explicit <c>(float)</c> before it feeds the next operation:
+    /// Mono without its float32 optimisation (the Unity editor) evaluates float expressions in double and would
+    /// otherwise round compound expressions once instead of per operation, unlike CoreCLR.
     /// </remarks>
     internal static class CollisionPrismResolver {
         /// <summary>Squared separation too short to take a direction from; the interior rule takes over.</summary>
@@ -20,28 +23,35 @@ namespace AlpineLib.Netcode.Collision {
         public static bool TryGetPrismContact(in CapsulePose pose, in CollisionShape shape, out CollisionContact contact) {
             contact = default;
             float radius = pose.Radius;
-            float planX = pose.FootPosition.X - shape.Center.X;
-            float planZ = pose.FootPosition.Z - shape.Center.Z;
-            float reach = shape.Radius + radius;
-            if (planX * planX + planZ * planZ > reach * reach) {
+            float planX = (float)(pose.FootPosition.X - shape.Center.X);
+            float planZ = (float)(pose.FootPosition.Z - shape.Center.Z);
+            float reach = (float)(shape.Radius + radius);
+            float planSquared = SumOfSquares(planX, planZ);
+            if (planSquared > (float)(reach * reach)) {
                 return false;
             }
 
+            // The segment ends exactly as CapsulePose builds them, one rounded operation at a time.
             float halfHeight = shape.HalfExtents.Y;
-            float low = pose.SegmentBottom.Y - shape.Center.Y;
-            float high = pose.SegmentTop.Y - shape.Center.Y;
+            float bottom = (float)(pose.FootPosition.Y + radius);
+            float crown = (float)(pose.FootPosition.Y + pose.Height);
+            float top = (float)(crown - radius);
+            float low = (float)(bottom - shape.Center.Y);
+            float high = (float)(top - shape.Center.Y);
             float gapY = VerticalGap(low, high, halfHeight);
             bool inside = PlanQuery(in shape, planX, planZ, out float squaredDistance, out float closestX, out float closestZ, out int innerEdge, out float innerDepth);
             if (!inside) {
-                float separationSquared = squaredDistance + gapY * gapY;
-                if (separationSquared >= radius * radius) {
+                float separationSquared = (float)(squaredDistance + (float)(gapY * gapY));
+                if (separationSquared >= (float)(radius * radius)) {
                     return false;
                 }
 
                 if (separationSquared > DegenerateSquaredEpsilon) {
                     float distance = MathF.Sqrt(separationSquared);
-                    var normal = new Vector3((planX - closestX) / distance, gapY / distance, (planZ - closestZ) / distance);
-                    contact = new CollisionContact(normal, radius - distance, CollisionResolver.UnassignedShapeIndex);
+                    float awayX = (float)(planX - closestX);
+                    float awayZ = (float)(planZ - closestZ);
+                    var normal = new Vector3((float)(awayX / distance), (float)(gapY / distance), (float)(awayZ / distance));
+                    contact = new CollisionContact(normal, (float)(radius - distance), CollisionResolver.UnassignedShapeIndex);
                     return true;
                 }
             }
@@ -62,19 +72,19 @@ namespace AlpineLib.Netcode.Collision {
         public static bool TryGetPrismSurfaceHeight(in CollisionShape shape, float x, float z, out float height, out Vector3 normal) {
             height = 0f;
             normal = new Vector3(0f, 1f, 0f);
-            float planX = x - shape.Center.X;
-            float planZ = z - shape.Center.Z;
+            float planX = (float)(x - shape.Center.X);
+            float planZ = (float)(z - shape.Center.Z);
             int count = shape.Plan.Count;
             for (int index = 0; index < count; index++) {
                 shape.Plan.GetVertex(index, out float startX, out float startZ);
                 shape.Plan.GetVertex(NextIndex(index, count), out float endX, out float endZ);
-                float cross = (endX - startX) * (planZ - startZ) - (endZ - startZ) * (planX - startX);
+                float cross = Cross((float)(endX - startX), (float)(endZ - startZ), (float)(planX - startX), (float)(planZ - startZ));
                 if (cross < 0f) {
                     return false;
                 }
             }
 
-            height = shape.Center.Y + shape.HalfExtents.Y;
+            height = (float)(shape.Center.Y + shape.HalfExtents.Y);
             return true;
         }
 
@@ -105,23 +115,25 @@ namespace AlpineLib.Netcode.Collision {
             for (int index = 0; index < count; index++) {
                 shape.Plan.GetVertex(index, out float startX, out float startZ);
                 shape.Plan.GetVertex(NextIndex(index, count), out float endX, out float endZ);
-                float edgeX = endX - startX;
-                float edgeZ = endZ - startZ;
-                float offsetX = planX - startX;
-                float offsetZ = planZ - startZ;
-                float lengthSquared = edgeX * edgeX + edgeZ * edgeZ;
-                float signedDistance = (offsetX * edgeZ - offsetZ * edgeX) / MathF.Sqrt(lengthSquared);
+                float edgeX = (float)(endX - startX);
+                float edgeZ = (float)(endZ - startZ);
+                float offsetX = (float)(planX - startX);
+                float offsetZ = (float)(planZ - startZ);
+                float lengthSquared = SumOfSquares(edgeX, edgeZ);
+                float length = MathF.Sqrt(lengthSquared);
+                float signedDistance = (float)(Cross(offsetX, offsetZ, edgeX, edgeZ) / length);
                 if (signedDistance > largestSigned) {
                     largestSigned = signedDistance;
                     innerEdge = index;
                 }
 
-                float along = MathF.Min(MathF.Max((offsetX * edgeX + offsetZ * edgeZ) / lengthSquared, 0f), 1f);
-                float pointX = startX + edgeX * along;
-                float pointZ = startZ + edgeZ * along;
-                float gapX = planX - pointX;
-                float gapZ = planZ - pointZ;
-                float distanceSquared = gapX * gapX + gapZ * gapZ;
+                float projection = (float)((float)(offsetX * edgeX) + (float)(offsetZ * edgeZ));
+                float along = MathF.Min(MathF.Max((float)(projection / lengthSquared), 0f), 1f);
+                float pointX = (float)(startX + (float)(edgeX * along));
+                float pointZ = (float)(startZ + (float)(edgeZ * along));
+                float gapX = (float)(planX - pointX);
+                float gapZ = (float)(planZ - pointZ);
+                float distanceSquared = SumOfSquares(gapX, gapZ);
                 if (distanceSquared < squaredDistance) {
                     squaredDistance = distanceSquared;
                     closestX = pointX;
@@ -136,11 +148,11 @@ namespace AlpineLib.Netcode.Collision {
         /// <summary>How far the segment's height range [low, high] misses [−h, h]: negative below, positive above.</summary>
         private static float VerticalGap(float low, float high, float halfHeight) {
             if (high < -halfHeight) {
-                return high + halfHeight;
+                return (float)(high + halfHeight);
             }
 
             if (low > halfHeight) {
-                return low - halfHeight;
+                return (float)(low - halfHeight);
             }
 
             return 0f;
@@ -155,7 +167,7 @@ namespace AlpineLib.Netcode.Collision {
             }
 
             var normal = new Vector3(0f, gapY < 0f ? -1f : 1f, 0f);
-            contact = new CollisionContact(normal, radius - gap, CollisionResolver.UnassignedShapeIndex);
+            contact = new CollisionContact(normal, (float)(radius - gap), CollisionResolver.UnassignedShapeIndex);
             return true;
         }
 
@@ -172,9 +184,9 @@ namespace AlpineLib.Netcode.Collision {
             float innerDepth,
             float radius,
             out CollisionContact contact) {
-            float upDepth = (halfHeight - low) + radius;
-            float sideDepth = innerDepth + radius;
-            float downDepth = (high + halfHeight) + radius;
+            float upDepth = (float)((float)(halfHeight - low) + radius);
+            float sideDepth = (float)(innerDepth + radius);
+            float downDepth = (float)((float)(high + halfHeight) + radius);
             float shallowest = MathF.Min(upDepth, MathF.Min(sideDepth, downDepth));
             if (upDepth <= shallowest) {
                 contact = new CollisionContact(new Vector3(0f, 1f, 0f), upDepth, CollisionResolver.UnassignedShapeIndex);
@@ -194,10 +206,24 @@ namespace AlpineLib.Netcode.Collision {
             int count = shape.Plan.Count;
             shape.Plan.GetVertex(edge, out float startX, out float startZ);
             shape.Plan.GetVertex(NextIndex(edge, count), out float endX, out float endZ);
-            float edgeX = endX - startX;
-            float edgeZ = endZ - startZ;
-            float length = MathF.Sqrt(edgeX * edgeX + edgeZ * edgeZ);
-            return new Vector3(edgeZ / length, 0f, -edgeX / length);
+            float edgeX = (float)(endX - startX);
+            float edgeZ = (float)(endZ - startZ);
+            float length = MathF.Sqrt(SumOfSquares(edgeX, edgeZ));
+            return new Vector3((float)(edgeZ / length), 0f, (float)(-edgeX / length));
+        }
+
+        // x² + z², each product narrowed to float before the sum, so no runtime keeps a wider intermediate.
+        private static float SumOfSquares(float x, float z) {
+            float xx = (float)(x * x);
+            float zz = (float)(z * z);
+            return (float)(xx + zz);
+        }
+
+        // ax·bz − az·bx with the same narrowing.
+        private static float Cross(float ax, float az, float bx, float bz) {
+            float first = (float)(ax * bz);
+            float second = (float)(az * bx);
+            return (float)(first - second);
         }
 
         private static int NextIndex(int index, int count) {
