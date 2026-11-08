@@ -16,8 +16,8 @@ namespace AlpineLib.Server.Tests {
         private const int RandomPoses = 10000;
 
         /// <summary>
-        /// FNV-1a 64 of every contact and support output over <see cref="GoldenInputs"/>. The game project
-        /// re-runs the same inputs under Mono and must reach the same value.
+        /// FNV-1a 64 of every contact and support output over <see cref="GoldenInputs"/>, checked here on .NET only.
+        /// The Mono check lives in the game's Unity smoke gate (added by the game package), which must reach this value.
         /// </summary>
         private const ulong GoldenContactHash = 0xE7F2B71C41C1F340UL;
 
@@ -314,7 +314,7 @@ namespace AlpineLib.Server.Tests {
             edgeZ = (double)nextZ - z;
         }
 
-        // A convex prism: 3–8 points on a turned ellipse at jittered, ordered angles.
+        // A convex prism: 3–16 points on a turned ellipse at jittered, ordered angles.
         private static CollisionShape RandomPrism(Random random) {
             int count = 3 + random.Next(14);
             double radiusA = 0.3 + random.NextDouble() * 2.7, radiusB = 0.3 + random.NextDouble() * 2.7, turn = random.NextDouble() * Math.PI * 2.0;

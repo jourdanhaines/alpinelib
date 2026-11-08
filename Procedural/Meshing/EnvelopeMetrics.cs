@@ -9,7 +9,7 @@ namespace AlpineLib.Procedural.Meshing {
     /// walkable collider tops (an invisible ledge). Sample spacing is <see cref="Spacing"/>; distances are capped.
     /// </summary>
     public sealed class EnvelopeMetrics {
-        private const double CoveredTolerance = 0.02;
+        private const double CoveredTolerance = TriangleProximity.RimTolerance;
         private const double WalkableNormal = 0.7071;
         private const double TopLift = 0.02;
         private const double OverTop = 0.05;

@@ -8,7 +8,8 @@ namespace AlpineLib.Procedural.Meshing {
     /// faces bucketed on a plan grid so gates can sample thousands of points.
     /// </summary>
     public sealed class TriangleProximity {
-        private const double RimTolerance = 0.02;
+        /// <summary>How close to a face outline a column counts as over it; the metrics' covered tolerance too.</summary>
+        public const double RimTolerance = 0.02;
 
         private readonly IReadOnlyList<Vector3> _corners;
         private readonly double _cell;
@@ -55,7 +56,8 @@ namespace AlpineLib.Procedural.Meshing {
         /// <summary>
         /// True when (x, y, z) lies inside the look's solid: along a ray toward +x at that height the faces crossed
         /// leaving (normal toward +x) and entering differ in number, either winding as long as it is consistent.
-        /// Overlapping shells add up, and shells need no caps since only walls are crossed.
+        /// Overlapping shells add up, and shells need no caps since only walls are crossed. Needs closed, consistently
+        /// wound shells: a lone open sheet makes points behind it read as inside.
         /// </summary>
         public bool IsInside(double x, double y, double z) {
             int winding = 0;
@@ -85,13 +87,18 @@ namespace AlpineLib.Procedural.Meshing {
             return normalX > 0.0 ? 1 : normalX < 0.0 ? -1 : 0;
         }
 
+        private static Vector3 Corner(Vector3 a, Vector3 b, Vector3 c, int index) {
+            int corner = index % 3;
+            return corner == 0 ? a : corner == 1 ? b : c;
+        }
+
         // Where the triangle's slice at height y meets the line z = const, when it does.
         private static bool TrySliceCrossing(Vector3 a, Vector3 b, Vector3 c, double y, double z, out double crossX) {
             crossX = 0.0;
             int found = 0;
             double firstX = 0.0, firstZ = 0.0, secondX = 0.0, secondZ = 0.0;
-            foreach ((Vector3 start, Vector3 end) in new[] { (a, b), (b, c), (c, a) }) {
-                if ((start.Y - y) * (end.Y - y) >= 0.0 && !(start.Y < y && end.Y >= y) && !(end.Y < y && start.Y >= y)) continue;
+            for (int edge = 0; edge < 3; edge++) {
+                Vector3 start = Corner(a, b, c, edge), end = Corner(a, b, c, edge + 1);
                 if ((start.Y < y) == (end.Y < y)) continue;
 
                 double share = (y - start.Y) / ((double)end.Y - start.Y);
@@ -116,7 +123,8 @@ namespace AlpineLib.Procedural.Meshing {
         private static bool TryRimHeight(Vector3 a, Vector3 b, Vector3 c, double x, double z, out double height) {
             height = double.NegativeInfinity;
             bool found = false;
-            foreach ((Vector3 start, Vector3 end) in new[] { (a, b), (b, c), (c, a) }) {
+            for (int edge = 0; edge < 3; edge++) {
+                Vector3 start = Corner(a, b, c, edge), end = Corner(a, b, c, edge + 1);
                 double edgeX = (double)end.X - start.X, edgeZ = (double)end.Z - start.Z;
                 double lengthSquared = edgeX * edgeX + edgeZ * edgeZ;
                 double along = lengthSquared > 0.0 ? Math.Max(0.0, Math.Min(1.0, ((x - start.X) * edgeX + (z - start.Z) * edgeZ) / lengthSquared)) : 0.0;

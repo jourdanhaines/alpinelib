@@ -8,7 +8,7 @@ namespace AlpineLib.Netcode.Collision {
     /// A short list of fixed-size, closed-form primitives is the whole vocabulary on purpose. A trimesh
     /// collider would drag an acceleration structure, a triangle-order dependency and a pile of
     /// degenerate-case arithmetic onto the sim path, and every one of those is a place where the server and
-    /// the client could disagree by a last bit. The prism is still such a primitive: at most eight plan
+    /// the client could disagree by a last bit. The prism is still such a primitive: at most sixteen plan
     /// vertices stored inline, tested by one fixed loop. The exporter rejects mesh and terrain colliders.
     /// </remarks>
     public enum CollisionShapeType : byte {

@@ -29,7 +29,6 @@ namespace AlpineLib.Procedural.Meshing {
         // Pairs whose merge missed target; targets only tighten, so they would miss again.
         private readonly HashSet<(PrismPiece, PrismPiece)> _failedMerges = new HashSet<(PrismPiece, PrismPiece)>();
 
-
         // A sample in a touched cell lies within a cell diagonal of the look.
         private readonly double _occupiedReach;
 
@@ -247,26 +246,29 @@ namespace AlpineLib.Procedural.Meshing {
             int merges = 0;
             for (int first = 0; first < Pieces.Count; first++) {
                 for (int second = first + 1; second < Pieces.Count; second++) {
-                    if (!AreNear(Pieces[first], Pieces[second]) || _failedMerges.Contains((Pieces[first], Pieces[second]))) continue;
-                    if (!IsMeasured(Pieces[first]) || !IsMeasured(Pieces[second])) continue;
-                    if (!BridgesHold(Pieces[first], Pieces[second])) {
-                        _failedMerges.Add((Pieces[first], Pieces[second]));
-                        continue;
-                    }
+                    if (!TryMerge(first, second)) continue;
 
-                    PrismPiece merged = Merged(Pieces[first], Pieces[second]);
-                    if (!Evaluate(merged) || merged.Excess > 0.0 || merged.FellBack) {
-                        _failedMerges.Add((Pieces[first], Pieces[second]));
-                        continue;
-                    }
-
-                    Pieces[first] = merged;
-                    Pieces.RemoveAt(second);
                     second = first;
                     merges++;
                 }
             }
             return merges;
+        }
+
+        // Replaces pieces first and second by their merge when it meets target; failed pairs are remembered.
+        private bool TryMerge(int first, int second) {
+            PrismPiece one = Pieces[first], other = Pieces[second];
+            if (!AreNear(one, other) || _failedMerges.Contains((one, other)) || !IsMeasured(one) || !IsMeasured(other)) return false;
+
+            PrismPiece merged = BridgesHold(one, other) ? Merged(one, other) : null;
+            if (merged == null || !Evaluate(merged) || merged.Excess > 0.0 || merged.FellBack) {
+                _failedMerges.Add((one, other));
+                return false;
+            }
+
+            Pieces[first] = merged;
+            Pieces.RemoveAt(second);
+            return true;
         }
 
         // True when every layer the piece spans is measured in this phase, so a merge with it can be judged whole.
@@ -461,23 +463,25 @@ namespace AlpineLib.Procedural.Meshing {
                 Bounds(part, out double _, out double _, out double minZ, out double maxZ);
                 int firstRow = Math.Max(0, (int)Math.Floor((minZ - Frame.OriginZ) / Frame.Cell));
                 int lastRow = Math.Min(Frame.Rows - 1, (int)Math.Floor((maxZ - Frame.OriginZ) / Frame.Cell));
-                for (int row = firstRow; row <= lastRow; row++) {
-                    double z = Frame.OriginZ + (row + 0.5) * Frame.Cell;
-                    if (!TrySpanAt(part, z, out double fromX, out double toX)) continue;
-
-                    int fromColumn = Math.Max(0, (int)Math.Ceiling((fromX - Frame.OriginX) / Frame.Cell - 0.5));
-                    int toColumn = Math.Min(Frame.Columns - 1, (int)Math.Floor((toX - Frame.OriginX) / Frame.Cell - 0.5));
-                    if (fromColumn > toColumn || !footprint.TryInteriorSpan(row, fromColumn, toColumn, out int first, out int last)) continue;
-
-                    if (spans.TryGetValue((partIndex, row), out (int First, int Last) span)) {
-                        first = Math.Min(first, span.First);
-                        last = Math.Max(last, span.Last);
-                    }
-                    spans[(partIndex, row)] = (first, last);
-                    added = true;
-                }
+                for (int row = firstRow; row <= lastRow; row++) added |= FoldRow(part, partIndex, row, footprint, spans);
             }
             return added;
+        }
+
+        private bool FoldRow(List<PlanPoint> part, int partIndex, int row, PlanFootprint footprint, Dictionary<(int Part, int Row), (int First, int Last)> spans) {
+            double z = Frame.OriginZ + (row + 0.5) * Frame.Cell;
+            if (!TrySpanAt(part, z, out double fromX, out double toX)) return false;
+
+            int fromColumn = Math.Max(0, (int)Math.Ceiling((fromX - Frame.OriginX) / Frame.Cell - 0.5));
+            int toColumn = Math.Min(Frame.Columns - 1, (int)Math.Floor((toX - Frame.OriginX) / Frame.Cell - 0.5));
+            if (fromColumn > toColumn || !footprint.TryInteriorSpan(row, fromColumn, toColumn, out int first, out int last)) return false;
+
+            if (spans.TryGetValue((partIndex, row), out (int First, int Last) span)) {
+                first = Math.Min(first, span.First);
+                last = Math.Max(last, span.Last);
+            }
+            spans[(partIndex, row)] = (first, last);
+            return true;
         }
 
         // Corners of the folded span ends, in part and row order so the hull input is the same on every run.

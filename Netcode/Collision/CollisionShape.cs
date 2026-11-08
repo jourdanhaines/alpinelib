@@ -24,7 +24,9 @@ namespace AlpineLib.Netcode.Collision {
     /// </para>
     /// <para>
     /// The wire form is every field in declaration order at full float precision; a prism appends its vertex
-    /// count and its (x, z) pairs, so every other primitive keeps its exact bytes. Geometry is exported
+    /// count and its (x, z) pairs, so every other primitive keeps its exact bytes. The inline plan makes every shape
+    /// about 204 bytes (140 before), copied by value. A reader built for fewer vertices rejects a longer plan, so
+    /// <c>.geo</c> files and wire peers move to sixteen-vertex plans together. Geometry is exported
     /// once and hashed, not streamed per tick, so there is nothing to gain from quantizing it and a great
     /// deal to lose: a rounded wall is a wall in a different place on each end.
     /// </para>
@@ -239,7 +241,8 @@ namespace AlpineLib.Netcode.Collision {
                 + MathF.Abs(AxisForward.Z) * HalfExtents.Z;
         }
 
-        // The early-reject radius rounded up to the 1e-4 grid plus one step, so the float cast never undercuts it.
+        // The early-reject radius rounded up to the 1e-4 grid plus one step, so the float cast never undercuts it. Holds
+        // up to a radius of about 2 km, where half a float ulp outgrows the 1e-4 margin; prisms are far smaller.
         private static float PrismRadius(double radiusSquared) {
             return (float)(Math.Ceiling(Math.Sqrt(radiusSquared) * 10000.0) / 10000.0 + 0.0001);
         }
