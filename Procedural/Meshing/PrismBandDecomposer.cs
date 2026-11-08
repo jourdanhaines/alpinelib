@@ -4,47 +4,10 @@ using System.Numerics;
 
 namespace AlpineLib.Procedural.Meshing {
     /// <summary>
-    /// Splits one height band of a look into convex prism pieces for <see cref="PrismEnvelopeFitter"/>. The faces
-    /// are clipped to the slab; a piece's plan is the exact hull of its fragments, enclosed to the vertex budget
-    /// and cleaned outward. While the deepest inward gap from a plan edge to the first occupied raster cell
-    /// exceeds the notch tolerance, the piece is cut on the line through that notch perpendicular to the edge
-    /// (fragments clipped to both sides, larger side first). Then pieces merge while the merged plan still passes.
+    /// Geometry helpers for <see cref="PrismBand"/>: slab clipping of look faces in double precision and the
+    /// finishing of a prism plan (hull, outward enclosure to the vertex budget, outward cleanup, rectangle fallback).
     /// </summary>
-    /// <remarks>Every fragment lands in some piece and every piece's plan holds its fragments, so the union holds the band.</remarks>
-    internal sealed class PrismBandDecomposer {
-        private readonly PrismEnvelopeSettings _settings;
-        private readonly PlanFrame _frame;
-        private readonly bool[] _occupied;
-        private int _splitsLeft;
-
-        private PrismBandDecomposer(PrismEnvelopeSettings settings, PlanFrame frame, bool[] occupied, int budget) {
-            _settings = settings;
-            _frame = frame;
-            _occupied = occupied;
-            _splitsLeft = budget - 1;
-        }
-
-        /// <summary>At most <paramref name="budget"/> pieces holding the faces of <paramref name="corners"/> between two heights.</summary>
-        public static List<PrismPiece> Decompose(IReadOnlyList<Vector3> corners, double bottom, double top, PrismEnvelopeSettings settings, int budget) {
-            List<List<SlabPoint>> fragments = SlabFragments(corners, bottom, top);
-            var pieces = new List<PrismPiece>();
-            if (fragments.Count == 0) return pieces;
-
-            PlanFrame frame = FrameAround(fragments, settings.Cell);
-            PlanRaster raster = PlanRaster.Build(Triangles(fragments), frame, top + 1.0, true);
-            var occupied = new bool[frame.Count];
-            var all = new bool[frame.Count];
-            for (int index = 0; index < frame.Count; index++) {
-                occupied[index] = raster.IsOccupied(index);
-                all[index] = true;
-            }
-
-            var decomposer = new PrismBandDecomposer(settings, frame, occupied, Math.Max(1, budget));
-            decomposer.Split(new PrismPiece(fragments, all), pieces);
-            decomposer.Merge(pieces);
-            return pieces;
-        }
-
+    internal static class PrismBandDecomposer {
         /// <summary>The faces' parts between two heights in double precision, each a plan-convex polygon.</summary>
         public static List<List<SlabPoint>> SlabFragments(IReadOnlyList<Vector3> corners, double bottom, double top) {
             var fragments = new List<List<SlabPoint>>();
@@ -129,133 +92,9 @@ namespace AlpineLib.Procedural.Meshing {
             return true;
         }
 
-        // Accepts the piece or cuts it at its deepest notch and recurses, larger side first.
-        private void Split(PrismPiece piece, List<PrismPiece> accepted) {
-            piece.Plan = FinishPlan(piece.PlanPoints(), _settings, out bool fellBack);
-            piece.FellBack = fellBack;
-            if (_splitsLeft <= 0 || !TryWorstGap(piece, out double startX, out double startZ, out double inwardX, out double inwardZ)) {
-                accepted.Add(piece);
-                return;
-            }
-
-            // The cut line runs inward from the notch's edge point; its normal is the edge direction.
-            double normalX = -inwardZ, normalZ = inwardX;
-            double offset = normalX * startX + normalZ * startZ;
-            PrismPiece first = Side(piece, normalX, normalZ, offset);
-            PrismPiece second = Side(piece, -normalX, -normalZ, -offset);
-            if (first == null || second == null) {
-                accepted.Add(piece);
-                return;
-            }
-
-            _splitsLeft--;
-            bool firstLarger = ConvexPlan.Area(ConvexPlan.Hull(first.PlanPoints())) >= ConvexPlan.Area(ConvexPlan.Hull(second.PlanPoints()));
-            Split(firstLarger ? first : second, accepted);
-            Split(firstLarger ? second : first, accepted);
-        }
-
-        // Pieces merge pairwise, earliest pair first, while the merged plan holds no notch over the tolerance.
-        private void Merge(List<PrismPiece> pieces) {
-            for (int first = 0; first < pieces.Count; first++) {
-                for (int second = first + 1; second < pieces.Count; second++) {
-                    PrismPiece merged = PrismPiece.Merge(pieces[first], pieces[second]);
-                    merged.Plan = FinishPlan(merged.PlanPoints(), _settings, out bool fellBack);
-                    merged.FellBack = fellBack;
-                    if (WorstGap(merged, out double _, out double _, out double _, out double _) > _settings.NotchTolerance) continue;
-
-                    pieces[first] = merged;
-                    pieces.RemoveAt(second);
-                    second = first;
-                }
-            }
-        }
-
-        // True when the deepest notch exceeds the tolerance and the piece is wide enough to cut.
-        private bool TryWorstGap(PrismPiece piece, out double startX, out double startZ, out double inwardX, out double inwardZ) {
-            double gap = WorstGap(piece, out startX, out startZ, out inwardX, out inwardZ);
-            return gap > _settings.NotchTolerance && MinWidth(piece.Plan) >= 2.0 * _settings.Cell;
-        }
-
-        /// <summary>
-        /// The deepest inward march from a plan edge to the first occupied cell the piece owns: samples every half
-        /// cell along each edge, steps a quarter cell inward; leaving the plan unoccupied counts the whole chord.
-        /// </summary>
-        private double WorstGap(PrismPiece piece, out double worstX, out double worstZ, out double worstInX, out double worstInZ) {
-            List<PlanPoint> plan = piece.Plan;
-            double step = _frame.Cell * 0.25;
-            int maxSteps = (int)Math.Ceiling(Diameter(plan) / step) + 1;
-            double worst = -1.0;
-            worstX = worstZ = worstInX = worstInZ = 0.0;
-            for (int edge = 0; edge < plan.Count; edge++) {
-                PlanPoint start = plan[edge], end = plan[(edge + 1) % plan.Count];
-                double edgeX = end.X - start.X, edgeZ = end.Z - start.Z;
-                double length = Length(edgeX, edgeZ);
-                double inX = -edgeZ / length, inZ = edgeX / length;
-                int samples = (int)Math.Ceiling(length / (_frame.Cell * 0.5)) + 1;
-                for (int sample = 0; sample < samples; sample++) {
-                    double share = samples > 1 ? (double)sample / (samples - 1) : 0.5;
-                    double x = start.X + edgeX * share, z = start.Z + edgeZ * share;
-                    double gap = MarchInward(piece, plan, x, z, inX, inZ, step, maxSteps);
-                    if (!(gap > worst)) continue;
-
-                    worst = gap;
-                    worstX = x;
-                    worstZ = z;
-                    worstInX = inX;
-                    worstInZ = inZ;
-                }
-            }
-            return worst;
-        }
-
-        private double MarchInward(PrismPiece piece, List<PlanPoint> plan, double x, double z, double inX, double inZ, double step, int maxSteps) {
-            for (int index = 0; index < maxSteps; index++) {
-                double depth = index * step;
-                double pointX = x + inX * depth, pointZ = z + inZ * depth;
-                if (index > 0 && ConvexPlan.Distance(plan, pointX, pointZ) > 0.0) return depth;
-
-                int cell = _frame.IndexAt(pointX, pointZ);
-                if (cell >= 0 && piece.Cells[cell] && _occupied[cell]) return depth;
-            }
-            return maxSteps * step;
-        }
-
-        // The piece's part on the side normal·p ≤ offset, or null when nothing of it is there.
-        private PrismPiece Side(PrismPiece piece, double normalX, double normalZ, double offset) {
-            var fragments = new List<List<SlabPoint>>();
-            foreach (List<SlabPoint> fragment in piece.Fragments) {
-                List<SlabPoint> clipped = Clip(fragment, normalX, 0.0, normalZ, offset);
-                if (clipped.Count > 0) fragments.Add(clipped);
-            }
-            if (fragments.Count == 0) return null;
-
-            var cells = new bool[piece.Cells.Length];
-            for (int cell = 0; cell < cells.Length; cell++) {
-                if (!piece.Cells[cell]) continue;
-
-                _frame.PointIn(cell % _frame.Columns, cell / _frame.Columns, 0.5, 0.5, out double x, out double z);
-                cells[cell] = normalX * x + normalZ * z <= offset;
-            }
-            return new PrismPiece(fragments, cells);
-        }
-
-        private static PlanFrame FrameAround(List<List<SlabPoint>> fragments, double cell) {
-            double minX = double.PositiveInfinity, maxX = double.NegativeInfinity, minZ = double.PositiveInfinity, maxZ = double.NegativeInfinity;
-            foreach (List<SlabPoint> fragment in fragments) {
-                foreach (SlabPoint point in fragment) {
-                    minX = Math.Min(minX, point.X);
-                    maxX = Math.Max(maxX, point.X);
-                    minZ = Math.Min(minZ, point.Z);
-                    maxZ = Math.Max(maxZ, point.Z);
-                }
-            }
-            double pad = cell * 2.0;
-            return PlanFrame.Around(0, cell, minX - pad, maxX + pad, minZ - pad, maxZ + pad);
-        }
-
         // Fragments fanned back into float triangles for the raster, which only guides cuts; a fragment of one or
         // two points becomes a flat sliver.
-        private static List<Vector3> Triangles(List<List<SlabPoint>> fragments) {
+        public static List<Vector3> Triangles(List<List<SlabPoint>> fragments) {
             var triangles = new List<Vector3>();
             foreach (List<SlabPoint> fragment in fragments) {
                 if (fragment.Count < 3) {
@@ -350,7 +189,7 @@ namespace AlpineLib.Procedural.Meshing {
             return corners;
         }
 
-        private static double MinWidth(List<PlanPoint> plan) {
+        public static double MinWidth(List<PlanPoint> plan) {
             double minX = double.PositiveInfinity, maxX = double.NegativeInfinity, minZ = double.PositiveInfinity, maxZ = double.NegativeInfinity;
             foreach (PlanPoint point in plan) {
                 minX = Math.Min(minX, point.X);
@@ -361,7 +200,7 @@ namespace AlpineLib.Procedural.Meshing {
             return Math.Min(maxX - minX, maxZ - minZ);
         }
 
-        private static double Diameter(List<PlanPoint> plan) {
+        public static double Diameter(List<PlanPoint> plan) {
             double best = 0.0;
             for (int first = 0; first < plan.Count; first++) {
                 for (int second = first + 1; second < plan.Count; second++) best = Math.Max(best, Length(plan[second].X - plan[first].X, plan[second].Z - plan[first].Z));

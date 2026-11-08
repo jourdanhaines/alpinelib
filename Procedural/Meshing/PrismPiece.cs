@@ -1,73 +1,93 @@
 using System;
 using System.Collections.Generic;
-using System.Numerics;
 
 namespace AlpineLib.Procedural.Meshing {
     /// <summary>
-    /// Part of one band of a look during a <see cref="PrismBandDecomposer"/> run: the slab-clipped face fragments
-    /// it holds, the raster cells it owns, and the prism plan and height range around them.
+    /// One prism of a <see cref="PrismRegion"/> while it is being fitted: a run of layers, the face fragments it holds
+    /// in each, the plan region (convex parts) whose walled-in cells it must also cover, and what its evaluation found.
     /// </summary>
     internal sealed class PrismPiece {
-        public PrismPiece(List<List<SlabPoint>> fragments, bool[] cells) {
-            Fragments = fragments;
-            Cells = cells;
-            HeightRange(fragments, out double bottom, out double top);
-            Bottom = Math.Floor(bottom / ConvexPlan.Grid) * ConvexPlan.Grid;
-            Top = Math.Ceiling(top / ConvexPlan.Grid) * ConvexPlan.Grid;
+        public PrismPiece(int firstLayer, List<List<List<SlabPoint>>> layerFragments, List<List<PlanPoint>> region) {
+            FirstLayer = firstLayer;
+            LayerFragments = layerFragments;
+            Region = region;
         }
 
-        /// <summary>Clipped faces, each a polygon of one to many points.</summary>
-        public List<List<SlabPoint>> Fragments { get; }
+        /// <summary>Index of the lowest layer the piece spans.</summary>
+        public int FirstLayer { get; private set; }
 
-        /// <summary>Raster cells (occupied or not) this piece is responsible for.</summary>
-        public bool[] Cells { get; }
+        /// <summary>Index of the highest layer the piece spans.</summary>
+        public int LastLayer => FirstLayer + LayerFragments.Count - 1;
 
-        /// <summary>The finished prism plan, set by the decomposer.</summary>
+        /// <summary>Fragments per spanned layer, lowest first.</summary>
+        public List<List<List<SlabPoint>>> LayerFragments { get; }
+
+        /// <summary>The plan region the piece answers for, as convex parts.</summary>
+        public List<List<PlanPoint>> Region { get; }
+
+        /// <summary>The finished prism plan.</summary>
         public List<PlanPoint> Plan { get; set; }
 
         /// <summary>True when the plan is the fallback rectangle because cleanup could not fix the enclosed hull.</summary>
         public bool FellBack { get; set; }
 
-        /// <summary>Lowest fragment height, rounded down to the grid.</summary>
-        public double Bottom { get; }
+        /// <summary>Lowest height, rounded down to the grid.</summary>
+        public double Bottom { get; set; }
 
-        /// <summary>Highest fragment height, rounded up to the grid.</summary>
-        public double Top { get; }
+        /// <summary>Highest height, rounded up to the grid.</summary>
+        public double Top { get; set; }
 
-        /// <summary>Every fragment point on the plan.</summary>
-        public List<PlanPoint> PlanPoints() {
-            var points = new List<PlanPoint>();
-            foreach (List<SlabPoint> fragment in Fragments) {
-                foreach (SlabPoint point in fragment) points.Add(new PlanPoint(point.X, point.Z));
-            }
-            return points;
+        /// <summary>Worst exposed plan standoff over the spanned layers, look metres.</summary>
+        public double Standoff { get; set; }
+
+        /// <summary>The layer, point and inward edge normal of the worst standoff sample.</summary>
+        public int WorstLayer { get; set; }
+        public PlanPoint WorstPoint { get; set; }
+        public PlanPoint WorstInward { get; set; }
+
+        /// <summary>The most distant over-target samples (point, inward normal, layer), deepest first, for two-notch cuts.</summary>
+        public List<(PlanPoint Point, PlanPoint Inward, int Layer, double Distance)> OverSamples { get; } = new List<(PlanPoint, PlanPoint, int, double)>();
+
+        /// <summary>True when some spanned layer meets target, so a height split can help the standoff.</summary>
+        public bool LeansInHeight { get; set; }
+
+        /// <summary>Lowest layer kind among the layers over target (or of the cap), the piece's split priority.</summary>
+        public int Kind { get; set; }
+
+        /// <summary>How far the cap's worst spot over air lies from the look under it, look metres; 0 when none.</summary>
+        public double CapOverAir { get; set; }
+
+        /// <summary>Where that cap spot is.</summary>
+        public PlanPoint CapPoint { get; set; }
+
+        /// <summary>True once no split of this piece helped; it is not tried again.</summary>
+        public bool Unsplittable { get; set; }
+
+        /// <summary>How far over target the piece is (0 or less when it meets it).</summary>
+        public double Excess { get; set; }
+
+        /// <summary>Drops spanned layers below <paramref name="first"/> and above <paramref name="last"/>.</summary>
+        public void Trim(int first, int last) {
+            LayerFragments.RemoveRange(last - FirstLayer + 1, LastLayer - last);
+            LayerFragments.RemoveRange(0, first - FirstLayer);
+            FirstLayer = first;
         }
 
-        /// <summary>A piece holding both pieces' fragments and cells.</summary>
-        public static PrismPiece Merge(PrismPiece first, PrismPiece second) {
-            var fragments = new List<List<SlabPoint>>(first.Fragments.Count + second.Fragments.Count);
-            fragments.AddRange(first.Fragments);
-            fragments.AddRange(second.Fragments);
-            var cells = new bool[first.Cells.Length];
-            for (int index = 0; index < cells.Length; index++) cells[index] = first.Cells[index] || second.Cells[index];
-            return new PrismPiece(fragments, cells);
+        /// <summary>The fragments of one spanned layer.</summary>
+        public List<List<SlabPoint>> Fragments(int layer) => LayerFragments[layer - FirstLayer];
+
+        /// <summary>True when any spanned layer holds a fragment.</summary>
+        public bool HasFragments() {
+            foreach (List<List<SlabPoint>> fragments in LayerFragments) {
+                if (fragments.Count > 0) return true;
+            }
+            return false;
         }
 
         /// <summary>The prism this piece became.</summary>
         public EnvelopePrism ToPrism() {
             double top = Top > Bottom ? Top : Bottom + ConvexPlan.Grid;
             return new EnvelopePrism(Bottom, top, Plan);
-        }
-
-        private static void HeightRange(List<List<SlabPoint>> fragments, out double bottom, out double top) {
-            bottom = double.PositiveInfinity;
-            top = double.NegativeInfinity;
-            foreach (List<SlabPoint> fragment in fragments) {
-                foreach (SlabPoint point in fragment) {
-                    bottom = Math.Min(bottom, point.Y);
-                    top = Math.Max(top, point.Y);
-                }
-            }
         }
     }
 }

@@ -47,47 +47,53 @@ namespace AlpineLib.Procedural.Meshing {
         /// <summary>Top of the band the reported standoff gate samples (from <see cref="WalkingLow"/>).</summary>
         public double GateTop { get; set; } = 1.4;
 
-        /// <summary>Top of the walking band; above it bands are coarse.</summary>
+        /// <summary>Top of the walking band (feet and fine bands, fitted first).</summary>
         public double WalkingTop { get; set; } = 2.25;
 
         /// <summary>Band edges between the feet band and <see cref="WalkingTop"/>, ascending.</summary>
         public double[] FineEdges { get; set; } = { 0.8, 1.3, 1.8 };
 
-        /// <summary>Tallest coarse band above <see cref="WalkingTop"/>.</summary>
-        public double CoarseBand { get; set; } = 3.0;
+        /// <summary>Highest a jump reaches; the band from <see cref="WalkingTop"/> to it is fitted after the walking band.</summary>
+        public double JumpReach { get; set; } = 3.5;
 
-        /// <summary>Shortest band halving may leave.</summary>
+        /// <summary>A plateau step above the jump reach starts a new containment-only band when its flat area is at least this share of the look's plan area.</summary>
+        public double TierShare { get; set; } = 0.1;
+
+        /// <summary>Most containment-only bands above the jump reach; the smallest tiers merge away first.</summary>
+        public int MaxCoarseBands { get; set; } = 4;
+
+        /// <summary>Height of the walking layers, the finest height split, world metres at max scale.</summary>
         public double MinBand { get; set; } = 0.15;
 
-        /// <summary>Most plan growth a band may show between its lower and upper half from lean, look metres.</summary>
-        public double LeanError { get; set; } = 0.1;
+        /// <summary>Height of the layers between <see cref="WalkingTop"/> and <see cref="JumpReach"/>, world metres at max scale.</summary>
+        public double ReachLayer { get; set; } = 0.5;
 
-        /// <summary>A band halves while the 90th percentile of its side standoff exceeds this, look metres.</summary>
-        public double StandoffTarget { get; set; } = 0.25;
+        /// <summary>Share of <see cref="StandoffP90Target"/> a piece's worst exposed plan standoff may reach before it is split.</summary>
+        public double PieceStandoffShare { get; set; } = 0.9;
 
-        /// <summary>A reachable band halves while a cap of it leaves more air than this, look metres.</summary>
-        public double LedgeAirTarget { get; set; } = 0.3;
+        /// <summary>Spacing of the samples measuring a piece's exposed plan standoff, look metres.</summary>
+        public double StandoffSpacing { get; set; } = 0.1;
 
         /// <summary>Most cap air the finished fit may leave on reachable tops for <see cref="PrismEnvelopeFit.MeetsTargets"/>, look metres.</summary>
         public double LedgeAirMax { get; set; } = 0.35;
 
-        /// <summary>Cap strips narrower than this against a prism rising above the cap are lips no capsule stands on, look metres.</summary>
-        public double LedgeLip { get; set; } = 0.1;
+        /// <summary>
+        /// Cap strips narrower than this against a prism rising above the cap are lips no capsule stands on, look
+        /// metres: a capsule centred on such a strip overlaps that prism. Defaults to the default capsule radius.
+        /// </summary>
+        public double LedgeLip { get; set; } = 0.35;
 
         /// <summary>Highest cap counted as reachable for the ledge rule.</summary>
         public double ReachableTop { get; set; } = 1.5;
 
-        /// <summary>Deepest notch a hull may span before its piece is cut, look metres.</summary>
-        public double NotchTolerance { get; set; } = 0.25;
+        /// <summary>Most plan vertices per prism (3–16).</summary>
+        public int MaxVertices { get; set; } = 16;
 
-        /// <summary>Most plan vertices per prism (3–8).</summary>
-        public int MaxVertices { get; set; } = 8;
-
-        /// <summary>Most prisms in a fit; cuts and halvings stop at it. At least <see cref="MinimumBands"/>.</summary>
+        /// <summary>Most prisms in a fit, the hard cap: splits stop at it. At least <see cref="MinimumBands"/>.</summary>
         public int MaxPrisms { get; set; } = 24;
 
-        /// <summary>Plan raster cell guiding the cuts, look metres.</summary>
-        public double Cell { get; set; } = 0.25;
+        /// <summary>Footprint raster cell: walled-in cells skip the standoff measure and stop the cut march, look metres.</summary>
+        public double Cell { get; set; } = 0.1;
 
         /// <summary>Shortest prism edge, look metres.</summary>
         public double MinEdge { get; set; } = 0.05;
@@ -101,8 +107,8 @@ namespace AlpineLib.Procedural.Meshing {
         /// <summary>Most a look sample may lie outside every prism before the fit is refused, look metres.</summary>
         public double ContainmentTolerance { get; set; } = 0.05;
 
-        /// <summary>Nominal bands a look reaching above the walking band gets: feet, fine bands, one coarse band.</summary>
-        public int MinimumBands => (FineEdges == null ? 0 : FineEdges.Length) + 3;
+        /// <summary>Fewest prisms a tall look needs: the feet prism, one over the rest of the reach, one coarse band.</summary>
+        public int MinimumBands => 3;
 
         /// <summary>A world height above ground at max scale, in the look's space.</summary>
         public double LookHeight(double worldHeight) {
@@ -119,10 +125,11 @@ namespace AlpineLib.Procedural.Meshing {
 
                 previous = edge;
             }
-            if (!(WalkingTop > previous) || !(WalkingLow >= 0.0) || !(CoarseBand > 0.0) || !(MinBand > 0.0)) throw new ArgumentException("Need ascending bands below WalkingTop and positive CoarseBand and MinBand.");
-            if (MaxVertices < 3 || MaxVertices > 8) throw new ArgumentException("MaxVertices must be 3–8.");
-            if (MaxPrisms < MinimumBands) throw new ArgumentException("MaxPrisms must be at least " + MinimumBands + ", one prism per nominal band.");
-            if (!(Cell > 0.0) || !(MinEdge > 0.0) || !(MinTurn > 0.0) || !(SampleSpacing > 0.0) || !(NotchTolerance > 0.0)) throw new ArgumentException("Cell, MinEdge, MinTurn, SampleSpacing and NotchTolerance must be positive.");
+            if (!(WalkingTop > previous) || !(JumpReach > WalkingTop) || !(WalkingLow >= 0.0) || !(MinBand > 0.0) || !(ReachLayer > 0.0)) throw new ArgumentException("Need ascending bands below WalkingTop < JumpReach and positive MinBand and ReachLayer.");
+            if (MaxCoarseBands < 1) throw new ArgumentException("MaxCoarseBands must be at least 1.");
+            if (MaxVertices < 3 || MaxVertices > 16) throw new ArgumentException("MaxVertices must be 3–16.");
+            if (MaxPrisms < MinimumBands) throw new ArgumentException("MaxPrisms must be at least " + MinimumBands + ": feet, reach and one coarse band.");
+            if (!(Cell > 0.0) || !(MinEdge > 0.0) || !(MinTurn > 0.0) || !(SampleSpacing > 0.0) || !(StandoffSpacing > 0.0) || !(PieceStandoffShare > 0.0)) throw new ArgumentException("Cell, MinEdge, MinTurn, SampleSpacing, StandoffSpacing and PieceStandoffShare must be positive.");
         }
     }
 }

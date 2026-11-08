@@ -181,7 +181,14 @@ namespace AlpineLib.Procedural.Meshing {
                     double share = (double)column / columns;
                     for (int row = 0; row <= rows; row++) {
                         var point = new Vector3((float)(start.X + edgeX * share), (float)(bottom + (top - bottom) * row / rows), (float)(start.Z + edgeZ * share));
-                        if (!IsCovered(point + normal * (float)CoveredTolerance, -1, -1, index)) AddStandoff(point, _look.Distance(point, cap), distances);
+                        if (IsCovered(point + normal * (float)CoveredTolerance, -1, -1, index)) continue;
+
+                        // A side buried inside the look's own solid is no wall a capsule meets; within the covered
+                        // tolerance of the surface a sample counts either way, so the costly inside test is skipped.
+                        double distance = _look.Distance(point, cap);
+                        if (distance > CoveredTolerance && _look.IsInside(point.X, point.Y, point.Z)) continue;
+
+                        AddStandoff(point, distance, distances);
                     }
                 }
             }

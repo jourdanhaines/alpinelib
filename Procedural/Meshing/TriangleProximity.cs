@@ -8,9 +8,12 @@ namespace AlpineLib.Procedural.Meshing {
     /// faces bucketed on a plan grid so gates can sample thousands of points.
     /// </summary>
     public sealed class TriangleProximity {
+        private const double RimTolerance = 0.02;
+
         private readonly IReadOnlyList<Vector3> _corners;
         private readonly double _cell;
         private readonly Dictionary<(int, int), List<int>> _buckets = new Dictionary<(int, int), List<int>>();
+        private int _maxColumn = int.MinValue;
 
         /// <summary>Buckets the faces of <paramref name="corners"/> on a plan grid of <paramref name="cell"/> metres.</summary>
         public TriangleProximity(IReadOnlyList<Vector3> corners, double cell) {
@@ -42,10 +45,80 @@ namespace AlpineLib.Procedural.Meshing {
             if (!_buckets.TryGetValue((Bucket(x), Bucket(z)), out List<int> faces)) return highest;
 
             foreach (int face in faces) {
-                if (!PlanRaster.TryHeight(_corners[face], _corners[face + 1], _corners[face + 2], x, z, out double height)) continue;
+                if (!PlanRaster.TryHeight(_corners[face], _corners[face + 1], _corners[face + 2], x, z, out double height)
+                    && !TryRimHeight(_corners[face], _corners[face + 1], _corners[face + 2], x, z, out height)) continue;
                 if (height <= ceiling && height > highest) highest = height;
             }
             return highest;
+        }
+
+        /// <summary>
+        /// True when (x, y, z) lies inside the look's solid: along a ray toward +x at that height the faces crossed
+        /// leaving (normal toward +x) and entering differ in number, either winding as long as it is consistent.
+        /// Overlapping shells add up, and shells need no caps since only walls are crossed.
+        /// </summary>
+        public bool IsInside(double x, double y, double z) {
+            int row = Bucket(z);
+            int winding = 0;
+            for (int column = Bucket(x); column <= _maxColumn; column++) {
+                if (!_buckets.TryGetValue((column, row), out List<int> faces)) continue;
+
+                foreach (int face in faces) winding += Crossing(face, x, y, z, column);
+            }
+            return winding != 0;
+        }
+
+        // ±1 when the face's slice at height y crosses the ray z = const beyond x inside this bucket column, else 0.
+        private int Crossing(int face, double x, double y, double z, int column) {
+            Vector3 a = _corners[face], b = _corners[face + 1], c = _corners[face + 2];
+            if (!TrySliceCrossing(a, b, c, y, z, out double crossX) || !(crossX > x) || Bucket(crossX) != column) return 0;
+
+            double normalX = ((double)b.Y - a.Y) * ((double)c.Z - a.Z) - ((double)b.Z - a.Z) * ((double)c.Y - a.Y);
+            return normalX > 0.0 ? 1 : normalX < 0.0 ? -1 : 0;
+        }
+
+        // Where the triangle's slice at height y meets the line z = const, when it does.
+        private static bool TrySliceCrossing(Vector3 a, Vector3 b, Vector3 c, double y, double z, out double crossX) {
+            crossX = 0.0;
+            int found = 0;
+            double firstX = 0.0, firstZ = 0.0, secondX = 0.0, secondZ = 0.0;
+            foreach ((Vector3 start, Vector3 end) in new[] { (a, b), (b, c), (c, a) }) {
+                if ((start.Y - y) * (end.Y - y) >= 0.0 && !(start.Y < y && end.Y >= y) && !(end.Y < y && start.Y >= y)) continue;
+                if ((start.Y < y) == (end.Y < y)) continue;
+
+                double share = (y - start.Y) / ((double)end.Y - start.Y);
+                double pointX = start.X + ((double)end.X - start.X) * share, pointZ = start.Z + ((double)end.Z - start.Z) * share;
+                if (found == 0) {
+                    firstX = pointX;
+                    firstZ = pointZ;
+                } else {
+                    secondX = pointX;
+                    secondZ = pointZ;
+                }
+                found++;
+            }
+            if (found != 2 || (firstZ < z) == (secondZ < z)) return false;
+
+            crossX = firstX + (secondX - firstX) * (z - firstZ) / (secondZ - firstZ);
+            return true;
+        }
+
+        // A point within 2 cm of a face's plan outline (the metrics' covered tolerance; the barycentric test misses
+        // sliver faces): the height of the outline there, so a column grazing a look edge still finds it.
+        private static bool TryRimHeight(Vector3 a, Vector3 b, Vector3 c, double x, double z, out double height) {
+            height = double.NegativeInfinity;
+            bool found = false;
+            foreach ((Vector3 start, Vector3 end) in new[] { (a, b), (b, c), (c, a) }) {
+                double edgeX = (double)end.X - start.X, edgeZ = (double)end.Z - start.Z;
+                double lengthSquared = edgeX * edgeX + edgeZ * edgeZ;
+                double along = lengthSquared > 0.0 ? Math.Max(0.0, Math.Min(1.0, ((x - start.X) * edgeX + (z - start.Z) * edgeZ) / lengthSquared)) : 0.0;
+                double gapX = x - (start.X + edgeX * along), gapZ = z - (start.Z + edgeZ * along);
+                if (gapX * gapX + gapZ * gapZ > RimTolerance * RimTolerance) continue;
+
+                height = Math.Max(height, start.Y + ((double)end.Y - start.Y) * along);
+                found = true;
+            }
+            return found;
         }
 
         // Adds the face to every bucket its plan bounds touch.
@@ -56,6 +129,7 @@ namespace AlpineLib.Procedural.Meshing {
             for (int row = minRow; row <= maxRow; row++) {
                 for (int column = minColumn; column <= maxColumn; column++) Faces(column, row).Add(face);
             }
+            _maxColumn = Math.Max(_maxColumn, maxColumn);
         }
 
         private List<int> Faces(int column, int row) {

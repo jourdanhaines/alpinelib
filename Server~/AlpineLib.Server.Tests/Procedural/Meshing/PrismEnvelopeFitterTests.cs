@@ -31,11 +31,11 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
         }
 
         [Fact]
-        public void AStrongLeanHalvesTheWalkingBands() {
+        public void AStrongLeanSplitsColumnsInHeight() {
             List<Vector3> look = LeaningLoft(0.8);
 
             PrismEnvelopeFit halved = PrismEnvelopeFitter.Fit(look, new PrismEnvelopeSettings { Strict = false });
-            PrismEnvelopeFit whole = PrismEnvelopeFitter.Fit(look, new PrismEnvelopeSettings { MinBand = 1.0, LeanError = 10.0, Strict = false });
+            PrismEnvelopeFit whole = PrismEnvelopeFitter.Fit(look, new PrismEnvelopeSettings { MinBand = 1.0, Strict = false });
             _output.WriteLine(halved.Report);
             _output.WriteLine(whole.Report);
 
@@ -61,11 +61,11 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
 
         [Fact]
         public void ABudgetBelowTheBandCountIsRefused() {
-            var settings = new PrismEnvelopeSettings { MaxPrisms = 5 };
+            var settings = new PrismEnvelopeSettings { MaxPrisms = 2 };
 
-            Assert.Equal(6, settings.MinimumBands);
+            Assert.Equal(3, settings.MinimumBands);
             Assert.Throws<ArgumentException>(() => PrismEnvelopeFitter.Fit(LeaningLoft(), settings));
-            for (int budget = 6; budget <= 9; budget++) {
+            for (int budget = 3; budget <= 6; budget++) {
                 PrismEnvelopeFit fit = PrismEnvelopeFitter.Fit(TwoLobes(), new PrismEnvelopeSettings { MaxPrisms = budget, Strict = false });
                 Assert.InRange(fit.Prisms.Count, 1, budget);
             }
@@ -89,7 +89,7 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
 
             int walking = 0;
             foreach (EnvelopePrism prism in fit.Prisms) {
-                if (prism.Bottom >= 0.8 - 1e-6 && prism.Top <= 1.3 + 1e-6) walking++;
+                if (prism.Bottom <= 1.0 && prism.Top >= 1.0) walking++;
             }
             Assert.True(walking >= 2, fit.Report);
             Assert.InRange(fit.StandoffP90, 0.0, 0.3);
@@ -116,7 +116,7 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
             foreach (List<Vector3> look in new[] { LeaningLoft(), TwoLobes() }) {
                 PrismEnvelopeFit fit = PrismEnvelopeFitter.Fit(look, new PrismEnvelopeSettings());
                 foreach (EnvelopePrism prism in fit.Prisms) {
-                    Assert.InRange(prism.Plan.Count, 3, 8);
+                    Assert.InRange(prism.Plan.Count, 3, 16);
                     for (int yaw = 0; yaw < 360; yaw++) {
                         ToShape(prism, yaw, 0.7);
                         ToShape(prism, yaw, 1.4);
@@ -147,9 +147,60 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
 
         [Fact]
         public void BadSettingsAreRefused() {
-            Assert.Throws<ArgumentException>(() => PrismEnvelopeFitter.Fit(LeaningLoft(), new PrismEnvelopeSettings { MaxVertices = 9 }));
+            Assert.Throws<ArgumentException>(() => PrismEnvelopeFitter.Fit(LeaningLoft(), new PrismEnvelopeSettings { MaxVertices = 17 }));
             Assert.Throws<ArgumentException>(() => PrismEnvelopeFitter.Fit(LeaningLoft(), new PrismEnvelopeSettings { FineEdges = new[] { 1.3, 0.8 } }));
             Assert.Throws<ArgumentException>(() => PrismEnvelopeFitter.Fit(new List<Vector3> { Vector3.Zero }, new PrismEnvelopeSettings()));
+        }
+
+        [Fact]
+        public void ATwentyMetreRoundedLobeMeetsTargetsWithFewPrisms() {
+            var ring = new List<Vector3>();
+            for (int index = 0; index < 40; index++) {
+                double angle = 2.0 * Math.PI * index / 40.0;
+                ring.Add(new Vector3((float)(10.0 * Math.Cos(angle)), 0f, (float)(7.0 * Math.Sin(angle))));
+            }
+            List<Vector3> look = EnvelopeShapes.Prism(ring, -0.2f, 6f, Vector3.Zero);
+
+            PrismEnvelopeFit fit = PrismEnvelopeFitter.Fit(look, new PrismEnvelopeSettings { MaxPrisms = 12 });
+            _output.WriteLine(fit.Report);
+
+            Assert.True(fit.MeetsTargets);
+            Assert.InRange(fit.StandoffP90, 0.0, 0.3);
+            Assert.InRange(fit.Prisms.Count, 1, 12);
+        }
+
+        [Fact]
+        public void CapsDoNotBridgeANotchOverSand() {
+            var ring = new List<Vector3> {
+                new Vector3(-2f, 0f, -2f), new Vector3(2f, 0f, -2f), new Vector3(2f, 0f, 2f), new Vector3(0.3f, 0f, 2f),
+                new Vector3(0f, 0f, 0.2f), new Vector3(-0.3f, 0f, 2f), new Vector3(-2f, 0f, 2f),
+            };
+            List<Vector3> look = EnvelopeShapes.Prism(ring, -0.2f, 1.1f, Vector3.Zero);
+
+            PrismEnvelopeFit fit = PrismEnvelopeFitter.Fit(look, new PrismEnvelopeSettings());
+            _output.WriteLine(fit.Report);
+
+            Assert.True(fit.MeetsTargets, fit.Report);
+            Assert.InRange(fit.LedgeAirMax, 0.0, 0.35);
+            Assert.True(fit.Prisms.Count >= 2);
+        }
+
+        [Fact]
+        public void TheBudgetRunsOutAboveTheWalkingBandFirst() {
+            var calm = new List<Vector3>();
+            for (int index = 0; index < 24; index++) {
+                double angle = 2.0 * Math.PI * index / 24.0;
+                calm.Add(new Vector3((float)(2.0 * Math.Cos(angle)), 0f, (float)(2.0 * Math.Sin(angle))));
+            }
+            List<Vector3> look = EnvelopeShapes.Prism(calm, -0.2f, 2.2f, Vector3.Zero);
+            look.AddRange(EnvelopeShapes.Prism(EnvelopeShapes.NoisyRing(24, 3f, 0.4f, 9), 2.4f, 3.4f, Vector3.Zero));
+
+            PrismEnvelopeFit fit = PrismEnvelopeFitter.Fit(look, new PrismEnvelopeSettings { MaxPrisms = 4, Strict = false });
+            _output.WriteLine(fit.Report);
+
+            Assert.InRange(fit.StandoffP90, 0.0, 0.3);
+            Assert.InRange(fit.StandoffMax, 0.0, 0.5);
+            Assert.InRange(fit.Prisms.Count, 1, 4);
         }
 
         // A capped 12-sided column 4 m tall, sunk 0.2 m, its rings leaning 0.16 m per metre along +x.

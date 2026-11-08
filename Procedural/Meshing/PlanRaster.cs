@@ -37,6 +37,9 @@ namespace AlpineLib.Procedural.Meshing {
 
         public bool IsOccupied(int index) => _state[index] != Empty;
 
+        /// <summary>True for a cell walled in on every side (filled by <c>fillInterior</c>), not touched by a face.</summary>
+        public bool IsInterior(int index) => _state[index] == Interior;
+
         /// <summary>
         /// The faces of <paramref name="corners"/> below <paramref name="top"/>; with <paramref name="fillInterior"/>
         /// the cells walled in on every side count as solid from the lowest point found to <paramref name="top"/>.

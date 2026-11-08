@@ -52,8 +52,9 @@ namespace AlpineLib.Procedural.Meshing {
         /// <summary>
         /// A convex polygon of at most <paramref name="maxVertices"/> (≥ 3) vertices holding <paramref name="hull"/> up to
         /// grid rounding (meets round to nearest, so a hull point may sit about 1e-4 outside):
-        /// repeatedly the edge whose removal adds least area is collapsed, its two neighbouring edges extended
-        /// until they meet. Collapses whose neighbours do not meet in front of the polygon are skipped.
+        /// repeatedly the edge whose collapse stands least far off the polygon (least area on a tie) is collapsed, its
+        /// two neighbouring edges extended until they meet, so no thin spike grows where a cheap-area one would.
+        /// Collapses whose neighbours do not meet in front of the polygon are skipped.
         /// </summary>
         public static List<PlanPoint> EncloseMaxVertices(IReadOnlyList<PlanPoint> hull, int maxVertices) {
             if (hull == null) throw new ArgumentNullException(nameof(hull));
@@ -62,7 +63,7 @@ namespace AlpineLib.Procedural.Meshing {
             var polygon = Rounded(hull);
             int passes = polygon.Count;
             for (int pass = 0; pass < passes && polygon.Count > maxVertices; pass++) {
-                if (!TryCheapestCollapse(polygon, -1, double.PositiveInfinity, out int edge, out PlanPoint meet)) {
+                if (!TryLowestCollapse(polygon, out int edge, out PlanPoint meet)) {
                     throw new InvalidOperationException("No edge of the polygon can be collapsed outward.");
                 }
 
@@ -257,6 +258,23 @@ namespace AlpineLib.Procedural.Meshing {
                 if (onlyEdge >= 0 && edge != onlyEdge) continue;
                 if (!TryMeet(polygon, edge, out PlanPoint meet, out double area, out double spike) || spike > maxSpike || !(area < bestArea)) continue;
 
+                bestArea = area;
+                bestEdge = edge;
+                bestMeet = meet;
+            }
+            return bestEdge >= 0;
+        }
+
+        // The valid collapse whose meet stands least far off the removed edge, least area then lowest index on a tie.
+        private static bool TryLowestCollapse(List<PlanPoint> polygon, out int bestEdge, out PlanPoint bestMeet) {
+            bestEdge = -1;
+            bestMeet = default;
+            double bestSpike = double.PositiveInfinity, bestArea = double.PositiveInfinity;
+            for (int edge = 0; edge < polygon.Count; edge++) {
+                if (!TryMeet(polygon, edge, out PlanPoint meet, out double area, out double spike)) continue;
+                if (spike > bestSpike || (spike == bestSpike && !(area < bestArea))) continue;
+
+                bestSpike = spike;
                 bestArea = area;
                 bestEdge = edge;
                 bestMeet = meet;

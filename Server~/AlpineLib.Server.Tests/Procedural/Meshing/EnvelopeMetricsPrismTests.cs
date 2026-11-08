@@ -63,6 +63,13 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
         }
 
         [Fact]
+        public void SidesBuriedInTheLookAreNoStandoff() {
+            var buried = Metrics(new EnvelopePrism(0.0, 2.0, Rectangle(-0.5, 0.5, -0.5, 0.5)));
+
+            Assert.Empty(buried.Standoff(0.35, 1.4, 3.0));
+        }
+
+        [Fact]
         public void APrismMeasuresDistanceOutside() {
             var prism = new EnvelopePrism(0.0, 2.0, Rectangle(-1.0, 1.0, -1.0, 1.0));
 
