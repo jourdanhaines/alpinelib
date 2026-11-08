@@ -5,13 +5,13 @@ using UnityEngine.Rendering;
 
 namespace AlpineLib.Sky {
     /// <summary>
-    /// The ground annulus as a flat square lattice anchored in absolute xz and vertex-coloured (sRGB) from the
-    /// consumer's ground, so the annulus carries on the streamed world's own colours past its edge. Triangles
+    /// Far ground as a flat square lattice anchored in absolute xz and vertex-coloured (sRGB) from the consumer's
+    /// ground, so the ground carries on the streamed world's own colours past its edge (<see cref="FarGround"/>). Triangles
     /// wholly inside the hole or beyond the outer radius are left out. Positions are relative to the anchor; only the
     /// colours change when the anchor moves, and a move by whole lattice steps shifts the known colours across and
     /// samples only the strips that came into the lattice. Main thread.
     /// </summary>
-    public sealed class BackdropGroundLattice : IDisposable {
+    public sealed class FarGroundLattice : IDisposable {
         private readonly Func<double, double, Color32> _colourAt;
         private readonly Vector3[] _positions;
         private Color32[] _colours;
@@ -25,7 +25,7 @@ namespace AlpineLib.Sky {
         /// to <paramref name="holeRadius"/>, anchored on a <paramref name="snap"/> m grid, coloured by
         /// <paramref name="colourAt"/>(absolute x, absolute z).
         /// </summary>
-        public BackdropGroundLattice(double spacing, double snap, double holeRadius, double outerRadius, Func<double, double, Color32> colourAt) {
+        public FarGroundLattice(double spacing, double snap, double holeRadius, double outerRadius, Func<double, double, Color32> colourAt) {
             if (!(spacing > 0.0) || !(snap > 0.0)) throw new ArgumentOutOfRangeException(nameof(spacing), "Spacing and snap must be positive.");
             if (!(outerRadius > holeRadius)) throw new ArgumentOutOfRangeException(nameof(outerRadius), outerRadius, "Must exceed the hole radius.");
 
@@ -44,7 +44,7 @@ namespace AlpineLib.Sky {
                 }
             }
 
-            Mesh = new Mesh { name = "Backdrop Ground Lattice", hideFlags = HideFlags.DontSave };
+            Mesh = new Mesh { name = "Far Ground Lattice", hideFlags = HideFlags.DontSave };
             Mesh.indexFormat = _positions.Length > ushort.MaxValue ? IndexFormat.UInt32 : IndexFormat.UInt16;
             Mesh.vertices = _positions;
             Mesh.colors32 = _colours;

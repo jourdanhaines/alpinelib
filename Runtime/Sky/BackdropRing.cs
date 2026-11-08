@@ -62,7 +62,7 @@ namespace AlpineLib.Sky {
         private readonly List<BackdropFeature> _scratch = new List<BackdropFeature>();
         private readonly List<int> _staleCameras = new List<int>();
         private readonly HashSet<int> _warnedFarClip = new HashSet<int>();
-        private readonly Dictionary<int, BackdropGroundLattice> _lattices = new Dictionary<int, BackdropGroundLattice>();
+        private readonly Dictionary<int, FarGroundLattice> _lattices = new Dictionary<int, FarGroundLattice>();
         private readonly List<CellCoord> _keepOutCells = new List<CellCoord>();
         private Func<double, double, Color32> _groundColourAt;
         private IBackdropKeepOutSource _keepOutSource;
@@ -171,8 +171,8 @@ namespace AlpineLib.Sky {
         }
 
         /// <summary>The ground lattice <paramref name="camera"/> draws, or null (no ground source, or not drawn yet).</summary>
-        public BackdropGroundLattice GroundLatticeOf(Camera camera) {
-            return camera != null && _lattices.TryGetValue(camera.GetInstanceID(), out BackdropGroundLattice lattice) ? lattice : null;
+        public FarGroundLattice GroundLatticeOf(Camera camera) {
+            return camera != null && _lattices.TryGetValue(camera.GetInstanceID(), out FarGroundLattice lattice) ? lattice : null;
         }
 
         /// <summary>True when <paramref name="material"/> is instanced and carries every keyword a sky draw needs.</summary>
@@ -207,7 +207,7 @@ namespace AlpineLib.Sky {
                 draws++;
             }
 
-            BackdropGroundLattice lattice = GroundLatticeOf(camera);
+            FarGroundLattice lattice = GroundLatticeOf(camera);
             if (lattice != null && _groundSourceMaterial != null) Graphics.RenderMesh(CreateParams(_groundSourceMaterial, camera, batch.GroundBounds), lattice.Mesh, 0, batch.GroundMatrix);
             else Graphics.RenderMesh(CreateParams(_groundMaterial, camera, batch.GroundBounds), _meshes.Ground, 0, batch.GroundMatrix);
             return draws + 1;
@@ -432,7 +432,7 @@ namespace AlpineLib.Sky {
             }
             foreach (int id in _staleCameras) {
                 _batches.Remove(id);
-                if (!_lattices.TryGetValue(id, out BackdropGroundLattice lattice)) continue;
+                if (!_lattices.TryGetValue(id, out FarGroundLattice lattice)) continue;
 
                 lattice.Dispose();
                 _lattices.Remove(id);
@@ -444,8 +444,8 @@ namespace AlpineLib.Sky {
             if (_groundColourAt == null) return;
 
             BackdropSettings settings = _layout.Settings;
-            if (!_lattices.TryGetValue(id, out BackdropGroundLattice lattice) || lattice.Mesh == null) {
-                lattice = new BackdropGroundLattice(settings.GroundLatticeSpacing, settings.GroundLatticeSnap, settings.GroundLatticeHoleRadius, settings.GroundOuterRadius, _groundColourAt);
+            if (!_lattices.TryGetValue(id, out FarGroundLattice lattice) || lattice.Mesh == null) {
+                lattice = new FarGroundLattice(settings.GroundLatticeSpacing, settings.GroundLatticeSnap, settings.GroundLatticeHoleRadius, settings.GroundOuterRadius, _groundColourAt);
                 _lattices[id] = lattice;
             }
 
@@ -459,7 +459,7 @@ namespace AlpineLib.Sky {
         }
 
         private void DisposeLattices() {
-            foreach (BackdropGroundLattice lattice in _lattices.Values) lattice.Dispose();
+            foreach (FarGroundLattice lattice in _lattices.Values) lattice.Dispose();
             _lattices.Clear();
         }
 
