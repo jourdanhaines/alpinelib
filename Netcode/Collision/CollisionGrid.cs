@@ -461,7 +461,7 @@ namespace AlpineLib.Netcode.Collision {
                 return false;
             }
 
-            return maxX - minX <= MaxBucketedExtent && maxZ - minZ <= MaxBucketedExtent;
+            return (float)(maxX - minX) <= MaxBucketedExtent && (float)(maxZ - minZ) <= MaxBucketedExtent;
         }
 
         /// <summary>Neither infinite nor a NaN.</summary>
@@ -471,7 +471,7 @@ namespace AlpineLib.Netcode.Collision {
 
         /// <summary>Which cell a world coordinate falls in, floored so negatives bucket correctly.</summary>
         private static int CellCoordinate(float value) {
-            return (int)MathF.Floor(value / CellSize);
+            return (int)MathF.Floor((float)(value / CellSize));
         }
     }
 }

@@ -115,8 +115,8 @@ namespace AlpineLib.Netcode.Collision {
             uint cycleTicks = CycleTicks(tickIntervalSeconds);
             uint phasedTicks = PhasedTicks(tick, cycleTicks);
             uint forwardTicks = ForwardTicks(phasedTicks, cycleTicks);
-            float seconds = forwardTicks * tickIntervalSeconds;
-            float distance = seconds * Speed;
+            float seconds = (float)(forwardTicks * tickIntervalSeconds);
+            float distance = (float)(seconds * Speed);
             return PositionAtDistance(distance);
         }
 
@@ -130,11 +130,12 @@ namespace AlpineLib.Netcode.Collision {
             for (int waypointIndex = 1; waypointIndex < waypoints.Length; waypointIndex++) {
                 Vector3 previous = waypoints[waypointIndex - 1];
                 Vector3 current = waypoints[waypointIndex];
-                float deltaX = current.X - previous.X;
-                float deltaY = current.Y - previous.Y;
-                float deltaZ = current.Z - previous.Z;
-                float segmentLength = MathF.Sqrt(deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ);
-                running = running + segmentLength;
+                float deltaX = (float)(current.X - previous.X);
+                float deltaY = (float)(current.Y - previous.Y);
+                float deltaZ = (float)(current.Z - previous.Z);
+                float squared = (float)((float)((float)(deltaX * deltaX) + (float)(deltaY * deltaY)) + (float)(deltaZ * deltaZ));
+                float segmentLength = (float)MathF.Sqrt(squared);
+                running = (float)(running + segmentLength);
                 cumulative[waypointIndex] = running;
             }
 
@@ -151,8 +152,8 @@ namespace AlpineLib.Netcode.Collision {
                 return 1u;
             }
 
-            float seconds = TotalLength / Speed;
-            float exactTicks = seconds / tickIntervalSeconds;
+            float seconds = (float)(TotalLength / Speed);
+            float exactTicks = (float)(seconds / tickIntervalSeconds);
             if (!(exactTicks < MaxTraversalTicks)) {
                 return MaxTraversalTicks;
             }
@@ -213,7 +214,7 @@ namespace AlpineLib.Netcode.Collision {
                     continue;
                 }
 
-                return InterpolateSegment(segmentIndex, distance - cumulativeDistances[segmentIndex]);
+                return InterpolateSegment(segmentIndex, (float)(distance - cumulativeDistances[segmentIndex]));
             }
 
             return Waypoints[Waypoints.Length - 1];
@@ -226,15 +227,15 @@ namespace AlpineLib.Netcode.Collision {
         private Vector3 InterpolateSegment(int segmentIndex, float distanceIntoSegment) {
             Vector3 start = Waypoints[segmentIndex];
             Vector3 end = Waypoints[segmentIndex + 1];
-            float segmentLength = cumulativeDistances[segmentIndex + 1] - cumulativeDistances[segmentIndex];
+            float segmentLength = (float)(cumulativeDistances[segmentIndex + 1] - cumulativeDistances[segmentIndex]);
             if (segmentLength <= 0f) {
                 return start;
             }
 
-            float fraction = distanceIntoSegment / segmentLength;
-            float x = start.X + (end.X - start.X) * fraction;
-            float y = start.Y + (end.Y - start.Y) * fraction;
-            float z = start.Z + (end.Z - start.Z) * fraction;
+            float fraction = (float)(distanceIntoSegment / segmentLength);
+            float x = (float)(start.X + (float)((float)(end.X - start.X) * fraction));
+            float y = (float)(start.Y + (float)((float)(end.Y - start.Y) * fraction));
+            float z = (float)(start.Z + (float)((float)(end.Z - start.Z) * fraction));
             return new Vector3(x, y, z);
         }
     }

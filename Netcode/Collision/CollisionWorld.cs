@@ -205,10 +205,10 @@ namespace AlpineLib.Netcode.Collision {
         public void TranslateAll(Vector3 delta) {
             foreach (CollisionGroup group in groups.Values) {
                 Vector3 offset = group.Offset;
-                group.Offset = new Vector3(offset.X + delta.X, offset.Y + delta.Y, offset.Z + delta.Z);
+                group.Offset = new Vector3((float)(offset.X + delta.X), (float)(offset.Y + delta.Y), (float)(offset.Z + delta.Z));
             }
 
-            moverOffset = new Vector3(moverOffset.X + delta.X, moverOffset.Y + delta.Y, moverOffset.Z + delta.Z);
+            moverOffset = new Vector3((float)(moverOffset.X + delta.X), (float)(moverOffset.Y + delta.Y), (float)(moverOffset.Z + delta.Z));
             MarkChanged();
         }
 
@@ -248,7 +248,7 @@ namespace AlpineLib.Netcode.Collision {
             }
 
             Vector3 pathPosition = mover.Path.EvaluatePosition(tick, TickIntervalSeconds);
-            return new Vector3(pathPosition.X + moverOffset.X, pathPosition.Y + moverOffset.Y, pathPosition.Z + moverOffset.Z);
+            return new Vector3((float)(pathPosition.X + moverOffset.X), (float)(pathPosition.Y + moverOffset.Y), (float)(pathPosition.Z + moverOffset.Z));
         }
 
         /// <summary>
@@ -268,7 +268,7 @@ namespace AlpineLib.Netcode.Collision {
 
             Vector3 current = EvaluateMoverPosition(moverIndex, tick);
             Vector3 previous = EvaluateMoverPosition(moverIndex, tick - 1u);
-            return new Vector3(current.X - previous.X, current.Y - previous.Y, current.Z - previous.Z);
+            return new Vector3((float)(current.X - previous.X), (float)(current.Y - previous.Y), (float)(current.Z - previous.Z));
         }
 
         /// <summary>
@@ -313,10 +313,10 @@ namespace AlpineLib.Netcode.Collision {
 
         /// <summary>Tests the broad-phase candidates and writes the overlaps, ascending.</summary>
         private int CollectStaticContacts(in CapsulePose pose, Span<int> candidates, Span<CollisionContact> contacts) {
-            float minX = pose.FootPosition.X - pose.Radius;
-            float maxX = pose.FootPosition.X + pose.Radius;
-            float minZ = pose.FootPosition.Z - pose.Radius;
-            float maxZ = pose.FootPosition.Z + pose.Radius;
+            float minX = (float)(pose.FootPosition.X - pose.Radius);
+            float maxX = (float)(pose.FootPosition.X + pose.Radius);
+            float minZ = (float)(pose.FootPosition.Z - pose.Radius);
+            float maxZ = (float)(pose.FootPosition.Z + pose.Radius);
             int candidateCount = grid.Collect(minX, maxX, minZ, maxZ, candidates);
 
             int written = 0;

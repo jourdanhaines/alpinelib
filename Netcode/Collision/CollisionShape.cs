@@ -180,7 +180,7 @@ namespace AlpineLib.Netcode.Collision {
         /// </summary>
         public CollisionShape Translated(Vector3 offset) {
             CollisionShape moved = this;
-            moved.Center = new Vector3(Center.X + offset.X, Center.Y + offset.Y, Center.Z + offset.Z);
+            moved.Center = new Vector3((float)(Center.X + offset.X), (float)(Center.Y + offset.Y), (float)(Center.Z + offset.Z));
             return moved;
         }
 
@@ -213,10 +213,10 @@ namespace AlpineLib.Netcode.Collision {
             }
 
             GetHorizontalExtents(out float extentX, out float extentZ);
-            minX = Center.X - extentX;
-            maxX = Center.X + extentX;
-            minZ = Center.Z - extentZ;
-            maxZ = Center.Z + extentZ;
+            minX = (float)(Center.X - extentX);
+            maxX = (float)(Center.X + extentX);
+            minZ = (float)(Center.Z - extentZ);
+            maxZ = (float)(Center.Z + extentZ);
         }
 
         /// <summary>Half the shape's width along world X and world Z, for the finite primitives.</summary>
@@ -228,17 +228,19 @@ namespace AlpineLib.Netcode.Collision {
             }
 
             if (Type == CollisionShapeType.Capsule) {
-                extentX = MathF.Abs(AxisUp.X) * HalfLength + Radius;
-                extentZ = MathF.Abs(AxisUp.Z) * HalfLength + Radius;
+                extentX = (float)((float)(MathF.Abs(AxisUp.X) * HalfLength) + Radius);
+                extentZ = (float)((float)(MathF.Abs(AxisUp.Z) * HalfLength) + Radius);
                 return;
             }
 
-            extentX = MathF.Abs(AxisRight.X) * HalfExtents.X
-                + MathF.Abs(AxisUp.X) * HalfExtents.Y
-                + MathF.Abs(AxisForward.X) * HalfExtents.Z;
-            extentZ = MathF.Abs(AxisRight.Z) * HalfExtents.X
-                + MathF.Abs(AxisUp.Z) * HalfExtents.Y
-                + MathF.Abs(AxisForward.Z) * HalfExtents.Z;
+            float rightX = (float)(MathF.Abs(AxisRight.X) * HalfExtents.X);
+            float upX = (float)(MathF.Abs(AxisUp.X) * HalfExtents.Y);
+            float forwardX = (float)(MathF.Abs(AxisForward.X) * HalfExtents.Z);
+            extentX = (float)((float)(rightX + upX) + forwardX);
+            float rightZ = (float)(MathF.Abs(AxisRight.Z) * HalfExtents.X);
+            float upZ = (float)(MathF.Abs(AxisUp.Z) * HalfExtents.Y);
+            float forwardZ = (float)(MathF.Abs(AxisForward.Z) * HalfExtents.Z);
+            extentZ = (float)((float)(rightZ + upZ) + forwardZ);
         }
 
         // The early-reject radius rounded up to the 1e-4 grid plus one step, so the float cast never undercuts it. Holds

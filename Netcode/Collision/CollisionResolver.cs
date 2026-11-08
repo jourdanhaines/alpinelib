@@ -27,6 +27,13 @@ namespace AlpineLib.Netcode.Collision {
     /// so a capsule wedged into a corner resolves the same corner first on both ends.
     /// </para>
     /// <para>
+    /// <b>Every operation is narrowed.</b> Each <c>+ - * /</c> and each <see cref="MathF.Sqrt"/> result is
+    /// cast to <c>float</c> before it feeds the next operation, one result per cast. Mono with its float32
+    /// optimisation off (the Unity editor) evaluates float expressions in double and would round a compound
+    /// expression once where CoreCLR rounds every step; the casts make both round per operation, which is what
+    /// CoreCLR already did, so its results are unchanged.
+    /// </para>
+    /// <para>
     /// The one loop in here that could have been an iterative solver — finding where along the pawn's
     /// segment it comes closest to a box — is instead an exact scan over a fixed, small set of candidate
     /// parameters. Distance from a segment to a box is convex and piecewise quadratic, so its minimum is
@@ -149,7 +156,7 @@ namespace AlpineLib.Netcode.Collision {
         /// <summary>An infinite floor: the feet are the only part of the capsule that can be below it.</summary>
         private static bool TryGetPlaneContact(in CapsulePose pose, in CollisionShape shape, out CollisionContact contact) {
             contact = default;
-            float depth = shape.Center.Y - pose.FootPosition.Y;
+            float depth = (float)(shape.Center.Y - pose.FootPosition.Y);
             if (depth <= 0f) {
                 return false;
             }
@@ -167,7 +174,7 @@ namespace AlpineLib.Netcode.Collision {
             Vector3 segmentTop = pose.SegmentTop;
             float parameter = ClosestParameterOnSegment(segmentBottom, segmentTop, shape.Center);
             Vector3 nearest = AddScaled(segmentBottom, Subtract(segmentTop, segmentBottom), parameter);
-            return TryResolveSeparation(nearest, shape.Center, pose.Radius + shape.Radius, out contact);
+            return TryResolveSeparation(nearest, shape.Center, (float)(pose.Radius + shape.Radius), out contact);
         }
 
         /// <summary>
@@ -181,7 +188,7 @@ namespace AlpineLib.Netcode.Collision {
             ClosestSegmentParameters(poseBottom, poseTop, shapeBottom, shapeTop, out float poseParameter, out float shapeParameter);
             Vector3 onPose = AddScaled(poseBottom, Subtract(poseTop, poseBottom), poseParameter);
             Vector3 onShape = AddScaled(shapeBottom, Subtract(shapeTop, shapeBottom), shapeParameter);
-            return TryResolveSeparation(onPose, onShape, pose.Radius + shape.Radius, out contact);
+            return TryResolveSeparation(onPose, onShape, (float)(pose.Radius + shape.Radius), out contact);
         }
 
         /// <summary>
@@ -206,11 +213,11 @@ namespace AlpineLib.Netcode.Collision {
         private static bool TryResolveBoxOverlap(in CollisionShape shape, in Vector3 localPoint, float radius, out CollisionContact contact) {
             contact = default;
             Vector3 halfExtents = shape.HalfExtents;
-            float offsetX = localPoint.X - Clamp(localPoint.X, -halfExtents.X, halfExtents.X);
-            float offsetY = localPoint.Y - Clamp(localPoint.Y, -halfExtents.Y, halfExtents.Y);
-            float offsetZ = localPoint.Z - Clamp(localPoint.Z, -halfExtents.Z, halfExtents.Z);
-            float distanceSquared = offsetX * offsetX + offsetY * offsetY + offsetZ * offsetZ;
-            if (distanceSquared >= radius * radius) {
+            float offsetX = (float)(localPoint.X - Clamp(localPoint.X, -halfExtents.X, halfExtents.X));
+            float offsetY = (float)(localPoint.Y - Clamp(localPoint.Y, -halfExtents.Y, halfExtents.Y));
+            float offsetZ = (float)(localPoint.Z - Clamp(localPoint.Z, -halfExtents.Z, halfExtents.Z));
+            float distanceSquared = SumOfSquares(offsetX, offsetY, offsetZ);
+            if (distanceSquared >= (float)(radius * radius)) {
                 return false;
             }
 
@@ -218,9 +225,9 @@ namespace AlpineLib.Netcode.Collision {
                 return TryResolveBoxInterior(shape, localPoint, radius, out contact);
             }
 
-            float distance = MathF.Sqrt(distanceSquared);
-            var localNormal = new Vector3(offsetX / distance, offsetY / distance, offsetZ / distance);
-            contact = new CollisionContact(ToWorldDirection(shape, localNormal), radius - distance, UnassignedShapeIndex);
+            float distance = (float)MathF.Sqrt(distanceSquared);
+            var localNormal = new Vector3((float)(offsetX / distance), (float)(offsetY / distance), (float)(offsetZ / distance));
+            contact = new CollisionContact(ToWorldDirection(shape, localNormal), (float)(radius - distance), UnassignedShapeIndex);
             return true;
         }
 
@@ -231,12 +238,12 @@ namespace AlpineLib.Netcode.Collision {
         /// </summary>
         private static bool TryResolveBoxInterior(in CollisionShape shape, in Vector3 localPoint, float radius, out CollisionContact contact) {
             Vector3 halfExtents = shape.HalfExtents;
-            float depthX = halfExtents.X - MathF.Abs(localPoint.X);
-            float depthY = halfExtents.Y - MathF.Abs(localPoint.Y);
-            float depthZ = halfExtents.Z - MathF.Abs(localPoint.Z);
+            float depthX = (float)(halfExtents.X - MathF.Abs(localPoint.X));
+            float depthY = (float)(halfExtents.Y - MathF.Abs(localPoint.Y));
+            float depthZ = (float)(halfExtents.Z - MathF.Abs(localPoint.Z));
             float shallowest = MathF.Min(depthX, MathF.Min(depthY, depthZ));
             Vector3 localNormal = SelectFaceNormal(localPoint, depthX, depthY, shallowest);
-            contact = new CollisionContact(ToWorldDirection(shape, localNormal), shallowest + radius, UnassignedShapeIndex);
+            contact = new CollisionContact(ToWorldDirection(shape, localNormal), (float)(shallowest + radius), UnassignedShapeIndex);
             return true;
         }
 
@@ -260,11 +267,11 @@ namespace AlpineLib.Netcode.Collision {
         /// </summary>
         private static bool TryResolveSeparation(in Vector3 onCapsule, in Vector3 onShape, float radiusSum, out CollisionContact contact) {
             contact = default;
-            float offsetX = onCapsule.X - onShape.X;
-            float offsetY = onCapsule.Y - onShape.Y;
-            float offsetZ = onCapsule.Z - onShape.Z;
-            float distanceSquared = offsetX * offsetX + offsetY * offsetY + offsetZ * offsetZ;
-            if (distanceSquared >= radiusSum * radiusSum) {
+            float offsetX = (float)(onCapsule.X - onShape.X);
+            float offsetY = (float)(onCapsule.Y - onShape.Y);
+            float offsetZ = (float)(onCapsule.Z - onShape.Z);
+            float distanceSquared = SumOfSquares(offsetX, offsetY, offsetZ);
+            if (distanceSquared >= (float)(radiusSum * radiusSum)) {
                 return false;
             }
 
@@ -273,9 +280,9 @@ namespace AlpineLib.Netcode.Collision {
                 return true;
             }
 
-            float distance = MathF.Sqrt(distanceSquared);
-            var normal = new Vector3(offsetX / distance, offsetY / distance, offsetZ / distance);
-            contact = new CollisionContact(normal, radiusSum - distance, UnassignedShapeIndex);
+            float distance = (float)MathF.Sqrt(distanceSquared);
+            var normal = new Vector3((float)(offsetX / distance), (float)(offsetY / distance), (float)(offsetZ / distance));
+            contact = new CollisionContact(normal, (float)(radiusSum - distance), UnassignedShapeIndex);
             return true;
         }
 
@@ -318,10 +325,10 @@ namespace AlpineLib.Netcode.Collision {
                 return;
             }
 
-            float inverse = 1f / direction;
-            parameters[count] = Saturate((-halfExtent - origin) * inverse);
+            float inverse = (float)(1f / direction);
+            parameters[count] = Saturate((float)((float)(-halfExtent - origin) * inverse));
             count++;
-            parameters[count] = Saturate((halfExtent - origin) * inverse);
+            parameters[count] = Saturate((float)((float)(halfExtent - origin) * inverse));
             count++;
         }
 
@@ -335,18 +342,18 @@ namespace AlpineLib.Netcode.Collision {
             in Vector3 halfExtents,
             float lower,
             float upper) {
-            float middle = (lower + upper) * 0.5f;
+            float middle = (float)((float)(lower + upper) * 0.5f);
             Vector3 midpoint = AddScaled(origin, direction, middle);
             GetAffineOffset(midpoint.X, origin.X, direction.X, halfExtents.X, out float constantX, out float slopeX);
             GetAffineOffset(midpoint.Y, origin.Y, direction.Y, halfExtents.Y, out float constantY, out float slopeY);
             GetAffineOffset(midpoint.Z, origin.Z, direction.Z, halfExtents.Z, out float constantZ, out float slopeZ);
-            float slopeSquared = slopeX * slopeX + slopeY * slopeY + slopeZ * slopeZ;
+            float slopeSquared = SumOfSquares(slopeX, slopeY, slopeZ);
             if (slopeSquared <= 0f) {
                 return lower;
             }
 
-            float projection = constantX * slopeX + constantY * slopeY + constantZ * slopeZ;
-            return Clamp(-projection / slopeSquared, lower, upper);
+            float projection = DotOf(constantX, constantY, constantZ, slopeX, slopeY, slopeZ);
+            return Clamp((float)(-projection / slopeSquared), lower, upper);
         }
 
         /// <summary>
@@ -361,13 +368,13 @@ namespace AlpineLib.Netcode.Collision {
             out float constant,
             out float slope) {
             if (sample > halfExtent) {
-                constant = origin - halfExtent;
+                constant = (float)(origin - halfExtent);
                 slope = direction;
                 return;
             }
 
             if (sample < -halfExtent) {
-                constant = origin + halfExtent;
+                constant = (float)(origin + halfExtent);
                 slope = direction;
                 return;
             }
@@ -412,17 +419,17 @@ namespace AlpineLib.Netcode.Collision {
 
         /// <summary>Squared distance from a box-local point to the box, zero inside it.</summary>
         private static float SquaredDistanceToBox(in Vector3 point, in Vector3 halfExtents) {
-            float offsetX = point.X - Clamp(point.X, -halfExtents.X, halfExtents.X);
-            float offsetY = point.Y - Clamp(point.Y, -halfExtents.Y, halfExtents.Y);
-            float offsetZ = point.Z - Clamp(point.Z, -halfExtents.Z, halfExtents.Z);
-            return offsetX * offsetX + offsetY * offsetY + offsetZ * offsetZ;
+            float offsetX = (float)(point.X - Clamp(point.X, -halfExtents.X, halfExtents.X));
+            float offsetY = (float)(point.Y - Clamp(point.Y, -halfExtents.Y, halfExtents.Y));
+            float offsetZ = (float)(point.Z - Clamp(point.Z, -halfExtents.Z, halfExtents.Z));
+            return SumOfSquares(offsetX, offsetY, offsetZ);
         }
 
         /// <summary>How far a box-local point is from the nearest face, negative when it is outside.</summary>
         private static float InteriorDepth(in Vector3 point, in Vector3 halfExtents) {
-            float depthX = halfExtents.X - MathF.Abs(point.X);
-            float depthY = halfExtents.Y - MathF.Abs(point.Y);
-            float depthZ = halfExtents.Z - MathF.Abs(point.Z);
+            float depthX = (float)(halfExtents.X - MathF.Abs(point.X));
+            float depthY = (float)(halfExtents.Y - MathF.Abs(point.Y));
+            float depthZ = (float)(halfExtents.Z - MathF.Abs(point.Z));
             return MathF.Min(depthX, MathF.Min(depthY, depthZ));
         }
 
@@ -463,7 +470,7 @@ namespace AlpineLib.Netcode.Collision {
         private static bool TryGetBoxSurfaceHeight(in CollisionShape shape, float x, float z, out float height, out Vector3 normal) {
             height = 0f;
             normal = new Vector3(0f, 1f, 0f);
-            float startHeight = shape.Center.Y + VerticalReach(shape) + ProbeClearance;
+            float startHeight = (float)((float)(shape.Center.Y + VerticalReach(shape)) + ProbeClearance);
             Vector3 localOrigin = ToBoxLocal(shape, new Vector3(x, startHeight, z));
             var localDirection = new Vector3(-shape.AxisRight.Y, -shape.AxisUp.Y, -shape.AxisForward.Y);
             float entry = 0f;
@@ -486,7 +493,7 @@ namespace AlpineLib.Netcode.Collision {
                 return false;
             }
 
-            height = startHeight - entry;
+            height = (float)(startHeight - entry);
             normal = ScaledAxis(shape, entryAxis, entrySign);
             return true;
         }
@@ -509,9 +516,9 @@ namespace AlpineLib.Netcode.Collision {
                 return MathF.Abs(origin) <= halfExtent;
             }
 
-            float inverse = 1f / direction;
-            float toLow = (-halfExtent - origin) * inverse;
-            float toHigh = (halfExtent - origin) * inverse;
+            float inverse = (float)(1f / direction);
+            float toLow = (float)((float)(-halfExtent - origin) * inverse);
+            float toHigh = (float)((float)(halfExtent - origin) * inverse);
             float near = MathF.Min(toLow, toHigh);
             float far = MathF.Max(toLow, toHigh);
             if (near > entry) {
@@ -528,17 +535,17 @@ namespace AlpineLib.Netcode.Collision {
         private static bool TryGetSphereSurfaceHeight(in Vector3 center, float radius, float x, float z, out float height, out Vector3 normal) {
             height = 0f;
             normal = new Vector3(0f, 1f, 0f);
-            float offsetX = x - center.X;
-            float offsetZ = z - center.Z;
-            float planarSquared = offsetX * offsetX + offsetZ * offsetZ;
-            float radiusSquared = radius * radius;
+            float offsetX = (float)(x - center.X);
+            float offsetZ = (float)(z - center.Z);
+            float planarSquared = (float)((float)(offsetX * offsetX) + (float)(offsetZ * offsetZ));
+            float radiusSquared = (float)(radius * radius);
             if (planarSquared > radiusSquared) {
                 return false;
             }
 
-            float rise = MathF.Sqrt(radiusSquared - planarSquared);
-            height = center.Y + rise;
-            normal = new Vector3(offsetX / radius, rise / radius, offsetZ / radius);
+            float rise = (float)MathF.Sqrt((float)(radiusSquared - planarSquared));
+            height = (float)(center.Y + rise);
+            normal = new Vector3((float)(offsetX / radius), (float)(rise / radius), (float)(offsetZ / radius));
             return true;
         }
 
@@ -590,34 +597,35 @@ namespace AlpineLib.Netcode.Collision {
             height = 0f;
             normal = new Vector3(0f, 1f, 0f);
             Vector3 axis = shape.AxisUp;
-            float offsetX = x - shape.Center.X;
-            float offsetZ = z - shape.Center.Z;
-            float quadratic = 1f - axis.Y * axis.Y;
+            float offsetX = (float)(x - shape.Center.X);
+            float offsetZ = (float)(z - shape.Center.Z);
+            float quadratic = (float)(1f - (float)(axis.Y * axis.Y));
             if (quadratic <= ParallelEpsilon) {
                 return false;
             }
 
-            float planarProjection = offsetX * axis.X + offsetZ * axis.Z;
-            float linear = -2f * planarProjection * axis.Y;
-            float constant = offsetX * offsetX + offsetZ * offsetZ - planarProjection * planarProjection - shape.Radius * shape.Radius;
-            float discriminant = linear * linear - 4f * quadratic * constant;
+            float planarProjection = (float)((float)(offsetX * axis.X) + (float)(offsetZ * axis.Z));
+            float linear = (float)((float)(-2f * planarProjection) * axis.Y);
+            float planarSquared = (float)((float)(offsetX * offsetX) + (float)(offsetZ * offsetZ));
+            float constant = (float)((float)(planarSquared - (float)(planarProjection * planarProjection)) - (float)(shape.Radius * shape.Radius));
+            float discriminant = (float)((float)(linear * linear) - (float)((float)(4f * quadratic) * constant));
             if (discriminant < 0f) {
                 return false;
             }
 
-            float rise = (-linear + MathF.Sqrt(discriminant)) / (2f * quadratic);
-            float alongAxis = planarProjection + rise * axis.Y;
+            float rise = (float)((float)(-linear + (float)MathF.Sqrt(discriminant)) / (float)(2f * quadratic));
+            float alongAxis = (float)(planarProjection + (float)(rise * axis.Y));
             if (MathF.Abs(alongAxis) > shape.HalfLength) {
                 return false;
             }
 
-            height = shape.Center.Y + rise;
+            height = (float)(shape.Center.Y + rise);
             var surface = new Vector3(offsetX, rise, offsetZ);
             var toSurface = new Vector3(
-                surface.X - alongAxis * axis.X,
-                surface.Y - alongAxis * axis.Y,
-                surface.Z - alongAxis * axis.Z);
-            normal = new Vector3(toSurface.X / shape.Radius, toSurface.Y / shape.Radius, toSurface.Z / shape.Radius);
+                (float)(surface.X - (float)(alongAxis * axis.X)),
+                (float)(surface.Y - (float)(alongAxis * axis.Y)),
+                (float)(surface.Z - (float)(alongAxis * axis.Z)));
+            normal = new Vector3((float)(toSurface.X / shape.Radius), (float)(toSurface.Y / shape.Radius), (float)(toSurface.Z / shape.Radius));
             return true;
         }
 
@@ -628,12 +636,10 @@ namespace AlpineLib.Netcode.Collision {
             }
 
             if (shape.Type == CollisionShapeType.Capsule) {
-                return MathF.Abs(shape.AxisUp.Y) * shape.HalfLength + shape.Radius;
+                return (float)((float)(MathF.Abs(shape.AxisUp.Y) * shape.HalfLength) + shape.Radius);
             }
 
-            return MathF.Abs(shape.AxisRight.Y) * shape.HalfExtents.X
-                + MathF.Abs(shape.AxisUp.Y) * shape.HalfExtents.Y
-                + MathF.Abs(shape.AxisForward.Y) * shape.HalfExtents.Z;
+            return DotOf(MathF.Abs(shape.AxisRight.Y), MathF.Abs(shape.AxisUp.Y), MathF.Abs(shape.AxisForward.Y), shape.HalfExtents.X, shape.HalfExtents.Y, shape.HalfExtents.Z);
         }
 
         /// <summary>The endpoints of a capsule shape's inner segment, in world space.</summary>
@@ -641,26 +647,26 @@ namespace AlpineLib.Netcode.Collision {
             Vector3 axis = shape.AxisUp;
             float halfLength = shape.HalfLength;
             lower = new Vector3(
-                shape.Center.X - axis.X * halfLength,
-                shape.Center.Y - axis.Y * halfLength,
-                shape.Center.Z - axis.Z * halfLength);
+                (float)(shape.Center.X - (float)(axis.X * halfLength)),
+                (float)(shape.Center.Y - (float)(axis.Y * halfLength)),
+                (float)(shape.Center.Z - (float)(axis.Z * halfLength)));
             upper = new Vector3(
-                shape.Center.X + axis.X * halfLength,
-                shape.Center.Y + axis.Y * halfLength,
-                shape.Center.Z + axis.Z * halfLength);
+                (float)(shape.Center.X + (float)(axis.X * halfLength)),
+                (float)(shape.Center.Y + (float)(axis.Y * halfLength)),
+                (float)(shape.Center.Z + (float)(axis.Z * halfLength)));
         }
 
         /// <summary>Where on a segment a point projects, clamped to the segment's ends.</summary>
         private static float ClosestParameterOnSegment(in Vector3 start, in Vector3 end, in Vector3 point) {
             Vector3 direction = Subtract(end, start);
-            float lengthSquared = direction.X * direction.X + direction.Y * direction.Y + direction.Z * direction.Z;
+            float lengthSquared = Dot(direction, direction);
             if (lengthSquared <= DegenerateSquaredEpsilon) {
                 return 0f;
             }
 
             Vector3 offset = Subtract(point, start);
-            float projection = offset.X * direction.X + offset.Y * direction.Y + offset.Z * direction.Z;
-            return Saturate(projection / lengthSquared);
+            float projection = Dot(offset, direction);
+            return Saturate((float)(projection / lengthSquared));
         }
 
         /// <summary>
@@ -689,32 +695,33 @@ namespace AlpineLib.Netcode.Collision {
 
             if (firstLengthSquared <= DegenerateSquaredEpsilon) {
                 firstParameter = 0f;
-                secondParameter = Saturate(betweenOnSecond / secondLengthSquared);
+                secondParameter = Saturate((float)(betweenOnSecond / secondLengthSquared));
                 return;
             }
 
             float betweenOnFirst = Dot(firstDirection, between);
             if (secondLengthSquared <= DegenerateSquaredEpsilon) {
-                firstParameter = Saturate(-betweenOnFirst / firstLengthSquared);
+                firstParameter = Saturate((float)(-betweenOnFirst / firstLengthSquared));
                 secondParameter = 0f;
                 return;
             }
 
             float directionDot = Dot(firstDirection, secondDirection);
-            float denominator = firstLengthSquared * secondLengthSquared - directionDot * directionDot;
+            float denominator = (float)((float)(firstLengthSquared * secondLengthSquared) - (float)(directionDot * directionDot));
+            float numerator = (float)((float)(directionDot * betweenOnSecond) - (float)(betweenOnFirst * secondLengthSquared));
             firstParameter = denominator != 0f
-                ? Saturate((directionDot * betweenOnSecond - betweenOnFirst * secondLengthSquared) / denominator)
+                ? Saturate((float)(numerator / denominator))
                 : 0f;
-            secondParameter = (directionDot * firstParameter + betweenOnSecond) / secondLengthSquared;
+            secondParameter = (float)((float)((float)(directionDot * firstParameter) + betweenOnSecond) / secondLengthSquared);
             if (secondParameter < 0f) {
                 secondParameter = 0f;
-                firstParameter = Saturate(-betweenOnFirst / firstLengthSquared);
+                firstParameter = Saturate((float)(-betweenOnFirst / firstLengthSquared));
                 return;
             }
 
             if (secondParameter > 1f) {
                 secondParameter = 1f;
-                firstParameter = Saturate((directionDot - betweenOnFirst) / firstLengthSquared);
+                firstParameter = Saturate((float)((float)(directionDot - betweenOnFirst) / firstLengthSquared));
             }
         }
 
@@ -727,40 +734,56 @@ namespace AlpineLib.Netcode.Collision {
         /// <summary>A box-local direction expressed back in world space.</summary>
         private static Vector3 ToWorldDirection(in CollisionShape shape, in Vector3 localDirection) {
             return new Vector3(
-                shape.AxisRight.X * localDirection.X + shape.AxisUp.X * localDirection.Y + shape.AxisForward.X * localDirection.Z,
-                shape.AxisRight.Y * localDirection.X + shape.AxisUp.Y * localDirection.Y + shape.AxisForward.Y * localDirection.Z,
-                shape.AxisRight.Z * localDirection.X + shape.AxisUp.Z * localDirection.Y + shape.AxisForward.Z * localDirection.Z);
+                DotOf(shape.AxisRight.X, shape.AxisUp.X, shape.AxisForward.X, localDirection.X, localDirection.Y, localDirection.Z),
+                DotOf(shape.AxisRight.Y, shape.AxisUp.Y, shape.AxisForward.Y, localDirection.X, localDirection.Y, localDirection.Z),
+                DotOf(shape.AxisRight.Z, shape.AxisUp.Z, shape.AxisForward.Z, localDirection.X, localDirection.Y, localDirection.Z));
         }
 
         /// <summary>One of a box's three axes, signed — the outward normal of the face that axis owns.</summary>
         private static Vector3 ScaledAxis(in CollisionShape shape, int axisIndex, float sign) {
             if (axisIndex == 0) {
-                return new Vector3(shape.AxisRight.X * sign, shape.AxisRight.Y * sign, shape.AxisRight.Z * sign);
+                return new Vector3((float)(shape.AxisRight.X * sign), (float)(shape.AxisRight.Y * sign), (float)(shape.AxisRight.Z * sign));
             }
 
             if (axisIndex == 1) {
-                return new Vector3(shape.AxisUp.X * sign, shape.AxisUp.Y * sign, shape.AxisUp.Z * sign);
+                return new Vector3((float)(shape.AxisUp.X * sign), (float)(shape.AxisUp.Y * sign), (float)(shape.AxisUp.Z * sign));
             }
 
-            return new Vector3(shape.AxisForward.X * sign, shape.AxisForward.Y * sign, shape.AxisForward.Z * sign);
+            return new Vector3((float)(shape.AxisForward.X * sign), (float)(shape.AxisForward.Y * sign), (float)(shape.AxisForward.Z * sign));
         }
 
         /// <summary>Componentwise dot product, spelled out so the accumulation order is ours and not the JIT's.</summary>
         private static float Dot(in Vector3 left, in Vector3 right) {
-            return left.X * right.X + left.Y * right.Y + left.Z * right.Z;
+            return DotOf(left.X, left.Y, left.Z, right.X, right.Y, right.Z);
+        }
+
+        /// <summary>
+        /// a·b written out with every product and sum narrowed to float. Mono with its float32 optimisation off (the
+        /// Unity editor) evaluates float expressions in double; the casts make it round per operation like CoreCLR.
+        /// </summary>
+        private static float DotOf(float ax, float ay, float az, float bx, float by, float bz) {
+            float xx = (float)(ax * bx);
+            float yy = (float)(ay * by);
+            float zz = (float)(az * bz);
+            float partial = (float)(xx + yy);
+            return (float)(partial + zz);
+        }
+
+        private static float SumOfSquares(float x, float y, float z) {
+            return DotOf(x, y, z, x, y, z);
         }
 
         /// <summary>Componentwise subtraction, spelled out for the same reason as <see cref="Dot"/>.</summary>
         private static Vector3 Subtract(in Vector3 left, in Vector3 right) {
-            return new Vector3(left.X - right.X, left.Y - right.Y, left.Z - right.Z);
+            return new Vector3((float)(left.X - right.X), (float)(left.Y - right.Y), (float)(left.Z - right.Z));
         }
 
         /// <summary>A point plus a scaled direction, spelled out for the same reason as <see cref="Dot"/>.</summary>
         private static Vector3 AddScaled(in Vector3 origin, in Vector3 direction, float scale) {
             return new Vector3(
-                origin.X + direction.X * scale,
-                origin.Y + direction.Y * scale,
-                origin.Z + direction.Z * scale);
+                (float)(origin.X + (float)(direction.X * scale)),
+                (float)(origin.Y + (float)(direction.Y * scale)),
+                (float)(origin.Z + (float)(direction.Z * scale)));
         }
 
         /// <summary>Clamps a value into a range using only the two permitted comparisons.</summary>

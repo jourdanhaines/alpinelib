@@ -47,7 +47,7 @@ namespace AlpineLib.Netcode.Collision {
                 }
 
                 if (separationSquared > DegenerateSquaredEpsilon) {
-                    float distance = MathF.Sqrt(separationSquared);
+                    float distance = (float)MathF.Sqrt(separationSquared);
                     float awayX = (float)(planX - closestX);
                     float awayZ = (float)(planZ - closestZ);
                     var normal = new Vector3((float)(awayX / distance), (float)(gapY / distance), (float)(awayZ / distance));
@@ -120,7 +120,7 @@ namespace AlpineLib.Netcode.Collision {
                 float offsetX = (float)(planX - startX);
                 float offsetZ = (float)(planZ - startZ);
                 float lengthSquared = SumOfSquares(edgeX, edgeZ);
-                float length = MathF.Sqrt(lengthSquared);
+                float length = (float)MathF.Sqrt(lengthSquared);
                 float signedDistance = (float)(Cross(offsetX, offsetZ, edgeX, edgeZ) / length);
                 if (signedDistance > largestSigned) {
                     largestSigned = signedDistance;
@@ -208,7 +208,7 @@ namespace AlpineLib.Netcode.Collision {
             shape.Plan.GetVertex(NextIndex(edge, count), out float endX, out float endZ);
             float edgeX = (float)(endX - startX);
             float edgeZ = (float)(endZ - startZ);
-            float length = MathF.Sqrt(SumOfSquares(edgeX, edgeZ));
+            float length = (float)MathF.Sqrt(SumOfSquares(edgeX, edgeZ));
             return new Vector3((float)(edgeZ / length), 0f, (float)(-edgeX / length));
         }
 

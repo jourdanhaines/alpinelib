@@ -37,10 +37,10 @@ namespace AlpineLib.Netcode.Collision {
         public float Height { get; }
 
         /// <summary>Lower end of the inner segment: one radius above the feet.</summary>
-        public Vector3 SegmentBottom => new Vector3(FootPosition.X, FootPosition.Y + Radius, FootPosition.Z);
+        public Vector3 SegmentBottom => new Vector3(FootPosition.X, (float)(FootPosition.Y + Radius), FootPosition.Z);
 
         /// <summary>Upper end of the inner segment: one radius below the crown.</summary>
-        public Vector3 SegmentTop => new Vector3(FootPosition.X, FootPosition.Y + Height - Radius, FootPosition.Z);
+        public Vector3 SegmentTop => new Vector3(FootPosition.X, (float)((float)(FootPosition.Y + Height) - Radius), FootPosition.Z);
 
         /// <summary>The same capsule with its feet somewhere else. Used as the motor substeps.</summary>
         public CapsulePose WithFootPosition(Vector3 footPosition) {
