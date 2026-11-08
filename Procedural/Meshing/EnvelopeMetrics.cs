@@ -15,6 +15,9 @@ namespace AlpineLib.Procedural.Meshing {
         private const double OverTop = 0.05;
         private const int SphereRings = 24;
 
+        // Float samples on a slanted prism rim shared with another prism land a hair either side of it.
+        private const double PrismRimTolerance = 1e-5;
+
         private readonly IReadOnlyList<EnvelopeBox> _boxes;
         private readonly IReadOnlyList<EnvelopeSphere> _spheres;
         private readonly IReadOnlyList<EnvelopePrism> _prisms;
@@ -47,6 +50,12 @@ namespace AlpineLib.Procedural.Meshing {
 
         /// <summary>Sample spacing on collider surfaces, metres.</summary>
         public double Spacing { get; }
+
+        /// <summary>
+        /// A prism cap strip no wider than this under the side of another prism is a lip, not a ledge, and
+        /// leaves no air in <see cref="LedgeAir"/>. Defaults to 0.02.
+        /// </summary>
+        public double LedgeLip { get; set; } = CoveredTolerance;
 
         /// <summary>
         /// Distances (ascending) from exposed side-face points of the boxes and prisms and surface points of the spheres with
@@ -184,7 +193,7 @@ namespace AlpineLib.Procedural.Meshing {
 
             foreach (PlanPoint sample in CapSamples(prism.Plan)) {
                 var point = new Vector3((float)sample.X, (float)(prism.Top + TopLift), (float)sample.Z);
-                if (!IsInsideAny(point)) AddLedge(point, prism.Top - _look.HeightBelow(point.X, point.Z, prism.Top + OverTop, ground), air);
+                if (!IsInsideAny(point) && !IsNearOtherPrism(point, index)) AddLedge(point, prism.Top - _look.HeightBelow(point.X, point.Z, prism.Top + OverTop, ground), air);
             }
         }
 
@@ -250,7 +259,15 @@ namespace AlpineLib.Procedural.Meshing {
                 if (index != sphereIndex && _spheres[index].DistanceOutside(point) <= 0.0) return true;
             }
             for (int index = 0; index < _prisms.Count; index++) {
-                if (index != prismIndex && _prisms[index].DistanceOutside(point) <= 0.0) return true;
+                if (index != prismIndex && _prisms[index].DistanceOutside(point) <= PrismRimTolerance) return true;
+            }
+            return false;
+        }
+
+        // A cap strip narrower than the lip width beside another prism is no ledge.
+        private bool IsNearOtherPrism(Vector3 point, int prismIndex) {
+            for (int index = 0; index < _prisms.Count; index++) {
+                if (index != prismIndex && _prisms[index].DistanceOutside(point) <= LedgeLip) return true;
             }
             return false;
         }
@@ -263,7 +280,7 @@ namespace AlpineLib.Procedural.Meshing {
                 if (sphere.DistanceOutside(point) <= 0.0) return true;
             }
             foreach (EnvelopePrism prism in _prisms) {
-                if (prism.DistanceOutside(point) <= 0.0) return true;
+                if (prism.DistanceOutside(point) <= PrismRimTolerance) return true;
             }
             return false;
         }
