@@ -27,11 +27,9 @@ namespace AlpineLib.Netcode.Collision {
     /// so a capsule wedged into a corner resolves the same corner first on both ends.
     /// </para>
     /// <para>
-    /// <b>Every operation is narrowed.</b> Each <c>+ - * /</c> and each <see cref="MathF.Sqrt"/> result is
-    /// cast to <c>float</c> before it feeds the next operation, one result per cast. Mono with its float32
-    /// optimisation off (the Unity editor) evaluates float expressions in double and would round a compound
-    /// expression once where CoreCLR rounds every step; the casts make both round per operation, which is what
-    /// CoreCLR already did, so its results are unchanged.
+    /// <b>Every operation is narrowed:</b> each <c>+ - * /</c> and <see cref="MathF.Sqrt"/> result is cast to
+    /// <c>float</c>, so the Unity editor's Mono (double evaluation, float32 optimisation off) rounds per
+    /// operation as CoreCLR does.
     /// </para>
     /// <para>
     /// The one loop in here that could have been an iterative solver — finding where along the pawn's
