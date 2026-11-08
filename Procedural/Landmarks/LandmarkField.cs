@@ -120,9 +120,9 @@ namespace AlpineLib.Procedural.Landmarks {
             LandmarkClusterKind kind = rules.KindOf(random.NextDouble());
             int smallCount = random.NextInt(rules.SmallCountMin, rules.SmallCountMax + 1);
             double baseBearing = random.NextDouble();
-            var slots = new SlotDraws[LandmarkClusterSettings.Slots];
+            var slots = new LandmarkSlotDraws[LandmarkClusterSettings.Slots];
             for (int slot = 0; slot < slots.Length; slot++) {
-                slots[slot] = SlotDraws.Draw(random);
+                slots[slot] = LandmarkSlotDraws.Draw(random);
             }
             double roll = random.NextDouble();
             double preference = Quantise(random.NextDouble());
@@ -148,13 +148,13 @@ namespace AlpineLib.Procedural.Landmarks {
         }
 
         private static LandmarkSite[] Members(int tier, CellCoord block, CellCoord anchor, double offsetX, double offsetZ, ulong id, bool isAttracted,
-                                              LandmarkClusterKind kind, int smallCount, double baseBearing, SlotDraws[] slots, LandmarkClusterSettings rules) {
+                                              LandmarkClusterKind kind, int smallCount, double baseBearing, LandmarkSlotDraws[] slots, LandmarkClusterSettings rules) {
             int larges = kind == LandmarkClusterKind.Multi ? 2 : 1;
             int smalls = kind == LandmarkClusterKind.Lonely ? 0 : smallCount;
             var members = new LandmarkSite[larges + smalls];
             int count = members.Length;
             for (int large = 0; large < larges; large++) {
-                SlotDraws draws = slots[large];
+                LandmarkSlotDraws draws = slots[large];
                 bool isLonely = kind == LandmarkClusterKind.Lonely;
                 double across = isLonely
                     ? LandmarkClusterSettings.Size(rules.LonelyMin, rules.LonelyMax, rules.LonelySkew, draws.Size)
@@ -166,7 +166,7 @@ namespace AlpineLib.Procedural.Landmarks {
             }
             for (int small = 0; small < smalls; small++) {
                 int slot = LandmarkClusterSettings.FirstSmallSlot + small;
-                SlotDraws draws = slots[slot];
+                LandmarkSlotDraws draws = slots[slot];
                 double spread = 360.0 / smalls;
                 int bearing = Degrees(baseBearing * 360.0 + small * spread + (draws.Bearing - 0.5) * 0.6 * spread);
                 double across = LandmarkClusterSettings.Size(rules.SmallMin, rules.SmallMax, rules.SmallSkew, draws.Size);
@@ -177,7 +177,7 @@ namespace AlpineLib.Procedural.Landmarks {
         }
 
         private static LandmarkSite Site(int tier, CellCoord block, CellCoord anchor, double offsetX, double offsetZ, ulong id, bool isAttracted, int slot,
-                                         SlotDraws draws, LandmarkMember member) {
+                                         LandmarkSlotDraws draws, LandmarkMember member) {
             ulong memberId = StableHash.Mix(id, (ulong)slot + 1UL);
             return new LandmarkSite(tier, block, anchor, offsetX, offsetZ, draws.ShapeSeed, draws.Spare, memberId, isAttracted, member);
         }
@@ -208,37 +208,6 @@ namespace AlpineLib.Procedural.Landmarks {
             moved = !chosen.Equals(anchor);
             anchor = chosen;
             return true;
-        }
-
-        // One fixed member slot's draws.
-        private readonly struct SlotDraws {
-            private SlotDraws(double size, double bearing, double ring, ulong shapeSeed, LandmarkDraws spare) {
-                Size = size;
-                Bearing = bearing;
-                Ring = ring;
-                ShapeSeed = shapeSeed;
-                Spare = spare;
-            }
-
-            public double Size { get; }
-
-            public double Bearing { get; }
-
-            public double Ring { get; }
-
-            public ulong ShapeSeed { get; }
-
-            public LandmarkDraws Spare { get; }
-
-            public static SlotDraws Draw(SplitMix64 random) {
-                double size = random.NextDouble();
-                double bearing = random.NextDouble();
-                double ring = random.NextDouble();
-                ulong shapeSeed = random.NextULong();
-                var spare = new LandmarkDraws(Quantise(random.NextDouble()), Quantise(random.NextDouble()),
-                                              Quantise(random.NextDouble()), Quantise(random.NextDouble()));
-                return new SlotDraws(size, bearing, ring, shapeSeed, spare);
-            }
         }
 
         // Two extra draws after all the others (attract roll, then the scorer's preference), so unattracted sites keep
@@ -363,7 +332,7 @@ namespace AlpineLib.Procedural.Landmarks {
         }
 
         // Floor keeps the draw strictly below 1.
-        private static double Quantise(double unit) {
+        internal static double Quantise(double unit) {
             return Math.Floor(unit * DrawScale) / DrawScale;
         }
 
