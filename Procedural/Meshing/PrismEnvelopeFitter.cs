@@ -33,6 +33,7 @@ namespace AlpineLib.Procedural.Meshing {
         private const double FlatNormal = 0.7;
         private const int MergeRounds = 3;
         private const int RepairRounds = 6;
+        private const int MaxFills = 8;
 
         /// <summary>The prisms around the faces in <paramref name="corners"/> (three per face).</summary>
         /// <exception cref="InvalidOperationException">
@@ -128,7 +129,7 @@ namespace AlpineLib.Procedural.Meshing {
 
             int count = Math.Max(1, (int)Math.Ceiling((top - bottom) / (worldHeight / settings.MaxScale) - 1e-9));
             double walkingTop = settings.LookHeight(settings.WalkingTop) + HeightEpsilon;
-            double gateLow = settings.LookHeight(settings.WalkingLow), gateHigh = settings.LookHeight(Math.Max(settings.GateTop, settings.ReachableTop));
+            double gateLow = settings.LookHeight(settings.WalkingLow), gateHigh = settings.LookHeight(settings.GateTop);
             double previous = bottom;
             for (int layer = 1; layer <= count; layer++) {
                 double next = layer == count ? top : ConvexPlan.Round(bottom + (top - bottom) * layer / count);
@@ -258,18 +259,24 @@ namespace AlpineLib.Procedural.Meshing {
         // missed and budget remains.
         // Returns where the budget ran out, or an empty string.
         private static string RepairLedges(IReadOnlyList<Vector3> corners, PrismEnvelopeSettings settings, PrismRegion region, List<PrismPiece> coarse, int budget) {
+            int fills = 0;
             for (int round = 0; round < RepairRounds; round++) {
                 var prisms = new List<EnvelopePrism>();
                 foreach (PrismPiece piece in region.Pieces) prisms.Add(piece.ToPrism());
                 foreach (PrismPiece piece in coarse) prisms.Add(piece.ToPrism());
                 EnvelopeMetrics metrics = Metrics(corners, prisms, settings);
-                List<double> air = metrics.LedgeAir(settings.Ground, settings.LookHeight(settings.StepOffset), settings.LookHeight(settings.ReachableTop));
+                List<double> air = metrics.LedgeAir(settings.Ground, settings.LookHeight(settings.StepOffset), settings.ReachableLookTop);
                 if (EnvelopeMetrics.Quantile(air, 1.0) > settings.LedgeAirMax) {
                     Vector3 spot = metrics.WorstLedgePoint;
-                    if (region.Pieces.Count >= budget) return "budget ran out repairing a ledge at " + spot;
-                    if (!region.ForceCapCut(new Vector3(spot.X, spot.Y - 0.02f, spot.Z))) return string.Empty;
+                    var cap = new Vector3(spot.X, spot.Y - 0.02f, spot.Z);
+                    if (region.Pieces.Count < budget && region.ForceCapCut(cap)) continue;
+                    if (fills < MaxFills && TryFillDown(region.Pieces, coarse, cap)) {
+                        fills++;
+                        round--;
+                        continue;
+                    }
 
-                    continue;
+                    return region.Pieces.Count >= budget ? "budget ran out repairing a ledge at " + spot : string.Empty;
                 }
 
                 List<double> standoff = metrics.Standoff(settings.LookHeight(settings.WalkingLow), settings.LookHeight(settings.GateTop), StandoffCap);
@@ -278,6 +285,52 @@ namespace AlpineLib.Procedural.Meshing {
                 if (!region.ForceSideCut(metrics.WorstStandoffPoint)) return string.Empty;
             }
             return string.Empty;
+        }
+
+        // A ledge no cut removed: lowers the bottom of its prism (or of the prism it already rests on, down the column)
+        // onto the highest prism top under its whole plan, else the lowest bottom of the fit, so air under it is gone.
+        private static bool TryFillDown(List<PrismPiece> pieces, List<PrismPiece> coarse, Vector3 cap) {
+            var all = new List<PrismPiece>(pieces);
+            all.AddRange(coarse);
+            PrismPiece target = CapOwner(all, cap);
+            double floor = double.PositiveInfinity;
+            foreach (PrismPiece piece in all) floor = Math.Min(floor, piece.Bottom);
+            for (int step = 0; target != null && step < all.Count; step++) {
+                PrismPiece support = Support(all, target);
+                double bottom = support == null ? floor : support.Top;
+                if (bottom < target.Bottom - HeightEpsilon) {
+                    if (double.IsNaN(target.FilledFrom)) target.FilledFrom = target.Bottom;
+                    target.Bottom = bottom;
+                    return true;
+                }
+
+                target = support;
+            }
+            return false;
+        }
+
+        private static PrismPiece CapOwner(List<PrismPiece> pieces, Vector3 cap) {
+            foreach (PrismPiece piece in pieces) {
+                if (Math.Abs(piece.Top - cap.Y) <= 0.05 && ConvexPlan.Distance(piece.Plan, cap.X, cap.Z) <= 1e-3) return piece;
+            }
+            return null;
+        }
+
+        // The highest prism at or below the piece's bottom whose plan holds the piece's whole plan.
+        private static PrismPiece Support(List<PrismPiece> pieces, PrismPiece piece) {
+            PrismPiece best = null;
+            foreach (PrismPiece other in pieces) {
+                if (other == piece || other.Top > piece.Bottom + HeightEpsilon || !HoldsPlan(other.Plan, piece.Plan)) continue;
+                if (best == null || other.Top > best.Top) best = other;
+            }
+            return best;
+        }
+
+        private static bool HoldsPlan(List<PlanPoint> outer, List<PlanPoint> inner) {
+            foreach (PlanPoint point in inner) {
+                if (ConvexPlan.Distance(outer, point.X, point.Z) > 1e-6) return false;
+            }
+            return true;
         }
 
         private static string SplitWhileOver(PrismRegion region, int budget) {
@@ -298,6 +351,8 @@ namespace AlpineLib.Procedural.Meshing {
             var pieces = new List<PrismPiece>();
             if (region != null) pieces.AddRange(region.Pieces);
             pieces.AddRange(coarse);
+            int chordViolations = 0;
+            foreach (PrismPiece piece in pieces) chordViolations += KeepVerticesOffChords(piece, settings);
             var prisms = new List<EnvelopePrism>();
             foreach (PrismPiece piece in pieces) prisms.Add(piece.ToPrism());
             double worstOutside = WorstOutside(corners, prisms, settings.SampleSpacing);
@@ -307,16 +362,50 @@ namespace AlpineLib.Procedural.Meshing {
 
             EnvelopeMetrics metrics = Metrics(corners, prisms, settings);
             List<double> standoff = metrics.Standoff(settings.LookHeight(settings.WalkingLow), settings.LookHeight(settings.GateTop), StandoffCap);
-            List<double> air = metrics.LedgeAir(settings.Ground, settings.LookHeight(settings.StepOffset), settings.LookHeight(settings.ReachableTop));
+            List<double> air = metrics.LedgeAir(settings.Ground, settings.LookHeight(settings.StepOffset), settings.ReachableLookTop);
             double standoffP90 = EnvelopeMetrics.Quantile(standoff, 0.9);
             double standoffMax = EnvelopeMetrics.Quantile(standoff, 1.0);
             double ledgeAirMax = EnvelopeMetrics.Quantile(air, 1.0);
             string missed = MissedTargets(prisms.Count, standoffP90, standoffMax, ledgeAirMax, settings);
+            if (chordViolations > 0) missed += (missed.Length > 0 ? ", " : string.Empty) + chordViolations + " plan vertices nearer their neighbours' line than the chord floor";
             if (missed.Length > 0 && ranOut.Length > 0) missed += "; " + ranOut;
             int fallbacks = 0;
             foreach (PrismPiece piece in pieces) fallbacks += piece.FellBack ? 1 : 0;
-            string report = Report(pieces, region == null ? 0 : region.Pieces.Count, standoffP90, standoffMax, ledgeAirMax, worstOutside, fallbacks, settings);
-            return new PrismEnvelopeFit(prisms, edges, metrics, standoffP90, standoffMax, ledgeAirMax, worstOutside, fallbacks, missed, report);
+            double wallTopAirMax = EnvelopeMetrics.Quantile(metrics.SupportedCapAir, 1.0);
+            int fillDowns = 0;
+            double fillStandoff = 0.0;
+            for (int index = 0; index < pieces.Count; index++) {
+                if (double.IsNaN(pieces[index].FilledFrom)) continue;
+
+                fillDowns++;
+                fillStandoff = Math.Max(fillStandoff, EnvelopeMetrics.Quantile(metrics.PrismStandoff(index, pieces[index].Bottom, pieces[index].FilledFrom, StandoffCap), 1.0));
+            }
+            string report = Report(pieces, region == null ? 0 : region.Pieces.Count, standoffP90, standoffMax, ledgeAirMax, worstOutside, fallbacks, settings)
+                + ", chord violations " + chordViolations + ", fill-downs " + fillDowns + " (standoff max " + Format(fillStandoff) + "), wall-top air max " + Format(wallTopAirMax);
+            return new PrismEnvelopeFit(prisms, edges, metrics, standoffP90, standoffMax, ledgeAirMax, worstOutside, fallbacks, missed, report, fillDowns, fillStandoff, wallTopAirMax, chordViolations);
+        }
+
+        // Collapses, outward, plan vertices a convex cooker would drop as lying on their neighbours' line; returns how
+        // many such vertices the piece still has.
+        private static int KeepVerticesOffChords(PrismPiece piece, PrismEnvelopeSettings settings) {
+            double floor = settings.ChordOffsetFloor(piece.Plan, piece.Top - piece.Bottom);
+            if (CountNearChords(piece.Plan, floor) == 0) return 0;
+
+            // The usual spike limit first, then wider: a long prism's floor can need a collapse reaching further out.
+            foreach (double spike in new[] { settings.MinEdge * 2.0, Math.Max(settings.MinEdge * 2.0, floor * 20.0) }) {
+                List<PlanPoint> cleaned = ConvexPlan.Clean(piece.Plan, settings.MinTurn, settings.MinEdge, spike, floor);
+                if (!PrismBandDecomposer.IsRobust(cleaned, settings)) continue;
+
+                piece.Plan = cleaned;
+                if (CountNearChords(cleaned, settings.ChordOffsetFloor(cleaned, piece.Top - piece.Bottom)) == 0) return 0;
+            }
+            return CountNearChords(piece.Plan, settings.ChordOffsetFloor(piece.Plan, piece.Top - piece.Bottom));
+        }
+
+        private static int CountNearChords(List<PlanPoint> plan, double floor) {
+            int count = 0;
+            for (int index = 0; index < plan.Count; index++) count += ConvexPlan.ChordOffset(plan, index) < floor ? 1 : 0;
+            return count;
         }
 
         // Comma-separated targets the fit misses; empty when it meets them all.

@@ -8,6 +8,21 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
         private const double Tolerance = 2e-4;
 
         [Fact]
+        public void AVertexTwoCentimetresOffATallPrismsChordIsCollapsedOutward() {
+            var plan = new List<PlanPoint> { new PlanPoint(-20.0, -20.0), new PlanPoint(20.0, -20.0), new PlanPoint(20.02, 0.0), new PlanPoint(20.0, 20.0), new PlanPoint(-20.0, 20.0) };
+            double floor = ConvexPlan.ChordOffsetFloor(plan, 40.0, 1.5e-3, 0.005);
+            Assert.Equal(1.5e-3 * Math.Sqrt(40.02 * 40.02 + 2.0 * 40.0 * 40.0), floor, 9);
+            Assert.True(ConvexPlan.ChordOffset(plan, 2) < floor);
+
+            List<PlanPoint> cleaned = ConvexPlan.Clean(plan, 0.01, 0.05, 0.1, floor);
+
+            Assert.Equal(4, cleaned.Count);
+            Assert.True(ConvexPlan.IsStrictlyConvexCcw(cleaned, 0.01));
+            for (int index = 0; index < cleaned.Count; index++) Assert.True(ConvexPlan.ChordOffset(cleaned, index) >= floor);
+            Assert.All(plan, (point) => Assert.True(ConvexPlan.Contains(cleaned, point.X, point.Z, Tolerance)));
+        }
+
+        [Fact]
         public void AHullIsConvexCounterClockwiseAndHoldsEveryPoint() {
             for (int seed = 0; seed < 50; seed++) {
                 List<PlanPoint> points = Cloud(seed, 40);

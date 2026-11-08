@@ -70,10 +70,12 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
             var hovering = new EnvelopePrism(1.1, 2.0, Rectangle(-1.0, 1.0, -1.0, 1.0));
             var farAbove = new EnvelopePrism(1.5, 2.5, Rectangle(-1.0, 1.0, -1.0, 1.0));
 
-            var besideStep = new EnvelopeMetrics(Block, null, null, new[] { step, thin }, 0.05) { LedgeLip = 0.1, LipRise = 0.15 };
-            var besideWall = new EnvelopeMetrics(Block, null, null, new[] { wall, thin }, 0.05) { LedgeLip = 0.1, LipRise = 0.15 };
-            var underHovering = new EnvelopeMetrics(Block, null, null, new[] { step, hovering, thin }, 0.05) { LedgeLip = 0.1, LipRise = 0.15 };
-            var underFar = new EnvelopeMetrics(Block, null, null, new[] { step, farAbove, thin }, 0.05) { LedgeLip = 0.1, LipRise = 0.15 };
+            // The look stands well away, so only neighbouring prisms can make the strip a lip, never a wall top.
+            List<Vector3> away = EnvelopeShapes.Cuboid(new Vector3(10f, 1f, 0f), new Vector3(1f, 1f, 1f), 0);
+            var besideStep = new EnvelopeMetrics(away, null, null, new[] { step, thin }, 0.05) { LedgeLip = 0.1, LipRise = 0.15 };
+            var besideWall = new EnvelopeMetrics(away, null, null, new[] { wall, thin }, 0.05) { LedgeLip = 0.1, LipRise = 0.15 };
+            var underHovering = new EnvelopeMetrics(away, null, null, new[] { step, hovering, thin }, 0.05) { LedgeLip = 0.1, LipRise = 0.15 };
+            var underFar = new EnvelopeMetrics(away, null, null, new[] { step, farAbove, thin }, 0.05) { LedgeLip = 0.1, LipRise = 0.15 };
 
             Assert.Contains(besideStep.LedgeAir(0.0, 0.3, 1.05), StripAir);
             Assert.DoesNotContain(besideWall.LedgeAir(0.0, 0.3, 1.05), StripAir);

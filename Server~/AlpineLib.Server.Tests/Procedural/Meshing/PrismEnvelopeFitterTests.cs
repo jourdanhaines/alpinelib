@@ -114,6 +114,49 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
         }
 
         [Fact]
+        public void EveryPlanVertexKeepsTheChordFloor() {
+            var settings = new PrismEnvelopeSettings { Strict = false };
+            foreach (List<Vector3> look in new[] { LeaningLoft(), TwoLobes(), JaggedWalkingAndReach() }) {
+                PrismEnvelopeFit fit = PrismEnvelopeFitter.Fit(look, settings);
+
+                Assert.Equal(0, fit.ChordViolations);
+                foreach (EnvelopePrism prism in fit.Prisms) {
+                    double floor = settings.ChordOffsetFloor(prism.Plan, prism.Top - prism.Bottom);
+                    var plan = new List<PlanPoint>(prism.Plan);
+                    for (int index = 0; index < plan.Count; index++) Assert.True(ConvexPlan.ChordOffset(plan, index) >= floor);
+                }
+            }
+        }
+
+        [Fact]
+        public void TheReachableBandIsMeasuredAtTheSmallestScale() {
+            var placed = new PrismEnvelopeSettings { MaxScale = 1.4, MinScale = 0.7, ReachableTopWorld = 2.2 };
+            var unscaled = new PrismEnvelopeSettings { MaxScale = 1.4, MinScale = 1.4, ReachableTopWorld = 2.2 };
+            var shelf = new EnvelopePrism(1.5, 2.5, new List<PlanPoint> { new PlanPoint(-1.0, -1.0), new PlanPoint(1.0, -1.0), new PlanPoint(1.0, 1.0), new PlanPoint(-1.0, 1.0) });
+            List<Vector3> away = EnvelopeShapes.Cuboid(new Vector3(10f, 1f, 0f), new Vector3(1f, 1f, 1f), 0);
+            var metrics = new EnvelopeMetrics(away, null, null, new[] { shelf }, 0.1);
+
+            // The shelf's cap is 3.5 m up at the largest scale but 1.75 m at the smallest, inside step-plus-jump reach.
+            Assert.Equal(2.2 / 0.7, placed.ReachableLookTop, 9);
+            Assert.Contains(2.5, metrics.LedgeAir(0.0, placed.LookHeight(placed.StepOffset), placed.ReachableLookTop));
+            Assert.Empty(metrics.LedgeAir(0.0, unscaled.LookHeight(unscaled.StepOffset), unscaled.ReachableLookTop));
+        }
+
+        [Fact]
+        public void AnOverhangNoCutCanClearIsFilledDown() {
+            List<Vector3> look = NotchedOverhang();
+            var settings = new PrismEnvelopeSettings { MaxPrisms = 3, Strict = false };
+
+            PrismEnvelopeFit fit = PrismEnvelopeFitter.Fit(look, settings);
+            _output.WriteLine(fit.Report);
+
+            Assert.True(fit.FillDownCount >= 1, fit.Report);
+            Assert.InRange(fit.LedgeAirMax, 0.0, settings.LedgeAirMax);
+            Assert.True(fit.FillDownStandoffMax > 0.0);
+            Assert.InRange(fit.WorstOutside, 0.0, settings.ContainmentTolerance);
+        }
+
+        [Fact]
         public void FitsSurviveAnyTurnScaleAndRounding() {
             foreach (List<Vector3> look in new[] { LeaningLoft(), TwoLobes() }) {
                 PrismEnvelopeFit fit = PrismEnvelopeFitter.Fit(look, new PrismEnvelopeSettings());
@@ -250,6 +293,17 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
                 rings.Add(new LoftRing(height, shifted));
             }
             return LoftMesh.Build(rings, true, true).Positions;
+        }
+
+        // A thin stem under a 3 m slab from 1.0 m to 1.3 m whose plan has a 0.2 m notch the hull bridges over open sand.
+        private static List<Vector3> NotchedOverhang() {
+            List<Vector3> look = EnvelopeShapes.Cuboid(new Vector3(0f, 0.4f, 0f), new Vector3(0.3f, 0.6f, 0.3f), 0);
+            var ring = new List<Vector3> {
+                new Vector3(-1.5f, 0f, -1.5f), new Vector3(1.5f, 0f, -1.5f), new Vector3(1.5f, 0f, 1.5f), new Vector3(0.1f, 0f, 1.5f),
+                new Vector3(0f, 0f, 0.6f), new Vector3(-0.1f, 0f, 1.5f), new Vector3(-1.5f, 0f, 1.5f),
+            };
+            look.AddRange(EnvelopeShapes.Prism(ring, 1.0f, 1.3f, Vector3.Zero));
+            return look;
         }
 
         // Two boxes meeting in an L, 2.5 m tall.

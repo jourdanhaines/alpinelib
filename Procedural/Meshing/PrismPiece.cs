@@ -37,6 +37,9 @@ namespace AlpineLib.Procedural.Meshing {
         /// <summary>Highest height, rounded up to the grid.</summary>
         public double Top { get; set; }
 
+        /// <summary>The bottom before a ledge fill-down lowered it; NaN when the piece was never filled.</summary>
+        public double FilledFrom { get; set; } = double.NaN;
+
         /// <summary>Worst exposed plan standoff over the spanned layers, look metres.</summary>
         public double Standoff { get; set; }
 

@@ -92,12 +92,21 @@ namespace AlpineLib.Procedural.Meshing {
         /// </summary>
         /// <remarks>Offenders no collapse can fix within the spike limit are left in place.</remarks>
         public static List<PlanPoint> Clean(IReadOnlyList<PlanPoint> polygon, double minTurn, double minEdge, double maxSpike) {
+            return Clean(polygon, minTurn, minEdge, maxSpike, 0.0);
+        }
+
+        /// <summary>
+        /// <see cref="Clean(IReadOnlyList{PlanPoint}, double, double, double)"/> that also collapses, outward, any vertex
+        /// lying closer than <paramref name="minChordOffset"/> to the line through its neighbours. Convex hull cookers
+        /// (PhysX) drop such vertices; <see cref="ChordOffsetFloor"/> gives the relative floor they need.
+        /// </summary>
+        public static List<PlanPoint> Clean(IReadOnlyList<PlanPoint> polygon, double minTurn, double minEdge, double maxSpike, double minChordOffset) {
             if (polygon == null) throw new ArgumentNullException(nameof(polygon));
 
             var result = Rounded(polygon);
             int passes = result.Count;
             for (int pass = 0; pass < passes && result.Count > 3; pass++) {
-                if (!TryFixOffender(result, minTurn, minEdge, maxSpike, out int edge, out PlanPoint meet)) break;
+                if (!TryFixOffender(result, minTurn, minEdge, maxSpike, minChordOffset, out int edge, out PlanPoint meet)) break;
 
                 Collapse(result, edge, meet);
             }
@@ -203,6 +212,38 @@ namespace AlpineLib.Procedural.Meshing {
                 if (!(Turn(polygon, index) > minTurn)) return false;
             }
             return true;
+        }
+
+        /// <summary>
+        /// How far vertex <paramref name="index"/> lies off the line through its two neighbours (negative when it turns
+        /// the wrong way); 0 when the neighbours coincide.
+        /// </summary>
+        public static double ChordOffset(IReadOnlyList<PlanPoint> polygon, int index) {
+            if (polygon == null) throw new ArgumentNullException(nameof(polygon));
+
+            int count = polygon.Count;
+            PlanPoint previous = polygon[(index + count - 1) % count], current = polygon[index], next = polygon[(index + 1) % count];
+            double chordX = next.X - previous.X, chordZ = next.Z - previous.Z;
+            double length = Math.Sqrt(chordX * chordX + chordZ * chordZ);
+            return length > 0.0 ? Cross(previous, next, current) / -length : 0.0;
+        }
+
+        /// <summary>
+        /// The least chord offset a prism of this plan and <paramref name="height"/> needs:
+        /// <c>max(floor, share · diagonal)</c>, the diagonal of its 3D bounding box.
+        /// </summary>
+        public static double ChordOffsetFloor(IReadOnlyList<PlanPoint> plan, double height, double share, double floor) {
+            if (plan == null) throw new ArgumentNullException(nameof(plan));
+
+            double minX = double.PositiveInfinity, maxX = double.NegativeInfinity, minZ = double.PositiveInfinity, maxZ = double.NegativeInfinity;
+            foreach (PlanPoint point in plan) {
+                minX = Math.Min(minX, point.X);
+                maxX = Math.Max(maxX, point.X);
+                minZ = Math.Min(minZ, point.Z);
+                maxZ = Math.Max(maxZ, point.Z);
+            }
+            double width = maxX - minX, depth = maxZ - minZ;
+            return Math.Max(floor, share * Math.Sqrt(width * width + depth * depth + height * height));
         }
 
         /// <summary>Sine of the turn at vertex <paramref name="index"/>; negative turns right, −1 for a zero-length edge.</summary>
@@ -332,14 +373,14 @@ namespace AlpineLib.Procedural.Meshing {
         }
 
         // The cheapest collapse touching any offender: a short edge (it or a neighbour) or a near-straight vertex (an edge at it).
-        private static bool TryFixOffender(List<PlanPoint> polygon, double minTurn, double minEdge, double maxSpike, out int bestEdge, out PlanPoint bestMeet) {
+        private static bool TryFixOffender(List<PlanPoint> polygon, double minTurn, double minEdge, double maxSpike, double minChordOffset, out int bestEdge, out PlanPoint bestMeet) {
             bestEdge = -1;
             bestMeet = default;
             double bestArea = double.PositiveInfinity;
             int count = polygon.Count;
             for (int index = 0; index < count; index++) {
                 bool shortEdge = EdgeLength(polygon, index) < minEdge;
-                bool straight = Turn(polygon, index) < minTurn;
+                bool straight = Turn(polygon, index) < minTurn || ChordOffset(polygon, index) < minChordOffset;
                 if (!shortEdge && !straight) continue;
 
                 int last = shortEdge ? index + 1 : index;

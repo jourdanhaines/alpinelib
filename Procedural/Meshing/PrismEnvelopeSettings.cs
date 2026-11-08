@@ -1,10 +1,11 @@
 using System;
+using System.Collections.Generic;
 
 namespace AlpineLib.Procedural.Meshing {
     /// <summary>
-    /// How <see cref="PrismEnvelopeFitter"/> fits stacked vertical prisms to a look. Heights (step, bands,
-    /// reachable top, band sizes) are world metres above <see cref="Ground"/> at <see cref="MaxScale"/> and are
-    /// divided by it for the look's space; every other length is in the look's space.
+    /// How <see cref="PrismEnvelopeFitter"/> fits stacked vertical prisms to a look. Heights (step, bands, band sizes)
+    /// are world metres above <see cref="Ground"/> at <see cref="MaxScale"/> and are divided by it for the look's space;
+    /// <see cref="ReachableTopWorld"/> is world metres at <see cref="MinScale"/>; every other length is in the look's space.
     /// </summary>
     public sealed class PrismEnvelopeSettings {
         /// <summary>Ground height in the look's space; the look may sink below it.</summary>
@@ -12,6 +13,9 @@ namespace AlpineLib.Procedural.Meshing {
 
         /// <summary>Largest scale the look is placed at; heights below are world metres at this scale.</summary>
         public double MaxScale { get; set; } = 1.0;
+
+        /// <summary>Smallest scale the look is placed at; the reachable band is measured at this scale.</summary>
+        public double MinScale { get; set; } = 1.0;
 
         /// <summary>The pawn's step offset; the feet band tops out at <see cref="FeetTop"/>.</summary>
         public double StepOffset { get; set; } = 0.3;
@@ -87,8 +91,14 @@ namespace AlpineLib.Procedural.Meshing {
         /// <summary>How far a neighbouring prism must rise above a cap for its lip to count, LOOK metres (0.15 / MaxScale).</summary>
         public double LipRise { get; set; } = 0.15;
 
-        /// <summary>Highest cap counted as reachable for the ledge rule.</summary>
-        public double ReachableTop { get; set; } = 1.5;
+        /// <summary>
+        /// Highest cap counted as reachable for the ledge rule (step plus jump), world metres above ground at
+        /// <see cref="MinScale"/>, where the look's caps sit lowest. Defaults to 2.2.
+        /// </summary>
+        public double ReachableTopWorld { get; set; } = 2.2;
+
+        /// <summary>Top of the reachable band in the look's space: <c>Ground + ReachableTopWorld / MinScale</c>.</summary>
+        public double ReachableLookTop => Ground + ReachableTopWorld / MinScale;
 
         /// <summary>Most plan vertices per prism (3–16).</summary>
         public int MaxVertices { get; set; } = 16;
@@ -104,6 +114,23 @@ namespace AlpineLib.Procedural.Meshing {
 
         /// <summary>Smallest turn at a prism vertex, as the sine of the angle between its edges.</summary>
         public double MinTurn { get; set; } = 0.01;
+
+        /// <summary>
+        /// Least distance, look metres, any plan vertex keeps from the line through its neighbours, however small the
+        /// prism; see <see cref="ChordOffsetShare"/>. Defaults to 0.005.
+        /// </summary>
+        public double MinChordOffset { get; set; } = 0.005;
+
+        /// <summary>
+        /// Least chord offset as a share of the prism's 3D bounding-box diagonal (height included). PhysX convex cooking
+        /// drops vertices within about 5e-4 of that diagonal of their neighbours' line. Defaults to 1.5e-3.
+        /// </summary>
+        public double ChordOffsetShare { get; set; } = 1.5e-3;
+
+        /// <summary>The chord offset a prism with this plan and height must keep at every vertex.</summary>
+        public double ChordOffsetFloor(IReadOnlyList<PlanPoint> plan, double height) {
+            return ConvexPlan.ChordOffsetFloor(plan, height, ChordOffsetShare, MinChordOffset);
+        }
 
         /// <summary>Spacing of the containment proof and the metrics samples, look metres.</summary>
         public double SampleSpacing { get; set; } = 0.1;
@@ -121,6 +148,7 @@ namespace AlpineLib.Procedural.Meshing {
 
         /// <summary>Throws when a value would break the fit.</summary>
         public void Validate() {
+            if (!(MinScale > 0.0) || MinScale > MaxScale || !(ReachableTopWorld > 0.0)) throw new ArgumentException("Need 0 < MinScale <= MaxScale and a positive ReachableTopWorld.");
             if (!(MaxScale > 0.0) || !(FeetTop > 0.0) || FeetMargin < 0.0 || Gravity < 0.0 || !(TickSeconds > 0.0)) throw new ArgumentException("Need MaxScale > 0, FeetMargin, Gravity >= 0, TickSeconds > 0 and a positive FeetTop.");
             if (FineEdges == null) throw new ArgumentException("FineEdges must not be null.");
             double previous = FeetTop;
@@ -130,6 +158,7 @@ namespace AlpineLib.Procedural.Meshing {
                 previous = edge;
             }
             if (!(WalkingTop > previous) || !(JumpReach > WalkingTop) || !(WalkingLow >= 0.0) || !(MinBand > 0.0) || !(ReachLayer > 0.0)) throw new ArgumentException("Need ascending bands below WalkingTop < JumpReach and positive MinBand and ReachLayer.");
+            if (MinChordOffset < 0.0 || ChordOffsetShare < 0.0) throw new ArgumentException("MinChordOffset and ChordOffsetShare must not be negative.");
             if (MaxCoarseBands < 1) throw new ArgumentException("MaxCoarseBands must be at least 1.");
             if (MaxVertices < 3 || MaxVertices > 16) throw new ArgumentException("MaxVertices must be 3–16.");
             if (MaxPrisms < MinimumBands) throw new ArgumentException("MaxPrisms must be at least " + MinimumBands + ": feet, reach and one coarse band.");

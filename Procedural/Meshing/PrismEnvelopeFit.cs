@@ -3,7 +3,7 @@ using System.Collections.Generic;
 namespace AlpineLib.Procedural.Meshing {
     /// <summary>The prisms of a <see cref="PrismEnvelopeFitter"/> run, bottom band first, and how they sit around the look.</summary>
     public sealed class PrismEnvelopeFit {
-        internal PrismEnvelopeFit(List<EnvelopePrism> prisms, List<double> bandEdges, EnvelopeMetrics metrics, double standoffP90, double standoffMax, double ledgeAirMax, double worstOutside, int fallbackCount, string missed, string report) {
+        internal PrismEnvelopeFit(List<EnvelopePrism> prisms, List<double> bandEdges, EnvelopeMetrics metrics, double standoffP90, double standoffMax, double ledgeAirMax, double worstOutside, int fallbackCount, string missed, string report, int fillDownCount, double fillDownStandoffMax, double wallTopAirMax, int chordViolations) {
             Prisms = prisms.AsReadOnly();
             BandEdges = bandEdges.AsReadOnly();
             Metrics = metrics;
@@ -15,6 +15,10 @@ namespace AlpineLib.Procedural.Meshing {
             MeetsTargets = missed.Length == 0;
             Missed = missed;
             Report = report;
+            FillDownCount = fillDownCount;
+            FillDownStandoffMax = fillDownStandoffMax;
+            WallTopAirMax = wallTopAirMax;
+            ChordViolations = chordViolations;
         }
 
         /// <summary>The prisms, in band order and within a band in cut order.</summary>
@@ -32,8 +36,29 @@ namespace AlpineLib.Procedural.Meshing {
         /// <summary>Largest exposed side standoff in the walking band, look metres.</summary>
         public double StandoffMax { get; }
 
-        /// <summary>Most air under an exposed reachable cap, look metres.</summary>
+        /// <summary>Most air under an exposed reachable cap with air under its collision column (a ledge), look metres.</summary>
         public double LedgeAirMax { get; }
+
+        /// <summary>Prisms whose bottom a ledge fill-down lowered onto the ground or a prism under their whole plan.</summary>
+        public int FillDownCount { get; }
+
+        /// <summary>
+        /// Largest side standoff, at any height, of the parts fill-downs added, look metres. Walking-band samples among
+        /// them also count in <see cref="StandoffP90"/> and <see cref="StandoffMax"/>; the rest only here.
+        /// </summary>
+        public double FillDownStandoffMax { get; }
+
+        /// <summary>
+        /// Most air under an exposed reachable cap whose collision column reaches the look (an invisible wall top, not a
+        /// ledge), look metres. Not gated.
+        /// </summary>
+        public double WallTopAirMax { get; }
+
+        /// <summary>
+        /// Plan vertices closer to their neighbours' line than <see cref="PrismEnvelopeSettings.ChordOffsetFloor"/>, which a
+        /// convex cooker would drop. Any makes the fit miss its targets.
+        /// </summary>
+        public int ChordViolations { get; }
 
         /// <summary>Furthest any containment sample of the look lay outside every prism, look metres.</summary>
         public double WorstOutside { get; }
