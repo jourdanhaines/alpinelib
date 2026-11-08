@@ -10,6 +10,8 @@ namespace AlpineLib.Procedural.Landmarks {
     /// <remarks>
     /// Immutable and thread-safe. A block's site uses one <see cref="SplitMix64"/> seeded from
     /// <c>Mix(Derive(worldSeed, tier.Name), pack(block))</c> with a fixed draw order.
+    /// Tiers do not avoid each other: a mesa may sit inside or next to a giant footprint, and the
+    /// consumer resolves overlaps. Cell and block coordinates must stay well inside int range (no overflow checks).
     /// </remarks>
     public sealed class LandmarkField {
         private const double OffsetScale = 10000.0;
@@ -24,9 +26,13 @@ namespace AlpineLib.Procedural.Landmarks {
                 throw new ArgumentNullException(nameof(tiers));
             }
             _tiers = new LandmarkTierSettings[tiers.Count];
+            var names = new HashSet<string>(StringComparer.Ordinal);
             _tierStreams = new ulong[tiers.Count];
             for (int index = 0; index < tiers.Count; index++) {
                 LandmarkTierSettings tier = tiers[index] ?? throw new ArgumentException($"Tier {index} is null.", nameof(tiers));
+                if (!names.Add(tier.Name)) {
+                    throw new ArgumentException($"Tier name '{tier.Name}' is used twice.", nameof(tiers));
+                }
                 _tiers[index] = tier;
                 _tierStreams[index] = new SplitMix64(worldSeed).Derive(tier.Name).Seed;
             }
@@ -94,11 +100,12 @@ namespace AlpineLib.Procedural.Landmarks {
         }
 
         /// <summary>The cells a site covers, row by row (Y then X ascending).</summary>
+        /// <remarks>The radius comes from this field's tier at <c>site.Tier</c>; pass only this field's sites.</remarks>
         public IEnumerable<CellCoord> FootprintCells(LandmarkSite site) {
             int radius = _tiers[CheckTier(site.Tier)].FootprintRadiusCells;
-            for (int y = site.Anchor.Y - radius; y <= site.Anchor.Y + radius; y++) {
-                for (int x = site.Anchor.X - radius; x <= site.Anchor.X + radius; x++) {
-                    yield return new CellCoord(x, y);
+            for (int cellY = site.Anchor.Y - radius; cellY <= site.Anchor.Y + radius; cellY++) {
+                for (int cellX = site.Anchor.X - radius; cellX <= site.Anchor.X + radius; cellX++) {
+                    yield return new CellCoord(cellX, cellY);
                 }
             }
         }
@@ -136,7 +143,8 @@ namespace AlpineLib.Procedural.Landmarks {
 
         private static double Jitter(double unit, double jitter) {
             double offset = (2.0 * unit - 1.0) * jitter;
-            return Math.Round(offset * OffsetScale) / OffsetScale;
+            // Adding +0.0 turns a negative zero (zero jitter, tiny negatives) into +0.0.
+            return Math.Round(offset * OffsetScale) / OffsetScale + 0.0;
         }
 
         // Floor keeps the draw strictly below 1.

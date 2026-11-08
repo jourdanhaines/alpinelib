@@ -11,6 +11,7 @@ namespace AlpineLib.Server.Tests.Procedural.Landmarks {
         private const ulong Seed = 0x5EED_1A4D_0001UL;
         private const int MesaTier = 0;
         private const int GiantTier = 1;
+        private static readonly long NegativeZeroBits = BitConverter.DoubleToInt64Bits(-0.0);
 
         private static LandmarkField CreateField(ulong seed = Seed) {
             return new LandmarkField(seed, new[] { LandmarkTierSettings.Mesa, LandmarkTierSettings.Giant });
@@ -19,9 +20,9 @@ namespace AlpineLib.Server.Tests.Procedural.Landmarks {
         [Fact]
         public void SiteIsIndependentOfQueryOrderAndInstance() {
             var blocks = new List<CellCoord>();
-            for (int y = -6; y < 6; y++) {
-                for (int x = -6; x < 6; x++) {
-                    blocks.Add(new CellCoord(x, y));
+            for (int blockY = -6; blockY < 6; blockY++) {
+                for (int blockX = -6; blockX < 6; blockX++) {
+                    blocks.Add(new CellCoord(blockX, blockY));
                 }
             }
             Dictionary<(int, CellCoord), LandmarkSite?> forward = CollectSites(CreateField(), blocks);
@@ -38,16 +39,30 @@ namespace AlpineLib.Server.Tests.Procedural.Landmarks {
         [InlineData(0)]
         [InlineData(1)]
         public void SitesTouchingMatchesBruteForce(int reach) {
-            LandmarkField field = CreateField();
-            List<LandmarkSite> all = AllSitesNear(field, -30, 30);
-            var result = new List<LandmarkSite>();
-            for (int y = -20; y < 20; y++) {
-                for (int x = -20; x < 20; x++) {
-                    var cell = new CellCoord(x, y);
-                    result.Clear();
-                    field.SitesTouching(cell, reach, result);
-                    List<LandmarkSite> expected = BruteForceTouching(field, all, cell, reach);
-                    Assert.Equal(expected, result);
+            AssertMatchesBruteForce(CreateField(), reach);
+        }
+
+        // Narrow blocks make the reach span several blocks per axis.
+        [Theory]
+        [InlineData(3)]
+        [InlineData(4)]
+        [InlineData(5)]
+        public void SitesTouchingMatchesBruteForceOnWideReach(int reach) {
+            AssertMatchesBruteForce(CreateWideField(), reach);
+        }
+
+        [Fact]
+        public void ReachZeroIsExactlyTheFootprint() {
+            foreach (LandmarkField field in new[] { CreateField(), CreateWideField() }) {
+                List<LandmarkSite> all = AllSitesNear(field, -30, 30);
+                var result = new List<LandmarkSite>();
+                for (int cellY = -20; cellY < 20; cellY++) {
+                    for (int cellX = -20; cellX < 20; cellX++) {
+                        var cell = new CellCoord(cellX, cellY);
+                        result.Clear();
+                        field.SitesTouching(cell, 0, result);
+                        Assert.Equal(FootprintScan(field, all, cell), result);
+                    }
                 }
             }
         }
@@ -94,9 +109,9 @@ namespace AlpineLib.Server.Tests.Procedural.Landmarks {
         public void PresenceRateMatchesSettings(int tier, double presence) {
             LandmarkField field = CreateField();
             int present = 0;
-            for (int y = 0; y < 100; y++) {
-                for (int x = 0; x < 100; x++) {
-                    present += field.TryGetSite(tier, new CellCoord(x - 50, y - 50), out _) ? 1 : 0;
+            for (int blockY = 0; blockY < 100; blockY++) {
+                for (int blockX = 0; blockX < 100; blockX++) {
+                    present += field.TryGetSite(tier, new CellCoord(blockX - 50, blockY - 50), out _) ? 1 : 0;
                 }
             }
             Assert.InRange(present / 10000.0, presence - 0.03, presence + 0.03);
@@ -109,7 +124,10 @@ namespace AlpineLib.Server.Tests.Procedural.Landmarks {
                 LandmarkTierSettings settings = field.Tier(site.Tier);
                 Assert.InRange(site.OffsetX, -settings.SubCellJitter, settings.SubCellJitter);
                 Assert.InRange(site.OffsetZ, -settings.SubCellJitter, settings.SubCellJitter);
-                Assert.Equal(Math.Round(site.OffsetX, 4), site.OffsetX);
+                Assert.Equal(RoundAsField(site.OffsetX), site.OffsetX);
+                Assert.Equal(RoundAsField(site.OffsetZ), site.OffsetZ);
+                Assert.NotEqual(NegativeZeroBits, BitConverter.DoubleToInt64Bits(site.OffsetX));
+                Assert.NotEqual(NegativeZeroBits, BitConverter.DoubleToInt64Bits(site.OffsetZ));
                 for (int index = 0; index < LandmarkDraws.Count; index++) {
                     Assert.InRange(site.UDraws[index], 0.0, 0.999999);
                 }
@@ -142,10 +160,8 @@ namespace AlpineLib.Server.Tests.Procedural.Landmarks {
 
         [Fact]
         public void PresetsAreValid() {
-            Assert.Equal(4, LandmarkTierSettings.Mesa.BlockCells);
-            Assert.Equal(0, LandmarkTierSettings.Mesa.FootprintRadiusCells);
-            Assert.Equal(8, LandmarkTierSettings.Giant.BlockCells);
-            Assert.Equal(1, LandmarkTierSettings.Giant.FootprintRadiusCells);
+            AssertPreset(LandmarkTierSettings.Mesa, "landmark/mesa", 4, 0, 0.9, 0, 2, 8.0);
+            AssertPreset(LandmarkTierSettings.Giant, "landmark/giant", 8, 1, 0.8, 2, 5, 0.0);
         }
 
         [Fact]
@@ -170,6 +186,51 @@ namespace AlpineLib.Server.Tests.Procedural.Landmarks {
             Assert.Throws<ArgumentOutOfRangeException>(() => field.TryGetSite(2, default, out _));
             Assert.Throws<ArgumentOutOfRangeException>(() => field.SitesTouching(default, -1, new List<LandmarkSite>()));
             Assert.Throws<ArgumentNullException>(() => new LandmarkField(Seed, null));
+            var twin = new LandmarkTierSettings(LandmarkTierSettings.Mesa.Name, 8, 1, 0.5, 2, 5, 0);
+            Assert.Throws<ArgumentException>(() => new LandmarkField(Seed, new[] { LandmarkTierSettings.Mesa, twin }));
+        }
+
+        private static LandmarkField CreateWideField() {
+            var narrow = new LandmarkTierSettings("test/narrow", 2, 0, 0.5, 0, 1, 1.0);
+            var ringed = new LandmarkTierSettings("test/ringed", 3, 1, 0.6, 1, 1, 0.0);
+            return new LandmarkField(Seed, new[] { narrow, ringed });
+        }
+
+        private static void AssertMatchesBruteForce(LandmarkField field, int reach) {
+            List<LandmarkSite> all = AllSitesNear(field, -30, 30);
+            var result = new List<LandmarkSite>();
+            for (int cellY = -20; cellY < 20; cellY++) {
+                for (int cellX = -20; cellX < 20; cellX++) {
+                    var cell = new CellCoord(cellX, cellY);
+                    result.Clear();
+                    field.SitesTouching(cell, reach, result);
+                    Assert.Equal(BruteForceTouching(field, all, cell, reach), result);
+                }
+            }
+        }
+
+        private static List<LandmarkSite> FootprintScan(LandmarkField field, List<LandmarkSite> all, CellCoord cell) {
+            return all
+                .Where((site) => field.FootprintCells(site).Contains(cell))
+                .OrderBy((site) => site.Tier)
+                .ThenBy((site) => site.Id)
+                .ToList();
+        }
+
+        private static void AssertPreset(LandmarkTierSettings preset, string name, int blockCells, int radius,
+                                         double presence, int anchorMin, int anchorMax, double jitter) {
+            Assert.Equal(name, preset.Name);
+            Assert.Equal(blockCells, preset.BlockCells);
+            Assert.Equal(radius, preset.FootprintRadiusCells);
+            Assert.Equal(presence, preset.Presence);
+            Assert.Equal(anchorMin, preset.AnchorMin);
+            Assert.Equal(anchorMax, preset.AnchorMax);
+            Assert.Equal(jitter, preset.SubCellJitter);
+        }
+
+        // Same formula as the field: round to 1e-4, then clear the sign of zero.
+        private static double RoundAsField(double value) {
+            return Math.Round(value * 10000.0) / 10000.0 + 0.0;
         }
 
         private static Dictionary<(int, CellCoord), LandmarkSite?> CollectSites(LandmarkField field, List<CellCoord> blocks) {
@@ -194,9 +255,9 @@ namespace AlpineLib.Server.Tests.Procedural.Landmarks {
         }
 
         private static void AppendBlockSites(LandmarkField field, int tier, CellCoord low, CellCoord high, List<LandmarkSite> into) {
-            for (int y = low.Y; y <= high.Y; y++) {
-                for (int x = low.X; x <= high.X; x++) {
-                    if (field.TryGetSite(tier, new CellCoord(x, y), out LandmarkSite site)) {
+            for (int blockY = low.Y; blockY <= high.Y; blockY++) {
+                for (int blockX = low.X; blockX <= high.X; blockX++) {
+                    if (field.TryGetSite(tier, new CellCoord(blockX, blockY), out LandmarkSite site)) {
                         into.Add(site);
                     }
                 }
