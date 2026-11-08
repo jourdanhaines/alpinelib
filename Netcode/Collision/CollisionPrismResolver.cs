@@ -31,11 +31,9 @@ namespace AlpineLib.Netcode.Collision {
                 return false;
             }
 
-            // The segment ends exactly as CapsulePose builds them, one rounded operation at a time.
             float halfHeight = shape.HalfExtents.Y;
-            float bottom = (float)(pose.FootPosition.Y + radius);
-            float crown = (float)(pose.FootPosition.Y + pose.Height);
-            float top = (float)(crown - radius);
+            float bottom = pose.SegmentBottom.Y;
+            float top = pose.SegmentTop.Y;
             float low = (float)(bottom - shape.Center.Y);
             float high = (float)(top - shape.Center.Y);
             float gapY = VerticalGap(low, high, halfHeight);

@@ -276,18 +276,18 @@ namespace AlpineLib.Netcode.Collision {
                 plan.GetVertex(index, out float x, out float z);
                 plan.GetVertex((index + 1) % count, out float nextX, out float nextZ);
                 plan.GetVertex((index + 2) % count, out float afterX, out float afterZ);
-                float edgeX = nextX - x;
-                float edgeZ = nextZ - z;
-                if (edgeX * edgeX + edgeZ * edgeZ <= MinPrismEdge * MinPrismEdge) {
+                float edgeX = (float)(nextX - x);
+                float edgeZ = (float)(nextZ - z);
+                if ((float)((float)(edgeX * edgeX) + (float)(edgeZ * edgeZ)) <= (float)(MinPrismEdge * MinPrismEdge)) {
                     throw new ArgumentException("A prism plan edge is shorter than 1e-4.", nameof(plan));
                 }
 
-                float turn = edgeX * (afterZ - nextZ) - edgeZ * (afterX - nextX);
+                float turn = (float)((float)(edgeX * (float)(afterZ - nextZ)) - (float)(edgeZ * (float)(afterX - nextX)));
                 if (!(turn > MinPrismTurn)) {
                     throw new ArgumentException("A prism plan must be strictly convex and counter-clockwise.", nameof(plan));
                 }
 
-                doubleArea += x * nextZ - nextX * z;
+                doubleArea = (float)(doubleArea + (float)((float)(x * nextZ) - (float)(nextX * z)));
                 ValidateEdgeHoldsPlan(in plan, index);
             }
 
@@ -303,7 +303,7 @@ namespace AlpineLib.Netcode.Collision {
             plan.GetVertex((edge + 1) % count, out float nextX, out float nextZ);
             for (int other = 2; other < count; other++) {
                 plan.GetVertex((edge + other) % count, out float otherX, out float otherZ);
-                float cross = (nextX - x) * (otherZ - z) - (nextZ - z) * (otherX - x);
+                float cross = (float)((float)((float)(nextX - x) * (float)(otherZ - z)) - (float)((float)(nextZ - z) * (float)(otherX - x)));
                 if (!(cross > 0f)) {
                     throw new ArgumentException("A prism plan must be a simple convex polygon.", nameof(plan));
                 }
@@ -372,9 +372,9 @@ namespace AlpineLib.Netcode.Collision {
             for (int index = 0; index < plan.Count; index++) {
                 plan.GetVertex(index, out float x, out float z);
                 plan.GetVertex((index + 1) % plan.Count, out float nextX, out float nextZ);
-                float edgeX = nextX - x;
-                float edgeZ = nextZ - z;
-                if (!(edgeX * edgeX + edgeZ * edgeZ > MinPrismEdge * MinPrismEdge)) {
+                float edgeX = (float)(nextX - x);
+                float edgeZ = (float)(nextZ - z);
+                if (!((float)((float)(edgeX * edgeX) + (float)(edgeZ * edgeZ)) > (float)(MinPrismEdge * MinPrismEdge))) {
                     throw new NetProtocolException("Prism plan edge " + index + " is shorter than 1e-4.");
                 }
             }
