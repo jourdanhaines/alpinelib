@@ -6,7 +6,7 @@ namespace AlpineLib.Procedural.Landmarks {
     public readonly struct LandmarkSite : IEquatable<LandmarkSite> {
         /// <summary>Stores a site as given.</summary>
         public LandmarkSite(int tier, CellCoord block, CellCoord anchor, double offsetX, double offsetZ,
-                            ulong shapeSeed, LandmarkDraws uDraws, ulong id) {
+                            ulong shapeSeed, LandmarkDraws uDraws, ulong id, bool isAttracted = false) {
             Tier = tier;
             Block = block;
             Anchor = anchor;
@@ -15,7 +15,11 @@ namespace AlpineLib.Procedural.Landmarks {
             ShapeSeed = shapeSeed;
             UDraws = uDraws;
             Id = id;
+            IsAttracted = isAttracted;
         }
+
+        /// <summary>True when the field bias moved the anchor off the drawn one.</summary>
+        public bool IsAttracted { get; }
 
         /// <summary>Index of the tier in the field's tier list.</summary>
         public int Tier { get; }
@@ -45,7 +49,7 @@ namespace AlpineLib.Procedural.Landmarks {
         public bool Equals(LandmarkSite other) {
             return Tier == other.Tier && Block == other.Block && Anchor == other.Anchor
                 && OffsetX.Equals(other.OffsetX) && OffsetZ.Equals(other.OffsetZ)
-                && ShapeSeed == other.ShapeSeed && UDraws.Equals(other.UDraws) && Id == other.Id;
+                && ShapeSeed == other.ShapeSeed && UDraws.Equals(other.UDraws) && Id == other.Id && IsAttracted == other.IsAttracted;
         }
 
         /// <inheritdoc />

@@ -8,8 +8,10 @@ namespace AlpineLib.Procedural.Landmarks {
     /// settings and the coordinates, so any cell can ask which sites touch it in any order.
     /// </summary>
     /// <remarks>
-    /// Immutable and thread-safe. A block's site uses one <see cref="SplitMix64"/> seeded from
-    /// <c>Mix(Derive(worldSeed, tier.Name), pack(block))</c> with a fixed draw order.
+    /// Immutable and thread-safe (given a pure bias). A block's site uses one <see cref="SplitMix64"/> seeded from
+    /// <c>Mix(Derive(worldSeed, tier.Name), pack(block))</c> with a fixed draw order. An optional
+    /// <see cref="ILandmarkAnchorBias"/> may move an attracting tier's anchor inside the same anchor window, so block
+    /// maths and <see cref="SitesTouching"/> are unchanged.
     /// Tiers do not avoid each other: a mesa may sit inside or next to a giant footprint, and the
     /// consumer resolves overlaps. Cell and block coordinates must stay well inside int range (no overflow checks).
     /// </remarks>
@@ -19,9 +21,16 @@ namespace AlpineLib.Procedural.Landmarks {
 
         private readonly LandmarkTierSettings[] _tiers;
         private readonly ulong[] _tierStreams;
+        private readonly ILandmarkAnchorBias _bias;
 
         /// <summary>A field over <paramref name="tiers"/>, tier index = list index.</summary>
-        public LandmarkField(ulong worldSeed, IReadOnlyList<LandmarkTierSettings> tiers) {
+        public LandmarkField(ulong worldSeed, IReadOnlyList<LandmarkTierSettings> tiers) : this(worldSeed, tiers, null) { }
+
+        /// <summary>
+        /// A field over <paramref name="tiers"/> whose tiers with an attract chance let <paramref name="bias"/> pick their
+        /// anchors (null = never).
+        /// </summary>
+        public LandmarkField(ulong worldSeed, IReadOnlyList<LandmarkTierSettings> tiers, ILandmarkAnchorBias bias) {
             if (tiers == null) {
                 throw new ArgumentNullException(nameof(tiers));
             }
@@ -37,6 +46,7 @@ namespace AlpineLib.Procedural.Landmarks {
                 _tierStreams[index] = new SplitMix64(worldSeed).Derive(tier.Name).Seed;
             }
             WorldSeed = worldSeed;
+            _bias = bias;
         }
 
         /// <summary>The seed every site derives from.</summary>
@@ -67,8 +77,36 @@ namespace AlpineLib.Procedural.Landmarks {
             var draws = new LandmarkDraws(Quantise(random.NextDouble()), Quantise(random.NextDouble()),
                                           Quantise(random.NextDouble()), Quantise(random.NextDouble()));
             var anchor = new CellCoord(block.X * settings.BlockCells + anchorX, block.Y * settings.BlockCells + anchorZ);
-            site = new LandmarkSite(tier, block, anchor, offsetX, offsetZ, shapeSeed, draws, id);
+            bool isAttracted = TryAttract(tier, settings, block, random, ref anchor);
+            site = new LandmarkSite(tier, block, anchor, offsetX, offsetZ, shapeSeed, draws, id, isAttracted);
             return true;
+        }
+
+        // Two extra draws after all the others (attract roll, then the scorer's preference), so unattracted sites keep
+        // every value they had; the best-scoring window cell wins, row-major first on a tie.
+        private bool TryAttract(int tier, LandmarkTierSettings settings, CellCoord block, SplitMix64 random, ref CellCoord anchor) {
+            if (_bias == null || settings.AttractChance <= 0.0) {
+                return false;
+            }
+            double roll = random.NextDouble();
+            double preference = Quantise(random.NextDouble());
+            if (roll >= settings.AttractChance) {
+                return false;
+            }
+            int best = int.MaxValue;
+            CellCoord chosen = anchor;
+            for (int offsetY = settings.AnchorMin; offsetY <= settings.AnchorMax; offsetY++) {
+                for (int offsetX = settings.AnchorMin; offsetX <= settings.AnchorMax; offsetX++) {
+                    var candidate = new CellCoord(block.X * settings.BlockCells + offsetX, block.Y * settings.BlockCells + offsetY);
+                    Keep(_bias.Score(tier, block, candidate, preference), candidate, ref best, ref chosen);
+                }
+            }
+            if (best == int.MaxValue) {
+                return false;
+            }
+            bool moved = !chosen.Equals(anchor);
+            anchor = chosen;
+            return moved;
         }
 
         /// <summary>
@@ -132,6 +170,14 @@ namespace AlpineLib.Procedural.Landmarks {
             if (chebyshev <= distance) {
                 into.Add(site);
             }
+        }
+
+        private static void Keep(int score, CellCoord candidate, ref int best, ref CellCoord chosen) {
+            if (score >= best) {
+                return;
+            }
+            best = score;
+            chosen = candidate;
         }
 
         private int CheckTier(int tier) {

@@ -17,9 +17,17 @@ namespace AlpineLib.Procedural.Landmarks {
         /// <summary>3×3-cell giants, about one per 8×8 block; at least 2 free cells between footprints.</summary>
         public static readonly LandmarkTierSettings Giant = new LandmarkTierSettings("landmark/giant", 8, 1, 0.8, 2, 5, 0.0);
 
-        /// <summary>Validates and stores a tier.</summary>
+        /// <summary>Validates and stores a tier that never attracts its anchor.</summary>
         public LandmarkTierSettings(string name, int blockCells, int footprintRadiusCells, double presence,
-                                    int anchorMin, int anchorMax, double subCellJitter) {
+                                    int anchorMin, int anchorMax, double subCellJitter)
+            : this(name, blockCells, footprintRadiusCells, presence, anchorMin, anchorMax, subCellJitter, 0.0) { }
+
+        /// <summary>
+        /// Validates and stores a tier; with a field bias, <paramref name="attractChance"/> of its sites snap their anchor to
+        /// the bias's best cell in the anchor window.
+        /// </summary>
+        public LandmarkTierSettings(string name, int blockCells, int footprintRadiusCells, double presence,
+                                    int anchorMin, int anchorMax, double subCellJitter, double attractChance) {
             if (string.IsNullOrEmpty(name)) {
                 throw new ArgumentException("Must be a non-empty stream name.", nameof(name));
             }
@@ -36,7 +44,11 @@ namespace AlpineLib.Procedural.Landmarks {
             if (!(subCellJitter >= 0.0) || double.IsInfinity(subCellJitter)) {
                 throw new ArgumentOutOfRangeException(nameof(subCellJitter), subCellJitter, "Must be finite and non-negative.");
             }
+            if (!(attractChance >= 0.0 && attractChance <= 1.0)) {
+                throw new ArgumentOutOfRangeException(nameof(attractChance), attractChance, "Must be in [0, 1].");
+            }
             Name = name;
+            AttractChance = attractChance;
             BlockCells = blockCells;
             FootprintRadiusCells = footprintRadiusCells;
             Presence = presence;
@@ -65,6 +77,14 @@ namespace AlpineLib.Procedural.Landmarks {
 
         /// <summary>Largest sub-cell offset of the site from its anchor cell centre, metres, on each axis.</summary>
         public double SubCellJitter { get; }
+
+        /// <summary>Chance a site snaps its anchor to the field bias's best candidate (0 = never; needs a bias).</summary>
+        public double AttractChance { get; }
+
+        /// <summary>A copy of this tier with <paramref name="attractChance"/>.</summary>
+        public LandmarkTierSettings WithAttractChance(double attractChance) {
+            return new LandmarkTierSettings(Name, BlockCells, FootprintRadiusCells, Presence, AnchorMin, AnchorMax, SubCellJitter, attractChance);
+        }
 
         private static void ValidateAnchorRange(int blockCells, int radius, int anchorMin, int anchorMax) {
             if (anchorMin > anchorMax) {
