@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Numerics;
 using AlpineLib.Netcode.Collision;
+using AlpineLib.Netcode.Diagnostics;
 using AlpineLib.Netcode.Protocol;
 using AlpineLib.Netcode.Replication;
 using Xunit;
@@ -9,17 +10,11 @@ using Xunit;
 namespace AlpineLib.Server.Tests {
     /// <summary>
     /// Capsule against prism: agreement with a double-precision reference, the rim, corner and interior
-    /// rules, seams between stacked prisms under the real motor, and a golden hash for cross-runtime checks.
+    /// rules, seams between stacked prisms under the real motor, and the bits of Mono-sensitive golden cases.
     /// </summary>
     public sealed class CollisionPrismContactTests {
         private const float TickSeconds = 1f / 30f;
         private const int RandomPoses = 10000;
-
-        /// <summary>
-        /// FNV-1a 64 of every contact and support output over <see cref="GoldenInputs"/>, checked here on .NET only.
-        /// The Mono check lives in the game's Unity smoke gate (added by the game package), which must reach this value.
-        /// </summary>
-        private const ulong GoldenContactHash = 0xE7F2B71C41C1F340UL;
 
         [Fact]
         public void RandomPosesMatchADoublePrecisionReference() {
@@ -148,51 +143,8 @@ namespace AlpineLib.Server.Tests {
             Assert.Equal(1f, small.Height);
         }
 
-        [Fact]
-        public void TheGoldenHashHolds() {
-            Assert.Equal(GoldenContactHash, GoldenInputs());
-        }
-
-        /// <summary>
-        /// Hashes contacts and supports over integer-derived inputs (exact floats on every runtime) against
-        /// four literal prisms (one with sixteen vertices), so another runtime can rebuild the same set without a random source.
-        /// </summary>
-        internal static ulong GoldenInputs() {
-            CollisionShape[] prisms = GoldenPrisms();
-            ulong hash = 14695981039346656037UL;
-            for (int index = 0; index < 4096; index++) {
-                CapsulePose pose = GoldenPose(index);
-                foreach (CollisionShape prism in prisms) hash = HashOutputs(hash, in pose, in prism);
-            }
-            return hash;
-        }
-
-        /// <summary>The four literal golden prisms.</summary>
-        internal static CollisionShape[] GoldenPrisms() {
-            return new[] {
-                CollisionShape.MakePrism(new Vector3(0.25f, 0.5f, -0.5f), 0.5f, new[] { new Vector2(-1f, -1f), new Vector2(1.5f, -0.75f), new Vector2(1f, 1f), new Vector2(-0.5f, 1.25f) }),
-                CollisionShape.MakePrism(new Vector3(-1f, 1.25f, 0.75f), 1.25f, new[] { new Vector2(0f, -1f), new Vector2(0.875f, -0.5f), new Vector2(0.875f, 0.5f), new Vector2(0f, 1f), new Vector2(-0.875f, 0.5f), new Vector2(-0.875f, -0.5f) }),
-                CollisionShape.MakePrism(new Vector3(0.5f, 2f, 0.5f), 0.25f, new[] { new Vector2(-0.75f, -0.5f), new Vector2(0.75f, -0.5f), new Vector2(0f, 0.75f) }),
-                CollisionShape.MakePrism(new Vector3(-0.5f, 0.75f, -1f), 0.75f, new[] {
-                    new Vector2(1.5f, 0.109375f), new Vector2(1.328125f, 0.515625f), new Vector2(0.953125f, 0.859375f), new Vector2(0.4375f, 1.046875f),
-                    new Vector2(-0.15625f, 1.09375f), new Vector2(-0.703125f, 0.96875f), new Vector2(-1.15625f, 0.703125f), new Vector2(-1.4375f, 0.3125f),
-                    new Vector2(-1.5f, -0.109375f), new Vector2(-1.328125f, -0.515625f), new Vector2(-0.953125f, -0.859375f), new Vector2(-0.4375f, -1.046875f),
-                    new Vector2(0.15625f, -1.09375f), new Vector2(0.703125f, -0.96875f), new Vector2(1.15625f, -0.703125f), new Vector2(1.4375f, -0.3125f),
-                }),
-            };
-        }
-
-        /// <summary>Golden pose <paramref name="index"/>, built from integers so every runtime gets the same floats.</summary>
-        internal static CapsulePose GoldenPose(int index) {
-            float x = ((index * 37) % 97 - 48) / 16f;
-            float z = ((index * 53) % 89 - 44) / 16f;
-            float y = ((index * 29) % 61 - 20) / 16f;
-            float radius = 0.25f + (index % 5) / 16f;
-            return new CapsulePose(new Vector3(x, y, z), radius, radius * 2f + (index % 7) / 8f);
-        }
-
-        // Golden cases Mono without float32 (the Unity editor) once moved by an ulp: outside-in-plan sideways and
-        // diagonal normals and depths. Their CoreCLR bits are pinned; the game's Unity gate checks the same on Mono.
+        // Prism golden cases that need every operation narrowed: sideways and diagonal normals and depths outside the
+        // plan. Mono with float32 off must give these CoreCLR bits, as it must for MonoParityGoldens.PrismHash.
         [Theory]
         [InlineData(35, 1, 1056835051u, 0u, 1063142703u, 1020155136u)]
         [InlineData(38, 0, 1024470614u, 3212447774u, 1045972311u, 1048277254u)]
@@ -200,8 +152,8 @@ namespace AlpineLib.Server.Tests {
         [InlineData(119, 1, 1056835055u, 0u, 1063142702u, 1026462808u)]
         [InlineData(748, 1, 3204318687u, 0u, 3210626354u, 1052006138u)]
         public void MonoSensitiveGoldenCasesKeepTheirBits(int index, int prism, uint normalX, uint normalY, uint normalZ, uint depth) {
-            CapsulePose pose = GoldenPose(index);
-            CollisionShape shape = GoldenPrisms()[prism];
+            CapsulePose pose = MonoParityGoldens.Pose(index);
+            CollisionShape shape = MonoParityGoldens.Prisms()[prism];
 
             Assert.True(CollisionResolver.TryGetContact(in pose, in shape, out CollisionContact contact));
 
@@ -211,30 +163,8 @@ namespace AlpineLib.Server.Tests {
             Assert.Equal(depth, Bits(contact.Depth));
         }
 
-        private static ulong HashOutputs(ulong hash, in CapsulePose pose, in CollisionShape prism) {
-            bool touched = CollisionResolver.TryGetContact(in pose, in prism, out CollisionContact contact);
-            hash = Mix(hash, touched ? 1u : 0u);
-            if (touched) {
-                hash = Mix(hash, Bits(contact.Normal.X));
-                hash = Mix(hash, Bits(contact.Normal.Y));
-                hash = Mix(hash, Bits(contact.Normal.Z));
-                hash = Mix(hash, Bits(contact.Depth));
-            }
-
-            bool supported = CollisionResolver.TryGetSupport(in prism, pose.FootPosition.X, pose.FootPosition.Z, 5f, -5f, out float height, out Vector3 _);
-            hash = Mix(hash, supported ? 1u : 0u);
-            return supported ? Mix(hash, Bits(height)) : hash;
-        }
-
         private static uint Bits(float value) {
             return BitConverter.SingleToUInt32Bits(value);
-        }
-
-        private static ulong Mix(ulong hash, uint value) {
-            for (int shift = 0; shift < 32; shift += 8) {
-                hash = (hash ^ ((value >> shift) & 0xFFu)) * 1099511628211UL;
-            }
-            return hash;
         }
 
         // Checks one pose; returns true when the reference says the two overlap.

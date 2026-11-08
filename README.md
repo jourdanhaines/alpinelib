@@ -143,12 +143,12 @@ orphaned server once everybody has gone.
 The collision narrow phase and `PawnMotor` must produce the same bits on the server (CoreCLR) and in
 the Unity editor (Mono, which evaluates float expressions in double and rounds once). Every `+ - * /`
 and `MathF.Sqrt` on that path is wrapped in an explicit `(float)` cast; keep it that way when editing
-`Netcode/Collision/**` or `PawnMotor`. `MonoParityGoldens` (in `Server~/AlpineLib.Server.Tests`, no
-test-framework dependency) hashes integer-built inputs; `MonoParityGoldenTests` pins the .NET values
-and the game re-runs the same class under the editor to gate them.
+`Netcode/Collision/**` or `PawnMotor`. `AlpineLib.Netcode.Diagnostics.MonoParityGoldens` hashes
+integer-built inputs (`ShapeHash`, `MotorHash`, `PrismHash`) and publishes the CoreCLR values as
+constants; `MonoParityGoldenTests` pins them on .NET, and a game's Unity gate compares the editor's
+results against the same constants.
 
-To reproduce the editor's Mono without Unity running, compile `Netcode/**/*.cs`, `MonoParityGoldens.cs`
-and a small `Main` with the .NET SDK's Roslyn against Unity's Mono profile, then run it with the
+To reproduce the editor's Mono without Unity running, compile `Netcode/**/*.cs` and a small `Main` with the .NET SDK's Roslyn against Unity's Mono profile, then run it with the
 float32 optimisation off:
 
 ```sh
@@ -159,12 +159,11 @@ dotnet "$CSC" -nostdlib -noconfig -unsafe -t:exe -out:parity.exe \
   -r:$PROFILE/mscorlib.dll -r:$PROFILE/System.dll -r:$PROFILE/System.Core.dll \
   -r:$PROFILE/System.Numerics.dll -r:$PROFILE/System.Runtime.Serialization.dll -r:$PROFILE/System.Xml.dll \
   -r:$PROFILE/Facades/netstandard.dll -r:$PROFILE/Facades/System.Memory.dll \
-  $(find Netcode -name '*.cs') Server~/AlpineLib.Server.Tests/MonoParityGoldens.cs Main.cs
+  $(find Netcode -name '*.cs') Main.cs
 $EDITOR/bin/mono -O=-float32 parity.exe   # the editor's behaviour; plain `mono` matches CoreCLR
 ```
 
-`Main.cs` only prints `MonoParityGoldens.ShapeHash()` and `MotorHash()`; both must equal the constants in
-`MonoParityGoldenTests`. `MathF.Atan2`, `Cos` and `Exp` come from each runtime's libm: yaw (`Atan2`) is
+`Main.cs` only prints the three hashes; each must equal its `MonoParityGoldens` constant. `MathF.Atan2`, `Cos` and `Exp` come from each runtime's libm: yaw (`Atan2`) is
 left out of the motor hash, while the slope threshold (`Cos`) and air drag (`Exp`) do feed position and
 match only while both runtimes share a libm, so check the gate on each editor platform.
 
