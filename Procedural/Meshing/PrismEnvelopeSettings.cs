@@ -146,6 +146,13 @@ namespace AlpineLib.Procedural.Meshing {
             return Ground + worldHeight / MaxScale;
         }
 
+        /// <summary>A copy with another <see cref="MaxPrisms"/>.</summary>
+        internal PrismEnvelopeSettings WithMaxPrisms(int maxPrisms) {
+            var copy = (PrismEnvelopeSettings)MemberwiseClone();
+            copy.MaxPrisms = maxPrisms;
+            return copy;
+        }
+
         /// <summary>Throws when a value would break the fit.</summary>
         public void Validate() {
             if (!(MinScale > 0.0) || MinScale > MaxScale || !(ReachableTopWorld > 0.0)) throw new ArgumentException("Need 0 < MinScale <= MaxScale and a positive ReachableTopWorld.");

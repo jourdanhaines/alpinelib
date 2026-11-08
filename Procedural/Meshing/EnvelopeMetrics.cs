@@ -49,10 +49,16 @@ namespace AlpineLib.Procedural.Meshing {
         public Vector3 WorstLedgePoint { get; private set; }
 
         /// <summary>
-        /// Air (ascending) of the prism cap samples the last <see cref="LedgeAir"/> call left out because collision runs
-        /// unbroken from the cap down to the look: invisible wall tops, not ledges.
+        /// Air (ascending) of the prism cap samples of the last <see cref="LedgeAir"/> call where collision runs unbroken
+        /// from the cap down to the look and the look is within a lip: hull slack over rock, counted in the ledge air too.
         /// </summary>
         public List<double> SupportedCapAir { get; private set; } = new List<double>();
+
+        /// <summary>
+        /// Air (ascending) of the prism cap samples of the last <see cref="LedgeAir"/> call whose collision column stops
+        /// short of the look: collision floating over open air, counted in the ledge air too.
+        /// </summary>
+        public List<double> FloatingCapAir { get; private set; } = new List<double>();
 
         /// <summary>
         /// Largest gap, look metres, between stacked prisms (or between a column and the look under it) that still
@@ -94,17 +100,19 @@ namespace AlpineLib.Procedural.Meshing {
         /// <summary>
         /// Air (ascending) between exposed walkable collider tops with heights in [<paramref name="low"/>, <paramref name="high"/>]
         /// and the look or <paramref name="ground"/> under them: box and prism caps, and sphere surface no steeper than 45°.
-        /// A prism cap whose column of prisms reaches the look below is a wall top and goes to <see cref="SupportedCapAir"/>.
+        /// A prism cap whose column of prisms reaches the look below is also listed in <see cref="SupportedCapAir"/>.
         /// </summary>
         public List<double> LedgeAir(double ground, double low, double high) {
             var air = new List<double>();
             SupportedCapAir = new List<double>();
+            FloatingCapAir = new List<double>();
             _worst = double.NegativeInfinity;
             for (int index = 0; index < _boxes.Count; index++) BoxTop(index, ground, low, high, air);
             for (int index = 0; index < _spheres.Count; index++) SphereCap(index, ground, low, high, air);
             for (int index = 0; index < _prisms.Count; index++) PrismTop(index, ground, low, high, air);
             air.Sort();
             SupportedCapAir.Sort();
+            FloatingCapAir.Sort();
             return air;
         }
 
@@ -240,16 +248,14 @@ namespace AlpineLib.Procedural.Meshing {
                 if (IsInsideAny(point) || IsNearOtherPrism(point, index)) continue;
 
                 double below = _look.HeightBelow(point.X, point.Z, prism.Top + OverTop, ground);
-                if (IsWallTop(index, point, sample, below)) SupportedCapAir.Add(prism.Top - below);
-                else AddLedge(point, prism.Top - below, air);
+                if (ColumnBottom(index, sample.X, sample.Z) > below + ColumnGap) FloatingCapAir.Add(prism.Top - below);
+                else if (IsWallTop(point, index, below)) SupportedCapAir.Add(prism.Top - below);
+                AddLedge(point, prism.Top - below, air);
             }
         }
 
-        // Collision runs unbroken from the cap down to the look, and the look comes within a lip of the cap: the cap is
-        // rock's own top swollen by the hull, not a shelf a capsule could stand on above open air.
-        private bool IsWallTop(int index, Vector3 point, PlanPoint sample, double below) {
-            if (ColumnBottom(index, sample.X, sample.Z) > below + ColumnGap) return false;
-
+        // On an unbroken column, the look within a lip of the cap: rock's own top swollen by the hull.
+        private bool IsWallTop(Vector3 point, int index, double below) {
             return _look.Distance(new Vector3(point.X, (float)_prisms[index].Top, point.Z), 2.0 * LedgeLip) <= LedgeLip;
         }
 

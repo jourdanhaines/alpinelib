@@ -186,6 +186,23 @@ namespace AlpineLib.Procedural.Meshing {
             return false;
         }
 
+        /// <summary>
+        /// Steps the piece whose cap holds <paramref name="spot"/> down the rock: splits off its top layer so the lower part
+        /// caps where its own layers' rock ends. False when no piece owns the cap or it spans a single layer.
+        /// </summary>
+        public bool ForceCapStep(Vector3 spot) {
+            foreach (PrismPiece piece in Pieces) {
+                if (Math.Abs(piece.Top - spot.Y) > 0.05 || ConvexPlan.Distance(piece.Plan, spot.X, spot.Z) > 1e-3) continue;
+                if (piece.LastLayer == piece.FirstLayer || !TryHeightSides(piece, piece.LastLayer, out PrismPiece lower, out PrismPiece upper)) return false;
+
+                int index = Pieces.IndexOf(piece);
+                Pieces[index] = lower;
+                Pieces.Insert(index + 1, upper);
+                return true;
+            }
+            return false;
+        }
+
         // At the notch under the spot (inward from its nearest edge), else across the edge through it, else below the top layer.
         private bool TryForcedSides(PrismPiece piece, PlanPoint spot, int layer, out PrismPiece first, out PrismPiece second) {
             first = second = null;

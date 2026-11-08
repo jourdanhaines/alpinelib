@@ -143,15 +143,33 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
         }
 
         [Fact]
-        public void AnOverhangNoCutCanClearIsFilledDown() {
+        public void ASlopedCliffTopIsSteppedToTheRock() {
+            List<Vector3> look = SlopedCliffTop();
+            var settings = new PrismEnvelopeSettings { Strict = false };
+            var single = new EnvelopePrism(-0.2, 2.0, new List<PlanPoint> { new PlanPoint(-1.0, -1.0), new PlanPoint(1.0, -1.0), new PlanPoint(1.0, 1.0), new PlanPoint(-1.0, 1.0) });
+            var one = new EnvelopeMetrics(look, null, null, new[] { single }, settings.SampleSpacing);
+            Assert.InRange(EnvelopeMetrics.Quantile(one.LedgeAir(0.0, settings.LookHeight(settings.StepOffset), settings.ReachableLookTop), 1.0), 0.99, 1.01);
+
+            PrismEnvelopeFit fit = PrismEnvelopeFitter.Fit(look, settings);
+            _output.WriteLine(fit.Report);
+
+            Assert.InRange(fit.LedgeAirMax, 0.0, settings.LedgeAirMax);
+            Assert.InRange(EnvelopeMetrics.Quantile(fit.Metrics.LedgeAir(0.0, settings.LookHeight(settings.StepOffset), settings.ReachableLookTop), 1.0), 0.0, 0.35);
+            Assert.True(fit.MeetsTargets, fit.Report);
+        }
+
+        [Fact]
+        public void AnOverhangNoCutCanClearIsFilledDownAndStillReported() {
             List<Vector3> look = NotchedOverhang();
             var settings = new PrismEnvelopeSettings { MaxPrisms = 3, Strict = false };
 
             PrismEnvelopeFit fit = PrismEnvelopeFitter.Fit(look, settings);
             _output.WriteLine(fit.Report);
 
+            // Nothing floats any more, but the notch cap still stands over sand, so the fit says it misses.
             Assert.True(fit.FillDownCount >= 1, fit.Report);
-            Assert.InRange(fit.LedgeAirMax, 0.0, settings.LedgeAirMax);
+            Assert.Equal(fit.LedgeAirMax, fit.WallTopAirMax, 9);
+            Assert.False(fit.MeetsTargets);
             Assert.True(fit.FillDownStandoffMax > 0.0);
             Assert.InRange(fit.WorstOutside, 0.0, settings.ContainmentTolerance);
         }
@@ -293,6 +311,15 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
                 rings.Add(new LoftRing(height, shifted));
             }
             return LoftMesh.Build(rings, true, true).Positions;
+        }
+
+        // A 2 m square block, sunk 0.2 m, whose top slopes from 1 m on its -x side to 2 m on its +x side.
+        private static List<Vector3> SlopedCliffTop() {
+            List<Vector3> look = EnvelopeShapes.Cuboid(new Vector3(0f, 0.9f, 0f), new Vector3(1f, 1.1f, 1f), 0);
+            for (int index = 0; index < look.Count; index++) {
+                if (look[index].Y > 1.9f) look[index] = new Vector3(look[index].X, 1.5f + 0.5f * look[index].X, look[index].Z);
+            }
+            return look;
         }
 
         // A thin stem under a 3 m slab from 1.0 m to 1.3 m whose plan has a 0.2 m notch the hull bridges over open sand.

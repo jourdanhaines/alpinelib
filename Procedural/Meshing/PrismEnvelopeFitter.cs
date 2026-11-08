@@ -32,8 +32,9 @@ namespace AlpineLib.Procedural.Meshing {
         private const double HeightEpsilon = 1e-6;
         private const double FlatNormal = 0.7;
         private const int MergeRounds = 3;
-        private const int RepairRounds = 6;
+        private const int RepairRounds = 24;
         private const int MaxFills = 8;
+        private const int SmallerBudgets = 3;
 
         /// <summary>The prisms around the faces in <paramref name="corners"/> (three per face).</summary>
         /// <exception cref="InvalidOperationException">
@@ -46,15 +47,26 @@ namespace AlpineLib.Procedural.Meshing {
             if (corners.Count % 3 != 0) throw new ArgumentException("Corners must come three per face.", nameof(corners));
 
             settings.Validate();
-            PrismEnvelopeFit best = null;
             var layout = new PrismRegionLayout(corners, settings);
+            PrismEnvelopeFit best = FitWithin(corners, settings, layout);
+            // A cut late in a larger budget can land worse than a smaller budget's fit; a pass never needs all of it.
+            for (int fewer = 1; !best.MeetsTargets && fewer <= SmallerBudgets && settings.MaxPrisms - fewer >= settings.MinimumBands; fewer++) {
+                PrismEnvelopeFit smaller = FitWithin(corners, settings.WithMaxPrisms(settings.MaxPrisms - fewer), layout);
+                if (smaller.MeetsTargets) best = smaller;
+            }
+            if (settings.Strict && !best.MeetsTargets) throw new InvalidOperationException("Prism fit misses its targets: " + best.Missed + ".\n" + best.Report);
+
+            return best;
+        }
+
+        // The whole-region fit, then walking first when that misses a gate, keeping whichever is closer to its gates.
+        private static PrismEnvelopeFit FitWithin(IReadOnlyList<Vector3> corners, PrismEnvelopeSettings settings, PrismRegionLayout layout) {
+            PrismEnvelopeFit best = null;
             foreach (bool walkingFirst in new[] { false, true }) {
                 PrismEnvelopeFit fit = FitOnce(corners, settings, layout, walkingFirst);
                 if (best == null || GateScore(fit, settings) < GateScore(best, settings)) best = fit;
                 if (best.MeetsTargets) break;
             }
-            if (settings.Strict && !best.MeetsTargets) throw new InvalidOperationException("Prism fit misses its targets: " + best.Missed + ".\n" + best.Report);
-
             return best;
         }
 
@@ -269,8 +281,14 @@ namespace AlpineLib.Procedural.Meshing {
                 if (EnvelopeMetrics.Quantile(air, 1.0) > settings.LedgeAirMax) {
                     Vector3 spot = metrics.WorstLedgePoint;
                     var cap = new Vector3(spot.X, spot.Y - 0.02f, spot.Z);
-                    if (region.Pieces.Count < budget && region.ForceCapCut(cap)) continue;
-                    if (fills < MaxFills && TryFillDown(region.Pieces, coarse, cap)) {
+                    if (region.Pieces.Count < budget && (region.ForceCapStep(cap) || region.ForceCapCut(cap))) continue;
+                    if (fills < MaxFills && TryFillDown(region.Pieces, coarse, cap, out PrismPiece filled, out double before)) {
+                        if (!LowersFloatingAir(corners, settings, region, coarse, metrics, EnvelopeMetrics.Quantile(air, 1.0))) {
+                            filled.Bottom = before;
+                            if (filled.FilledFrom == before) filled.FilledFrom = double.NaN;
+                            return string.Empty;
+                        }
+
                         fills++;
                         round--;
                         continue;
@@ -289,7 +307,9 @@ namespace AlpineLib.Procedural.Meshing {
 
         // A ledge no cut removed: lowers the bottom of its prism (or of the prism it already rests on, down the column)
         // onto the highest prism top under its whole plan, else the lowest bottom of the fit, so air under it is gone.
-        private static bool TryFillDown(List<PrismPiece> pieces, List<PrismPiece> coarse, Vector3 cap) {
+        private static bool TryFillDown(List<PrismPiece> pieces, List<PrismPiece> coarse, Vector3 cap, out PrismPiece filled, out double before) {
+            filled = null;
+            before = double.NaN;
             var all = new List<PrismPiece>(pieces);
             all.AddRange(coarse);
             PrismPiece target = CapOwner(all, cap);
@@ -299,6 +319,8 @@ namespace AlpineLib.Procedural.Meshing {
                 PrismPiece support = Support(all, target);
                 double bottom = support == null ? floor : support.Top;
                 if (bottom < target.Bottom - HeightEpsilon) {
+                    filled = target;
+                    before = target.Bottom;
                     if (double.IsNaN(target.FilledFrom)) target.FilledFrom = target.Bottom;
                     target.Bottom = bottom;
                     return true;
@@ -307,6 +329,18 @@ namespace AlpineLib.Procedural.Meshing {
                 target = support;
             }
             return false;
+        }
+
+        // A fill is kept when it brings the worst floating cap down without raising the worst cap overall; a fill can
+        // expose a worse cap elsewhere.
+        private static bool LowersFloatingAir(IReadOnlyList<Vector3> corners, PrismEnvelopeSettings settings, PrismRegion region, List<PrismPiece> coarse, EnvelopeMetrics before, double airBefore) {
+            double floatingBefore = EnvelopeMetrics.Quantile(before.FloatingCapAir, 1.0);
+            var prisms = new List<EnvelopePrism>();
+            foreach (PrismPiece piece in region.Pieces) prisms.Add(piece.ToPrism());
+            foreach (PrismPiece piece in coarse) prisms.Add(piece.ToPrism());
+            EnvelopeMetrics after = Metrics(corners, prisms, settings);
+            List<double> air = after.LedgeAir(settings.Ground, settings.LookHeight(settings.StepOffset), settings.ReachableLookTop);
+            return EnvelopeMetrics.Quantile(after.FloatingCapAir, 1.0) < floatingBefore - HeightEpsilon && EnvelopeMetrics.Quantile(air, 1.0) <= airBefore + HeightEpsilon;
         }
 
         private static PrismPiece CapOwner(List<PrismPiece> pieces, Vector3 cap) {
@@ -392,7 +426,7 @@ namespace AlpineLib.Procedural.Meshing {
             if (CountNearChords(piece.Plan, floor) == 0) return 0;
 
             // The usual spike limit first, then wider: a long prism's floor can need a collapse reaching further out.
-            foreach (double spike in new[] { settings.MinEdge * 2.0, Math.Max(settings.MinEdge * 2.0, floor * 20.0) }) {
+            foreach (double spike in new[] { settings.MinEdge * 2.0, Math.Max(settings.MinEdge * 2.0, floor * 20.0), Math.Max(settings.MinEdge * 10.0, floor * 100.0) }) {
                 List<PlanPoint> cleaned = ConvexPlan.Clean(piece.Plan, settings.MinTurn, settings.MinEdge, spike, floor);
                 if (!PrismBandDecomposer.IsRobust(cleaned, settings)) continue;
 
