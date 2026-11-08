@@ -52,8 +52,9 @@ namespace AlpineLib.Procedural.Meshing {
         public double Spacing { get; }
 
         /// <summary>
-        /// A prism cap strip no wider than this under the side of another prism is a lip, not a ledge, and
-        /// leaves no air in <see cref="LedgeAir"/>. Defaults to 0.02.
+        /// A prism cap strip within this plan distance of another prism that rises above the cap is a lip against a
+        /// wall, not a ledge, and leaves no air in <see cref="LedgeAir"/>; level or lower neighbours never hide a cap.
+        /// Defaults to 0.02 here; <see cref="PrismEnvelopeFitter"/> sets <see cref="PrismEnvelopeSettings.LedgeLip"/>.
         /// </summary>
         public double LedgeLip { get; set; } = CoveredTolerance;
 
@@ -264,10 +265,12 @@ namespace AlpineLib.Procedural.Meshing {
             return false;
         }
 
-        // A cap strip narrower than the lip width beside another prism is no ledge.
+        // A cap strip narrower than the lip width against a prism rising above it is no ledge.
         private bool IsNearOtherPrism(Vector3 point, int prismIndex) {
             for (int index = 0; index < _prisms.Count; index++) {
-                if (index != prismIndex && _prisms[index].DistanceOutside(point) <= LedgeLip) return true;
+                EnvelopePrism other = _prisms[index];
+                if (index == prismIndex || other.Bottom > point.Y || other.Top <= point.Y) continue;
+                if (ConvexPlan.Distance(other.Plan, point.X, point.Z) <= LedgeLip) return true;
             }
             return false;
         }

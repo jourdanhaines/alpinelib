@@ -45,6 +45,24 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
         }
 
         [Fact]
+        public void ALipHidesOnlyAgainstAPrismRisingAboveTheCap() {
+            var strip = new EnvelopePrism(0.0, 1.0, Rectangle(1.0, 1.2, -1.0, 1.0));
+            var level = new EnvelopePrism(0.0, 1.0, Rectangle(-1.0, 1.0, -1.0, 1.0));
+            var wall = new EnvelopePrism(0.0, 2.0, Rectangle(-1.0, 1.0, -1.0, 1.0));
+            var thin = new EnvelopePrism(0.0, 1.0, Rectangle(1.0, 1.05, -1.0, 1.0));
+
+            var besideLevel = new EnvelopeMetrics(Block, null, null, new[] { level, strip }, 0.05) { LedgeLip = 0.1 };
+            var besideWall = new EnvelopeMetrics(Block, null, null, new[] { wall, strip }, 0.05) { LedgeLip = 0.1 };
+            var thinBesideWall = new EnvelopeMetrics(Block, null, null, new[] { wall, thin }, 0.05) { LedgeLip = 0.1 };
+
+            Assert.InRange(EnvelopeMetrics.Quantile(besideLevel.LedgeAir(0.0, 0.3, 1.5), 1.0), 0.999, 1.001);
+            List<double> partly = besideLevel.LedgeAir(0.0, 0.3, 1.5);
+            Assert.True(partly.FindAll((air) => air > 0.99).Count > besideWall.LedgeAir(0.0, 0.3, 1.5).FindAll((air) => air > 0.99).Count);
+            Assert.InRange(EnvelopeMetrics.Quantile(besideWall.LedgeAir(0.0, 0.3, 1.5), 1.0), 0.999, 1.001);
+            Assert.Empty(thinBesideWall.LedgeAir(0.0, 0.3, 1.5));
+        }
+
+        [Fact]
         public void APrismMeasuresDistanceOutside() {
             var prism = new EnvelopePrism(0.0, 2.0, Rectangle(-1.0, 1.0, -1.0, 1.0));
 

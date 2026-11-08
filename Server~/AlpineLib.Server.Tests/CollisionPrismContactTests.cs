@@ -104,10 +104,12 @@ namespace AlpineLib.Server.Tests {
         }
 
         // A grounded pawn sinks one tick of gravity (20 / 30² ≈ 0.022 m) before its feet are raised by the
-        // step offset, so the motor's real step is about 0.278 m; above that a prism blocks exactly like a box.
+        // step offset, so the motor's real step is about 0.278 m; the fitter's feet cap is 0.2678. Above the real
+        // step a prism blocks exactly like a box.
         [Theory]
         [InlineData(0.15f, true)]
         [InlineData(0.25f, true)]
+        [InlineData(0.2678f, true)]
         [InlineData(0.275f, true)]
         [InlineData(0.29f, false)]
         public void TheMotorStepsOntoAFootBandLikeABox(float top, bool climbs) {

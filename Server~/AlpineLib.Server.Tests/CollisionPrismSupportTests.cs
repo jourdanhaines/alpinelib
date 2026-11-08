@@ -36,6 +36,19 @@ namespace AlpineLib.Server.Tests {
         }
 
         [Fact]
+        public void StackedPrismsSupportOnTheUpperCap() {
+            Vector2[] square = { new Vector2(-1f, -1f), new Vector2(1f, -1f), new Vector2(1f, 1f), new Vector2(-1f, 1f) };
+            CollisionShape[] stack = { CollisionShape.MakePrism(new Vector3(0f, 0.5f, 0f), 0.5f, square), CollisionShape.MakePrism(new Vector3(0f, 1.5f, 0f), 0.5f, square) };
+            var world = new CollisionWorld(new SceneGeometry("Stack", 1u, stack, Array.Empty<MoverDefinition>()), 1f / 30f);
+
+            Assert.True(world.TryGetSupport(0.3f, -0.4f, 2.3f, 1.7f, 1u, out SupportHit top));
+            Assert.Equal(2f, top.Height);
+            Assert.Equal(1, top.ShapeIndex);
+            Assert.True(world.TryGetSupport(1f, 1f, 3f, -1f, 1u, out SupportHit corner));
+            Assert.Equal(2f, corner.Height);
+        }
+
+        [Fact]
         public void APlacedGroupSupportsAtItsOffset() {
             CollisionWorld world = new CollisionWorld(new SceneGeometry("Prisms", 1u, Array.Empty<CollisionShape>(), Array.Empty<MoverDefinition>()), 1f / 30f);
             world.AddGroup(5ul, new[] { Wedge }, new Vector3(40f, 0.5f, -12f));

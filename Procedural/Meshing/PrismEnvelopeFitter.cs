@@ -23,7 +23,10 @@ namespace AlpineLib.Procedural.Meshing {
         private const double HeightEpsilon = 1e-6;
 
         /// <summary>The prisms around the faces in <paramref name="corners"/> (three per face).</summary>
-        /// <exception cref="InvalidOperationException">A look sample would lie outside every prism.</exception>
+        /// <exception cref="InvalidOperationException">
+        /// A look sample would lie outside every prism, or <see cref="PrismEnvelopeSettings.Strict"/> is set and the fit
+        /// misses a target (the message lists which).
+        /// </exception>
         public static PrismEnvelopeFit Fit(IReadOnlyList<Vector3> corners, PrismEnvelopeSettings settings) {
             if (corners == null) throw new ArgumentNullException(nameof(corners));
             if (settings == null) throw new ArgumentNullException(nameof(settings));
@@ -34,7 +37,9 @@ namespace AlpineLib.Procedural.Meshing {
             var bands = new List<List<PrismPiece>>();
             int used = 0;
             for (int band = 0; band + 1 < edges.Count; band++) {
-                int budget = Math.Max(1, (settings.MaxPrisms - used) / (edges.Count - 1 - band));
+                int bandsAfter = edges.Count - 2 - band;
+                int fairShare = (settings.MaxPrisms - used) / (bandsAfter + 1);
+                int budget = Math.Max(1, Math.Min(fairShare, settings.MaxPrisms - used - bandsAfter));
                 bands.Add(PrismBandDecomposer.Decompose(corners, edges[band], edges[band + 1], settings, budget));
                 used += bands[band].Count;
             }
@@ -55,7 +60,7 @@ namespace AlpineLib.Procedural.Meshing {
             }
             low = Math.Floor(low / ConvexPlan.Grid) * ConvexPlan.Grid;
             high = Math.Ceiling(high / ConvexPlan.Grid) * ConvexPlan.Grid;
-            var nominal = new List<double> { settings.LookHeight(settings.StepOffset - settings.FeetMargin) };
+            var nominal = new List<double> { settings.LookHeight(settings.FeetTop) };
             foreach (double edge in settings.FineEdges) nominal.Add(settings.LookHeight(edge));
             nominal.Add(settings.LookHeight(settings.WalkingTop));
 
@@ -98,7 +103,7 @@ namespace AlpineLib.Procedural.Meshing {
         }
 
         private static int FirstOverTarget(IReadOnlyList<Vector3> corners, PrismEnvelopeSettings settings, List<double> edges, EnvelopeMetrics metrics) {
-            double feetTop = ConvexPlan.Round(settings.LookHeight(settings.StepOffset - settings.FeetMargin)) + HeightEpsilon;
+            double feetTop = ConvexPlan.Round(settings.LookHeight(settings.FeetTop)) + HeightEpsilon;
             double fineTop = ConvexPlan.Round(settings.LookHeight(settings.WalkingTop)) + HeightEpsilon;
             double minBand = settings.MinBand / settings.MaxScale;
             for (int band = 0; band + 1 < edges.Count; band++) {
@@ -156,8 +161,21 @@ namespace AlpineLib.Procedural.Meshing {
             double standoffP90 = EnvelopeMetrics.Quantile(standoff, 0.9);
             double standoffMax = EnvelopeMetrics.Quantile(standoff, 1.0);
             double ledgeAirMax = EnvelopeMetrics.Quantile(air, 1.0);
+            string missed = MissedTargets(prisms.Count, standoffP90, standoffMax, ledgeAirMax, settings);
             string report = Report(edges, bands, prisms.Count, standoffP90, standoffMax, ledgeAirMax, worstOutside, settings);
-            return new PrismEnvelopeFit(prisms, edges, metrics, standoffP90, standoffMax, ledgeAirMax, worstOutside, report);
+            if (settings.Strict && missed.Length > 0) throw new InvalidOperationException("Prism fit misses its targets: " + missed + ".\n" + report);
+
+            return new PrismEnvelopeFit(prisms, edges, metrics, standoffP90, standoffMax, ledgeAirMax, worstOutside, missed.Length == 0, report);
+        }
+
+        // Comma-separated targets the fit misses; empty when it meets them all.
+        private static string MissedTargets(int count, double standoffP90, double standoffMax, double ledgeAirMax, PrismEnvelopeSettings settings) {
+            var missed = new List<string>();
+            if (count > settings.MaxPrisms) missed.Add("prisms " + count + " > " + settings.MaxPrisms);
+            if (standoffP90 > settings.StandoffP90Target) missed.Add("standoff p90 " + Format(standoffP90) + " > " + Format(settings.StandoffP90Target));
+            if (standoffMax > settings.StandoffMaxTarget) missed.Add("standoff max " + Format(standoffMax) + " > " + Format(settings.StandoffMaxTarget));
+            if (ledgeAirMax > settings.LedgeAirMax) missed.Add("ledge air " + Format(ledgeAirMax) + " > " + Format(settings.LedgeAirMax));
+            return string.Join(", ", missed);
         }
 
         private static EnvelopeMetrics Metrics(IReadOnlyList<Vector3> corners, List<EnvelopePrism> prisms, PrismEnvelopeSettings settings) {
