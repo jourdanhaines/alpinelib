@@ -164,8 +164,9 @@ $EDITOR/bin/mono -O=-float32 parity.exe   # the editor's behaviour; plain `mono`
 ```
 
 `Main.cs` only prints `MonoParityGoldens.ShapeHash()` and `MotorHash()`; both must equal the constants in
-`MonoParityGoldenTests`. `MathF.Atan2`/`Cos`/`Exp` come from each runtime's libm, so yaw is left out of
-the motor hash and those calls should stay off any path that feeds a position bit for bit.
+`MonoParityGoldenTests`. `MathF.Atan2`, `Cos` and `Exp` come from each runtime's libm: yaw (`Atan2`) is
+left out of the motor hash, while the slope threshold (`Cos`) and air drag (`Exp`) do feed position and
+match only while both runtimes share a libm, so check the gate on each editor platform.
 
 ## Animator contract
 
