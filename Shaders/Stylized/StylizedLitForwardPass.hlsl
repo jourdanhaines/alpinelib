@@ -8,6 +8,9 @@
 
 #include "StylizedLighting.hlsl"
 #include "StylizedSkyGradient.hlsl"
+#if defined(_ROCK_STREAKS)
+    #include "StylizedRockStreaks.hlsl"
+#endif
 #if defined(LOD_FADE_CROSSFADE)
     #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/LODCrossFade.hlsl"
 #endif
@@ -36,6 +39,10 @@ struct Varyings
 #endif
 #if defined(_FOG_SCALE_BLEND)
     half fogBlend : TEXCOORD5;
+#endif
+#if defined(_ROCK_STREAKS)
+    float3 positionOS : TEXCOORD6;
+    float3 normalOS : TEXCOORD7;
 #endif
     float4 positionCS : SV_POSITION;
     UNITY_VERTEX_INPUT_INSTANCE_ID
@@ -108,6 +115,9 @@ StylizedSurface StylizedInitializeSurface(Varyings input)
 #if defined(_VERTEX_COLOR)
     surface.albedo *= lerp(half3(1, 1, 1), input.vertexColor, _VertexColorStrength);
 #endif
+#if defined(_ROCK_STREAKS)
+    surface.albedo *= AlpineRockStreakShade(input.positionOS, input.normalOS);
+#endif
 #if defined(_EMISSION)
     surface.emission = SampleEmission(input.uv, _EmissionColor.rgb, TEXTURE2D_ARGS(_EmissionMap, sampler_EmissionMap));
 #else
@@ -163,6 +173,10 @@ Varyings StylizedLitPassVertex(Attributes input)
 #endif
 #if defined(_FOG_SCALE_BLEND)
     output.fogBlend = input.color.a;
+#endif
+#if defined(_ROCK_STREAKS)
+    output.positionOS = input.positionOS.xyz;
+    output.normalOS = input.normalOS;
 #endif
 #if defined(REQUIRES_VERTEX_SHADOW_COORD_INTERPOLATOR)
     output.shadowCoord = GetShadowCoord(vertexInput);

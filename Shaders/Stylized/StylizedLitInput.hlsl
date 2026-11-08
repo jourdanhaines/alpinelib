@@ -25,6 +25,11 @@ CBUFFER_START(UnityPerMaterial)
     float4 _FogScaleRamp;
     // The screen-door amount of a non-instanced fading draw (kept here in every variant: SRP Batcher layout).
     float _FadeAmount;
+    // _ROCK_STREAKS: column width multiplier, streak luminance share, strata period (m), strata luminance share.
+    half _StreakScale;
+    half _StreakStrength;
+    half _StrataPeriod;
+    half _StrataStrength;
     UNITY_TEXTURE_STREAMING_DEBUG_VARS;
 CBUFFER_END
 

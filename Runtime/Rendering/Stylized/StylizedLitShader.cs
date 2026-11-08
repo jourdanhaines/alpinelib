@@ -24,9 +24,16 @@ namespace AlpineLib.Rendering {
         /// <summary>Fog toward the sky behind the fragment (the skybox's gradient, <see cref="StylizedLightingGlobals.SetSky"/>), not the flat fog colour.</summary>
         public const string FogSkyKeyword = "_FOG_SKY";
 
+        /// <summary>
+        /// Object-space vertical streaks, desert-varnish runs and thin strata on steep faces (rock walls), tuned by
+        /// <see cref="StreakScale"/>, <see cref="StreakStrength"/>, <see cref="StrataPeriod"/> and <see cref="StrataStrength"/>.
+        /// </summary>
+        public const string RockStreaksKeyword = "_ROCK_STREAKS";
+
         /// <summary>Every material keyword the shader declares.</summary>
         public static readonly string[] MaterialKeywords = {
-            VertexColorKeyword, FlatShadingKeyword, EmissionKeyword, AlphaTestKeyword, ReceiveShadowsOffKeyword, NoLightCookieKeyword, FogScaleBlendKeyword, FogRadialKeyword, FogSkyKeyword
+            VertexColorKeyword, FlatShadingKeyword, EmissionKeyword, AlphaTestKeyword, ReceiveShadowsOffKeyword, NoLightCookieKeyword, FogScaleBlendKeyword, FogRadialKeyword, FogSkyKeyword,
+            RockStreaksKeyword
         };
 
         public static readonly int BaseMap = Shader.PropertyToID("_BaseMap");
@@ -48,6 +55,18 @@ namespace AlpineLib.Rendering {
         public static readonly int FogScaleRamp = Shader.PropertyToID("_FogScaleRamp");
         public static readonly int Cull = Shader.PropertyToID("_Cull");
 
+        /// <summary>Rock streak column width multiplier (1 = columns of about 1-3 m).</summary>
+        public static readonly int StreakScale = Shader.PropertyToID("_StreakScale");
+
+        /// <summary>Rock streak luminance share (0.12 = about ±12 %).</summary>
+        public static readonly int StreakStrength = Shader.PropertyToID("_StreakStrength");
+
+        /// <summary>Mean spacing of the strata lines, metres.</summary>
+        public static readonly int StrataPeriod = Shader.PropertyToID("_StrataPeriod");
+
+        /// <summary>Strata line luminance share.</summary>
+        public static readonly int StrataStrength = Shader.PropertyToID("_StrataStrength");
+
         // Inspector toggles that mirror the keywords (Toggle / ToggleOff drawers).
         public static readonly int VertexColorToggle = Shader.PropertyToID("_VertexColor");
         public static readonly int FlatShadingToggle = Shader.PropertyToID("_FlatShading");
@@ -58,6 +77,7 @@ namespace AlpineLib.Rendering {
         public static readonly int FogScaleBlendToggle = Shader.PropertyToID("_FogScaleBlend");
         public static readonly int FogRadialToggle = Shader.PropertyToID("_FogRadial");
         public static readonly int FogSkyToggle = Shader.PropertyToID("_FogSky");
+        public static readonly int RockStreaksToggle = Shader.PropertyToID("_RockStreaks");
 
         public static readonly int ShadowTintGlobal = Shader.PropertyToID("_AlpineShadowTint");
         public static readonly int RimColorGlobal = Shader.PropertyToID("_AlpineRimColor");
@@ -105,6 +125,7 @@ namespace AlpineLib.Rendering {
                 case FogScaleBlendKeyword: return FogScaleBlendToggle;
                 case FogRadialKeyword: return FogRadialToggle;
                 case FogSkyKeyword: return FogSkyToggle;
+                case RockStreaksKeyword: return RockStreaksToggle;
                 default: return 0;
             }
         }

@@ -19,6 +19,10 @@ Shader "AlpineLib/Stylized/Lit"
         _FogScaleFar("Fog Distance Scale Far (ramp end; defaults to 1, not _FogScale: set it with the ramp)", Range(0.0, 2.0)) = 1.0
         _FogScaleRamp("Fog Scale Ramp (x start, y end view depth; 0 0 off)", Vector) = (0, 0, 0, 0)
         [Enum(UnityEngine.Rendering.CullMode)] _Cull("Cull", Float) = 2.0
+        _StreakScale("Rock Streak Scale (column width multiplier)", Range(0.25, 4.0)) = 1.0
+        _StreakStrength("Rock Streak Strength (luminance share)", Range(0.0, 0.5)) = 0.12
+        _StrataPeriod("Rock Strata Period (metres)", Range(1.0, 30.0)) = 6.5
+        _StrataStrength("Rock Strata Strength (luminance share)", Range(0.0, 0.5)) = 0.05
 
         [Toggle(_VERTEX_COLOR)] _VertexColor("Vertex Colour", Float) = 0.0
         [Toggle(_FLAT_SHADING)] _FlatShading("Flat Shading", Float) = 0.0
@@ -29,6 +33,7 @@ Shader "AlpineLib/Stylized/Lit"
         [Toggle(_FOG_SCALE_BLEND)] _FogScaleBlend("Blend Fog Scale By Vertex Alpha", Float) = 0.0
         [Toggle(_FOG_RADIAL)] _FogRadial("Fog By Radial Distance", Float) = 0.0
         [Toggle(_FOG_SKY)] _FogSky("Fog Toward The Sky Behind", Float) = 0.0
+        [Toggle(_ROCK_STREAKS)] _RockStreaks("Rock Streaks And Strata (object space)", Float) = 0.0
         [Toggle(_DITHER_FADE)] _DitherFade("Dither Fade (per-instance _FadeAmount)", Float) = 0.0
         [HideInInspector] _FadeAmount("Fade Amount", Range(0.0, 1.0)) = 1.0
     }
@@ -67,6 +72,7 @@ Shader "AlpineLib/Stylized/Lit"
             #pragma shader_feature_local _FOG_SCALE_BLEND
             #pragma shader_feature_local_fragment _FOG_RADIAL
             #pragma shader_feature_local_fragment _FOG_SKY
+            #pragma shader_feature_local _ROCK_STREAKS
             // Screen-door fade-in; builds ship it only where a committed fade template (DitherFadeTemplates) turns it on.
             #pragma shader_feature_local_fragment _DITHER_FADE
 
