@@ -9,22 +9,44 @@ namespace AlpineLib.Netcode.Diagnostics {
     /// FNV-1a 64 hashes of the collision narrow phase and the pawn motor over integer-built inputs, with the values
     /// CoreCLR produces. A runtime that returns anything else (the Unity editor's Mono, say) will drift from the server.
     /// </summary>
+    /// <remarks>
+    /// Each golden runs twice: exact inputs (sixteenths, so many products are exact) and rough ones (thirteenths,
+    /// elevenths, sevenths and seventeenths: full mantissas, still one correctly rounded division on every runtime).
+    /// The generator's own arithmetic is narrowed for the same reason the code under test is.
+    /// </remarks>
     public static class MonoParityGoldens {
-        /// <summary>Box, sphere, capsule and plane contacts and supports over the golden poses.</summary>
-        public const ulong ShapeGolden = 0x2A398B624CD6B11DUL;
+        /// <summary>Box, sphere, capsule and plane contacts and supports over the exact poses.</summary>
+        public const ulong ShapeGolden = 0x226E3ADFDE4DB867UL;
 
-        /// <summary>Pawn motor states over the golden script and world.</summary>
-        public const ulong MotorGolden = 0xEE6E28DCD15A17E5UL;
+        /// <summary>Pawn motor states over the exact script and world.</summary>
+        public const ulong MotorGolden = 0xD2D03DA2234E2E54UL;
 
-        /// <summary>Prism contacts and supports over the golden poses.</summary>
+        /// <summary>Prism contacts and support heights over the exact poses.</summary>
         public const ulong PrismGolden = 0xE7F2B71C41C1F340UL;
+
+        /// <summary><see cref="ShapeGolden"/> over the rough poses.</summary>
+        public const ulong RoughShapeGolden = 0x03A44F2656D55DCEUL;
+
+        /// <summary><see cref="MotorGolden"/> over the rough script and world.</summary>
+        public const ulong RoughMotorGolden = 0x86C3844F8949D43CUL;
+
+        /// <summary><see cref="PrismGolden"/> over the rough poses.</summary>
+        public const ulong RoughPrismGolden = 0xA52A7C80C478586EUL;
 
         private const ulong OffsetBasis = 14695981039346656037UL;
         private const ulong Prime = 1099511628211UL;
         private const float TickSeconds = 1f / 30f;
         private const int PoseCount = 4096;
+        private const int PawnCount = 18;
+        private const int TickCount = 180;
+        private const uint ShiftTick = 90u;
+        private const int RampShapeIndex = 13;
+        private const float Diagonal = 0.70710677f;
 
-        /// <summary>The narrow-phase golden's shapes: turned and plain boxes, a sphere, two capsules, a plane.</summary>
+        /// <summary>
+        /// The narrow-phase golden's shapes: turned, plain and tilted boxes, a sphere, two capsules, a plane, a
+        /// zero-length capsule and a box with a collapsed up axis (a support probe passes through it without entering).
+        /// </summary>
         public static CollisionShape[] Shapes() {
             return new[] {
                 CollisionShape.MakeBox(new Vector3(0.25f, 0.5f, -0.5f), new Vector3(0.6f, 0f, -0.8f), Vector3.UnitY, new Vector3(0.8f, 0f, 0.6f), new Vector3(1.125f, 0.5f, 0.75f)),
@@ -34,6 +56,8 @@ namespace AlpineLib.Netcode.Diagnostics {
                 CollisionShape.MakeCapsule(new Vector3(0.5f, 1f, 0.5f), new Vector3(0.6f, 0.8f, 0f), 0.75f, 0.375f),
                 CollisionShape.MakeCapsule(new Vector3(-0.25f, 0.5f, -0.75f), Vector3.UnitY, 0.5f, 0.625f),
                 CollisionShape.MakePlane(0.0625f),
+                CollisionShape.MakeCapsule(new Vector3(1.5f, 0.5f, -1.5f), Vector3.UnitY, 0f, 0.5f),
+                CollisionShape.MakeBox(new Vector3(-1.5f, 0.25f, 1.75f), Vector3.UnitX, Vector3.Zero, Vector3.UnitZ, new Vector3(0.75f, 0.5f, 0.5f)),
             };
         }
 
@@ -52,72 +76,172 @@ namespace AlpineLib.Netcode.Diagnostics {
             };
         }
 
-        /// <summary>Golden pose <paramref name="index"/>, built from integers.</summary>
+        /// <summary>Exact golden pose <paramref name="index"/>, built from integers.</summary>
         public static CapsulePose Pose(int index) {
-            float x = ((index * 37) % 97 - 48) / 16f;
-            float z = ((index * 53) % 89 - 44) / 16f;
-            float y = ((index * 29) % 61 - 20) / 16f;
-            float radius = 0.25f + (index % 5) / 16f;
-            return new CapsulePose(new Vector3(x, y, z), radius, radius * 2f + (index % 7) / 8f);
+            return Pose(index, false);
         }
 
-        /// <summary>Contact and support outputs of every golden pose against every shape of <see cref="Shapes"/>.</summary>
+        /// <summary>Rough golden pose <paramref name="index"/>, built from integers.</summary>
+        public static CapsulePose RoughPose(int index) {
+            return Pose(index, true);
+        }
+
+        /// <summary>Contacts and supports of every exact pose against every shape of <see cref="Shapes"/>.</summary>
         public static ulong ShapeHash() {
-            return HashPoses(Shapes(), true);
+            return HashPoses(Shapes(), false, true);
         }
 
-        /// <summary>Contact and support heights of every golden pose against every prism of <see cref="Prisms"/>.</summary>
+        /// <summary><see cref="ShapeHash"/> over the rough poses.</summary>
+        public static ulong RoughShapeHash() {
+            return HashPoses(Shapes(), true, true);
+        }
+
+        /// <summary>Contacts and support heights of every exact pose against every prism of <see cref="Prisms"/>.</summary>
         public static ulong PrismHash() {
-            return HashPoses(Prisms(), false);
+            return HashPoses(Prisms(), false, false);
+        }
+
+        /// <summary><see cref="PrismHash"/> over the rough poses.</summary>
+        public static ulong RoughPrismHash() {
+            return HashPoses(Prisms(), true, false);
+        }
+
+        /// <summary>Pawn states over the exact script; see <see cref="MotorHash(bool, MotorParityCoverage)"/>.</summary>
+        public static ulong MotorHash() {
+            return MotorHash(false, null);
+        }
+
+        /// <summary>Pawn states over the rough script; see <see cref="MotorHash(bool, MotorParityCoverage)"/>.</summary>
+        public static ulong RoughMotorHash() {
+            return MotorHash(true, null);
         }
 
         /// <summary>
-        /// Pawn states over a fixed input script through a world of every primitive and a mover. Yaw is left out: it
-        /// comes from <c>MathF.Atan2</c> and never feeds a position.
+        /// Pawn states, tick by tick, through every primitive, the prisms, a 45° ramp, a ping-pong and a looping mover
+        /// and a floating-origin rebase halfway. Yaw is left out: it comes from <c>MathF.Atan2</c> and never feeds a
+        /// position. <paramref name="coverage"/>, when given, counts the paths the run reached.
         /// </summary>
-        public static ulong MotorHash() {
-            CollisionWorld world = World();
-            var profile = new MovementProfile { SlopeLimitDegrees = 45f };
+        public static ulong MotorHash(bool rough, MotorParityCoverage coverage) {
+            CollisionWorld world = World(rough);
+            MovementProfile steep = Profile(45f);
+            MovementProfile gentle = Profile(50f);
+            Vector3 shift = rough ? new Vector3(41f / 13f, 0f, -23f / 11f) : new Vector3(3.25f, 0f, -1.75f);
+            var states = new PawnState[PawnCount];
+            for (int pawn = 0; pawn < PawnCount; pawn++) states[pawn] = StartState(pawn, rough);
+
             ulong hash = OffsetBasis;
-            for (int pawn = 0; pawn < 12; pawn++) {
-                var start = new Vector3((pawn % 4 - 1.5f) * 1.25f, 0.0625f + (pawn % 3) * 0.5f, (pawn / 4 - 1f) * 1.5f);
-                var state = new PawnState(start, pawn * 30f, Vector3.Zero, PawnState.PackFlags(WireLocomotion.Walk, false, pawn % 3 == 0));
-                for (int tick = 1; tick <= 180; tick++) {
-                    PawnInput input = Input(pawn, tick);
-                    state = PawnMotor.Step(in input, in state, profile, world, (uint)tick, TickSeconds);
-                    hash = HashState(hash, in state);
+            for (uint tick = 1u; tick <= TickCount; tick++) {
+                if (tick == ShiftTick) Rebase(world, states, shift, coverage);
+                if (coverage != null && IsLoopWrap(world, tick)) coverage.LoopWraps++;
+                for (int pawn = 0; pawn < PawnCount; pawn++) {
+                    PawnInput input = Input(pawn, (int)tick, rough);
+                    PawnState before = states[pawn];
+                    MovementProfile profile = pawn % 2 == 0 ? steep : gentle;
+                    states[pawn] = PawnMotor.Step(in input, in before, profile, world, tick, TickSeconds);
+                    if (coverage != null) Observe(coverage, world, profile, in input, in before, in states[pawn], tick);
+                    hash = HashState(hash, in states[pawn]);
                 }
             }
             return hash;
         }
 
-        private static ulong HashPoses(CollisionShape[] shapes, bool withSupportNormal) {
+        private static CapsulePose Pose(int index, bool rough) {
+            float x = (float)(((index * 37) % 97 - 48) / (rough ? 13f : 16f));
+            float z = (float)(((index * 53) % 89 - 44) / (rough ? 11f : 16f));
+            float y = (float)(((index * 29) % 61 - 20) / (rough ? 7f : 16f));
+            float radius = (float)(0.25f + (float)((index % 5) / (rough ? 17f : 16f)));
+            return new CapsulePose(new Vector3(x, y, z), radius, (float)((float)(radius * 2f) + (float)((index % 7) / 8f)));
+        }
+
+        private static ulong HashPoses(CollisionShape[] shapes, bool rough, bool withSupportNormal) {
             ulong hash = OffsetBasis;
             for (int index = 0; index < PoseCount; index++) {
-                CapsulePose pose = Pose(index);
+                CapsulePose pose = Pose(index, rough);
                 foreach (CollisionShape shape in shapes) hash = HashShape(hash, in pose, in shape, withSupportNormal);
             }
             return hash;
         }
 
-        private static CollisionWorld World() {
-            CollisionShape[] shapes = Shapes();
-            var moverPath = new MoverPath(new[] { new Vector3(2f, 0.25f, -2f), new Vector3(2f, 0.25f, 2f), new Vector3(-1.5f, 0.75f, 2f) }, 1.25f, MoverLoopMode.PingPong, 7u);
-            CollisionShape platform = CollisionShape.MakeBox(Vector3.Zero, Vector3.UnitX, Vector3.UnitY, Vector3.UnitZ, new Vector3(0.75f, 0.125f, 0.75f));
-            var mover = new MoverDefinition(1, 1, in platform, moverPath);
-            return new CollisionWorld(new SceneGeometry("Parity", 1u, shapes, new[] { mover }), TickSeconds);
+        private static MovementProfile Profile(float slopeLimitDegrees) {
+            return new MovementProfile { SlopeLimitDegrees = slopeLimitDegrees, AirDrag = 0.5f };
         }
 
-        // Turning directions from integer steps, gaits, jumps and crouches.
-        private static PawnInput Input(int pawn, int tick) {
+        private static PawnState StartState(int pawn, bool rough) {
+            float spacing = rough ? 1.3f : 1.25f;
+            var start = new Vector3((float)((pawn % 6 - 2.5f) * spacing), (float)(0.0625f + (float)((pawn % 3) * 0.5f)), (float)((pawn / 6 - 1f) * 1.5f));
+            return new PawnState(start, pawn * 30f, Vector3.Zero, PawnState.PackFlags(WireLocomotion.Walk, false, pawn % 3 == 0));
+        }
+
+        // Shapes() then Prisms() then the ramp, so the ramp's static index is fixed.
+        private static CollisionWorld World(bool rough) {
+            CollisionShape[] shapes = Shapes();
+            CollisionShape[] prisms = Prisms();
+            var statics = new CollisionShape[shapes.Length + prisms.Length + 1];
+            shapes.CopyTo(statics, 0);
+            prisms.CopyTo(statics, shapes.Length);
+            statics[RampShapeIndex] = CollisionShape.MakeBox(new Vector3(-2.5f, 0f, 2.5f), new Vector3(Diagonal, Diagonal, 0f), new Vector3(-Diagonal, Diagonal, 0f), Vector3.UnitZ, new Vector3(1.25f, 0.25f, 1f));
+
+            float speed = rough ? 1.3f : 1.25f;
+            var pingPong = new MoverPath(new[] { new Vector3(2f, 0.25f, -2f), new Vector3(2f, 0.25f, 2f), new Vector3(-1.5f, 0.75f, 2f) }, speed, MoverLoopMode.PingPong, 7u);
+            var loop = new MoverPath(new[] { new Vector3(-2.5f, 0.25f, -2.5f), new Vector3(-2.5f, 0.25f, -0.5f) }, speed, MoverLoopMode.Loop, 0u);
+            CollisionShape platform = CollisionShape.MakeBox(Vector3.Zero, Vector3.UnitX, Vector3.UnitY, Vector3.UnitZ, new Vector3(0.75f, 0.125f, 0.75f));
+            var movers = new[] { new MoverDefinition(1, 1, in platform, pingPong), new MoverDefinition(2, 1, in platform, loop) };
+            return new CollisionWorld(new SceneGeometry("Parity", 1u, statics, movers), TickSeconds);
+        }
+
+        // Turning directions, gaits, jumps and crouches; a third of the pawns let go after each jump and a quarter
+        // push their diagonals past unit length.
+        private static PawnInput Input(int pawn, int tick, bool rough) {
             int phase = (tick / 15 + pawn) % 8;
+            int sinceJump = (tick + pawn * 7) % 45;
+            var gait = (WireLocomotion)((tick / 20 + pawn) % 4);
+            bool jump = sinceJump == 0;
+            bool crouch = (tick / 30 + pawn) % 5 == 0;
+            if (pawn % 3 == 2 && sinceJump >= 1 && sinceJump <= 20) return new PawnInput((uint)tick, Vector2.Zero, gait, jump, crouch);
+
             float x = phase == 0 || phase == 1 || phase == 7 ? 1f : phase == 3 || phase == 4 || phase == 5 ? -1f : 0f;
             float z = phase == 1 || phase == 2 || phase == 3 ? 1f : phase == 5 || phase == 6 || phase == 7 ? -1f : 0f;
-            float scale = (phase % 2 == 1) ? 0.6875f : 1f;
-            var gait = (WireLocomotion)((tick / 20 + pawn) % 4);
-            bool jump = (tick + pawn * 7) % 45 == 0;
-            bool crouch = (tick / 30 + pawn) % 5 == 0;
-            return new PawnInput((uint)tick, new Vector2(x * scale, z * scale), gait, jump, crouch);
+            float scale = InputScale(pawn, phase, rough);
+            return new PawnInput((uint)tick, new Vector2((float)(x * scale), (float)(z * scale)), gait, jump, crouch);
+        }
+
+        private static float InputScale(int pawn, int phase, bool rough) {
+            if (phase % 2 == 0) return rough ? 0.9f : 1f;
+            if (pawn % 4 == 3) return rough ? 1.3f : 1.25f;
+            return rough ? 0.7f : 0.6875f;
+        }
+
+        private static void Rebase(CollisionWorld world, PawnState[] states, Vector3 shift, MotorParityCoverage coverage) {
+            world.TranslateAll(shift);
+            for (int pawn = 0; pawn < states.Length; pawn++) {
+                if (coverage != null && !states[pawn].IsCarrierRelative) coverage.OriginShifts++;
+                states[pawn] = states[pawn].WithOriginShift(shift);
+            }
+        }
+
+        private static bool IsLoopWrap(CollisionWorld world, uint tick) {
+            Vector3 previous = world.EvaluateMoverPosition(1, tick - 1u);
+            Vector3 current = world.EvaluateMoverPosition(1, tick);
+            return Vector3.DistanceSquared(previous, current) > 1f;
+        }
+
+        // Counts only; nothing here feeds the hash.
+        private static void Observe(MotorParityCoverage coverage, CollisionWorld world, MovementProfile profile, in PawnInput input, in PawnState before, in PawnState after, uint tick) {
+            bool idle = input.MoveDirection == Vector2.Zero;
+            if (idle && !before.IsGrounded && profile.AirDrag > 0f) coverage.AirborneWithoutInput++;
+            if (idle && after.YawDegrees == before.YawDegrees) coverage.HeldYaws++;
+            if (input.MoveDirection.LengthSquared() > 1f) coverage.OverLengthInputs++;
+
+            var reach = new CapsulePose(after.Position - new Vector3(0f, 0.05f, 0f), profile.CapsuleRadius + 0.05f, profile.CapsuleHeight + 0.1f);
+            Span<CollisionContact> contacts = stackalloc CollisionContact[16];
+            int count = world.CollectContacts(in reach, tick, contacts);
+            for (int index = 0; index < count; index++) CountTouch(coverage, world, in contacts[index]);
+        }
+
+        private static void CountTouch(MotorParityCoverage coverage, CollisionWorld world, in CollisionContact contact) {
+            if (contact.IsMover) return;
+            if (contact.ShapeIndex == RampShapeIndex) coverage.RampTouches++;
+            if (world.GetStaticShape(contact.ShapeIndex).Type == CollisionShapeType.Prism) coverage.PrismTouches++;
         }
 
         private static ulong HashShape(ulong hash, in CapsulePose pose, in CollisionShape shape, bool withSupportNormal) {
