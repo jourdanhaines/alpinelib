@@ -46,6 +46,9 @@ namespace AlpineLib.Sky {
         public double ShapesX { get; set; }
         public double ShapesZ { get; set; }
 
+        /// <summary><see cref="LandmarkShapes"/> binned for the per-cloud lookups.</summary>
+        public CloudLandmarkIndex LandmarkIndex { get; } = new CloudLandmarkIndex();
+
         /// <summary>True once <see cref="LandmarkShapes"/> was queried; complete once the provider knew every landmark in reach.</summary>
         public bool HasShapes { get; set; }
         public bool AreShapesComplete { get; set; }

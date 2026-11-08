@@ -87,6 +87,8 @@ namespace AlpineLib.Sky {
         private CloudLandmarkInfluence _influence;
         private WindVector _heading;
         private double _landmarkReach;
+        private double _cloudReach;
+        private double _lowestAltitude;
         private int _layer;
         private int _revision;
         private float _reach;
@@ -613,16 +615,19 @@ namespace AlpineLib.Sky {
 
         // Bias, envelope and boost at the cloud's absolute position, then the lift; false when a latent cloud is not condensed there.
         private bool ApplyLandmarks(CloudBatch batch, in CloudInstance cloud, double x, double z, ref double size, ref double altitude) {
-            List<LandmarkSkyShape> shapes = batch.LandmarkShapes;
-            if (shapes.Count == 0) return !cloud.IsLatent;
+            CloudLandmarkIndex index = batch.LandmarkIndex;
+            if (index.Count == 0) return !cloud.IsLatent;
 
-            double bias = _influence.GiantBias(shapes, x, z, _heading);
+            double bias = _influence.GiantBias(index.BiasShapesAt(x, z), x, z, _heading);
             double envelope = _scatter.Envelope(cloud, bias);
             if (envelope <= 0.0) return false;
 
             size *= _scatter.SizeBoost(cloud.Class, bias) * envelope;
+            IReadOnlyList<LandmarkSkyShape> lifting = index.LiftShapesAt(x, z);
+            if (lifting.Count == 0) return true;
+
             double cap = _scatter.Settings.BoostCap(_scatter.Settings.ClassOf(cloud.Class));
-            altitude += _influence.Lift(shapes, x, z, cloud.Reach * cap, cloud.Altitude);
+            altitude += _influence.Lift(lifting, x, z, cloud.Reach * cap, cloud.Altitude);
             return true;
         }
 
@@ -637,6 +642,7 @@ namespace AlpineLib.Sky {
 
             batch.LandmarkShapes.Clear();
             batch.AreShapesComplete = _landmarks.TryGetNearby(absoluteX, absoluteZ, _landmarkReach, batch.LandmarkShapes);
+            batch.LandmarkIndex.Build(batch.LandmarkShapes, _influence.Settings, _cloudReach, _lowestAltitude);
             batch.ShapesX = absoluteX;
             batch.ShapesZ = absoluteZ;
             batch.HasShapes = true;
@@ -648,8 +654,13 @@ namespace AlpineLib.Sky {
             if (_influence == null) return;
 
             double reach = 0.0;
+            _cloudReach = 0.0;
+            _lowestAltitude = double.MaxValue;
             foreach (CloudClassSettings cloudClass in _scatter.Settings.Classes) {
-                reach = Math.Max(reach, cloudClass.MotionReach + _scatter.Settings.MaxReach(cloudClass) * _scatter.Settings.BoostCap(cloudClass));
+                double cloudReach = _scatter.Settings.MaxReach(cloudClass) * _scatter.Settings.BoostCap(cloudClass);
+                reach = Math.Max(reach, cloudClass.MotionReach + cloudReach);
+                _cloudReach = Math.Max(_cloudReach, cloudReach);
+                _lowestAltitude = Math.Min(_lowestAltitude, cloudClass.MinAltitude);
             }
             _landmarkReach = _scatter.Settings.WindowRadius + reach + settings.InfluenceReach + LandmarkRefreshMetres;
         }

@@ -150,6 +150,25 @@ namespace AlpineLib.Server.Tests.Sky {
             Assert.True(total.Ratio > 1.1, $"count ratio {total.Ratio:0.000}");
         }
 
+        // The binned lookups give exactly the lift and bias of testing every landmark.
+        [Fact]
+        public void IndexMatchesTheFullList() {
+            var influence = new CloudLandmarkInfluence(CloudLandmarkSettings.Default);
+            var shapes = new List<LandmarkSkyShape> { Giant(0.0, 0.0, 150.0, 170.0), Giant(1900.0, 700.0, 95.0, 120.0), Mesa(600.0, -800.0, 90.0, 50.0), Mesa(-900.0, 400.0, 130.0, 60.0) };
+            var index = new CloudLandmarkIndex();
+            index.Build(shapes, influence.Settings, 120.0, 140.0);
+            Assert.Equal(3, index.Count);
+            var random = new Random(3);
+            var heading = new WindVector(-0.8, 0.6);
+            for (int sample = 0; sample < 20000; sample++) {
+                double x = random.NextDouble() * 6000.0 - 2500.0;
+                double z = random.NextDouble() * 6000.0 - 3000.0;
+                double altitude = 140.0 + random.NextDouble() * 60.0;
+                Assert.Equal(influence.Lift(shapes, x, z, 60.0, altitude), influence.Lift(index.LiftShapesAt(x, z), x, z, 60.0, altitude));
+                Assert.Equal(influence.GiantBias(shapes, x, z, heading), influence.GiantBias(index.BiasShapesAt(x, z), x, z, heading));
+            }
+        }
+
         private static CloudFieldSettings LandmarkSettings() {
             return new CloudFieldSettings { Landmarks = CloudLandmarkSettings.Default };
         }
