@@ -41,6 +41,15 @@ namespace AlpineLib.Sky {
         public double Time { get; set; }
         public float Fade { get; set; }
 
+        /// <summary>Landmarks near the camera the clouds lift over and gather about, queried about (<see cref="ShapesX"/>, <see cref="ShapesZ"/>).</summary>
+        public List<LandmarkSkyShape> LandmarkShapes { get; } = new List<LandmarkSkyShape>();
+        public double ShapesX { get; set; }
+        public double ShapesZ { get; set; }
+
+        /// <summary>True once <see cref="LandmarkShapes"/> was queried; complete once the provider knew every landmark in reach.</summary>
+        public bool HasShapes { get; set; }
+        public bool AreShapesComplete { get; set; }
+
         /// <summary>The field revision the matrices were built from.</summary>
         public int Revision { get; set; }
 

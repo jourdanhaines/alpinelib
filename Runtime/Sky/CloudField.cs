@@ -55,6 +55,9 @@ namespace AlpineLib.Sky {
 
         private const int StaleBatchFrames = 120;
 
+        /// <summary>How far a camera moves before its landmarks are queried again, metres (the query reaches this much further).</summary>
+        public const double LandmarkRefreshMetres = 128.0;
+
         // The tick after next is sampled over this many frames (a 0.25 s tick lasts 15 at 60 fps), at least this many clouds a frame.
         private const int AheadFrames = 8;
         private const int AheadMinClouds = 64;
@@ -77,6 +80,13 @@ namespace AlpineLib.Sky {
         private Material _template;
         private Material _material;
         private float _fogScale;
+        private bool _hasHaze;
+        private float _hazeFar;
+        private Vector4 _hazeRamp;
+        private ILandmarkSkyProvider _landmarks;
+        private CloudLandmarkInfluence _influence;
+        private WindVector _heading;
+        private double _landmarkReach;
         private int _layer;
         private int _revision;
         private float _reach;
@@ -125,6 +135,12 @@ namespace AlpineLib.Sky {
         /// <summary>The drift the clouds are placed with (held while the wind is not ready, gliding after a jump).</summary>
         public WindVector Displacement => _displacement;
 
+        /// <summary>The landmarks clouds react to, or null (also when the scatter has no <see cref="CloudFieldSettings.Landmarks"/>).</summary>
+        public ILandmarkSkyProvider Landmarks => _influence != null ? _landmarks : null;
+
+        /// <summary>The lift and giant bias evaluator, or null without landmarks.</summary>
+        public CloudLandmarkInfluence Influence => _influence;
+
         /// <summary>True while the clouds glide from a held drift to the live one.</summary>
         public bool IsGliding => _glideShare < 1f;
 
@@ -148,8 +164,9 @@ namespace AlpineLib.Sky {
             _fogScale = fogScale;
             if (!HasCloudKeywords(material)) Debug.LogWarning($"CloudField::Configure->'{material.name}' lacks the sky keywords; player builds strip variants switched on at runtime.", this);
             EnsureMaterial();
-            _reach = (float)LargestExtent(meshes, scatter.Settings);
+            _reach = (float)(LargestExtent(meshes, scatter.Settings) * LargestBoost(scatter.Settings));
             BuildShadowDiscs(meshes, scatter.Settings);
+            BindLandmarks();
             ResetWind();
             Invalidate();
         }
@@ -167,6 +184,28 @@ namespace AlpineLib.Sky {
                 && material.IsKeywordEnabled(StylizedLitShader.ReceiveShadowsOffKeyword)
                 && material.IsKeywordEnabled(StylizedLitShader.FogRadialKeyword)
                 && material.IsKeywordEnabled(StylizedLitShader.FogSkyKeyword);
+        }
+
+        /// <summary>
+        /// Lifts clouds over the landmarks of <paramref name="provider"/> and gathers them about its giants (null = none);
+        /// only when the scatter's settings carry <see cref="CloudFieldSettings.Landmarks"/>, else the field ignores it.
+        /// </summary>
+        public void SetLandmarks(ILandmarkSkyProvider provider) {
+            _landmarks = provider;
+            BindLandmarks();
+            Invalidate();
+        }
+
+        /// <summary>
+        /// Fogs clouds past <paramref name="start"/> metres toward <paramref name="far"/> times the fog distance, reached at
+        /// <paramref name="end"/> (<c>_FogScaleFar</c>/<c>_FogScaleRamp</c>), through a clone unless the asset already matches.
+        /// </summary>
+        public void SetHazeRamp(float far, float start, float end) {
+            _hasHaze = true;
+            _hazeFar = far;
+            _hazeRamp = new Vector4(start, end, 0f, 0f);
+            DestroyClone();
+            EnsureMaterial();
         }
 
         /// <summary>Sets the fog distance scale the clouds draw with (reviews), through a clone unless the asset already matches.</summary>
@@ -417,13 +456,15 @@ namespace AlpineLib.Sky {
             batch.Clear();
             batch.WindowCells = _scatter.Settings.WindowCells;
             _fullRadius = _scatter.Settings.FullRadius;
+            RefreshShapes(batch, absoluteX, absoluteZ);
+            _heading = _wind != null && _wind.Field != null ? _wind.Field.Direction(_time) : WindVector.Zero;
             for (int classIndex = 0; classIndex < CloudFieldSettings.ClassCount; classIndex++) {
                 var cloudClass = (CloudClass)classIndex;
                 CloudFieldFrame frame = CloudFieldFrame.Locate(absoluteX, absoluteZ, _scatter.DriftOf(cloudClass, _displacement), _scatter.Settings.CellSize);
                 bool hasClassMoved = hasMoved || batch.CellXOf(cloudClass) != frame.CellX || batch.CellZOf(cloudClass) != frame.CellZ;
                 hasMoved |= hasClassMoved;
                 batch.SetCell(cloudClass, frame.CellX, frame.CellZ);
-                AddWindow(batch, cloudClass, frame, world, groundY);
+                AddWindow(batch, cloudClass, frame, world, groundY, absoluteX, absoluteZ);
                 if (hasClassMoved) QueueLookahead(cloudClass, frame);
             }
 
@@ -498,7 +539,7 @@ namespace AlpineLib.Sky {
         }
 
         // Every cell of the class's window that comes within the window's radius (its clouds never leave it).
-        private void AddWindow(CloudBatch batch, CloudClass cloudClass, CloudFieldFrame frame, Vector3 world, float groundY) {
+        private void AddWindow(CloudBatch batch, CloudClass cloudClass, CloudFieldFrame frame, Vector3 world, float groundY, double absoluteX, double absoluteZ) {
             int window = _scatter.Settings.WindowCells;
             double share = CloudFieldScatter.TickShare(_time, _tick);
             for (long cellZ = frame.CellZ - window; cellZ <= frame.CellZ + window; cellZ++) {
@@ -506,7 +547,7 @@ namespace AlpineLib.Sky {
                 for (long cellX = frame.CellX - window; cellX <= frame.CellX + window; cellX++) {
                     if (!IsInWindow(NearestAcross(frame.OffsetX(cellX, 0.0)), nearZ)) continue;
 
-                    AddCell(batch, cloudClass, frame, cellX, cellZ, share, world, groundY);
+                    AddCell(batch, cloudClass, frame, cellX, cellZ, share, world, groundY, absoluteX, absoluteZ);
                 }
             }
         }
@@ -524,7 +565,7 @@ namespace AlpineLib.Sky {
             return nearX * nearX + nearZ * nearZ < radius * radius;
         }
 
-        private void AddCell(CloudBatch batch, CloudClass cloudClass, CloudFieldFrame frame, long cellX, long cellZ, double share, Vector3 world, float groundY) {
+        private void AddCell(CloudBatch batch, CloudClass cloudClass, CloudFieldFrame frame, long cellX, long cellZ, double share, Vector3 world, float groundY, double absoluteX, double absoluteZ) {
             CloudCell cell = CellOf(cloudClass, cellX, cellZ);
             cell.Prepare(_scatter, _tick, _tickHeading, _nextHeading);
             double reach = _scatter.Settings.WindowRadius + _scatter.Settings.ClassOf(cloudClass).MotionReach;
@@ -542,23 +583,81 @@ namespace AlpineLib.Sky {
                 offsetZ += moveZ;
                 double distance = Math.Sqrt(offsetX * offsetX + offsetZ * offsetZ);
                 bool isFar = CloudBatch.ResolveFar(settings, bands, index, distance);
-                AddCloud(batch, cloud, offsetX, offsetZ, distance, isFar, world, groundY);
+                AddCloud(batch, cloud, offsetX, offsetZ, distance, isFar, world, groundY, absoluteX, absoluteZ);
             }
         }
 
         // Shrunk about its flat base by its presence and the fade; turned by its cached heading; coarse past the far mesh band.
-        private void AddCloud(CloudBatch batch, in CloudInstance cloud, double offsetX, double offsetZ, double distance, bool isFar, Vector3 world, float groundY) {
+        // Near landmarks it rises clear of their tops, and in a giant's zone it grows (a latent one condenses in).
+        private void AddCloud(CloudBatch batch, in CloudInstance cloud, double offsetX, double offsetZ, double distance, bool isFar, Vector3 world, float groundY, double absoluteX, double absoluteZ) {
             double presence = (distance <= _fullRadius ? 1.0 : _scatter.Presence(distance)) * _fade;
             if (presence <= 0.0) return;
 
-            float scale = (float)(cloud.Scale * presence);
+            double size = cloud.Scale;
+            double altitude = cloud.Altitude;
+            if (_influence != null) {
+                if (!ApplyLandmarks(batch, cloud, absoluteX + offsetX, absoluteZ + offsetZ, ref size, ref altitude)) return;
+            } else if (cloud.IsLatent) {
+                return;
+            }
+
+            float scale = (float)(size * presence);
             float cos = (float)cloud.YawCos * scale;
             float sin = (float)cloud.YawSin * scale;
             var matrix = new Matrix4x4 {
                 m00 = cos, m02 = sin, m11 = scale, m20 = -sin, m22 = cos, m33 = 1f,
-                m03 = world.x + (float)offsetX, m13 = groundY + (float)cloud.Altitude, m23 = world.z + (float)offsetZ,
+                m03 = world.x + (float)offsetX, m13 = groundY + (float)altitude, m23 = world.z + (float)offsetZ,
             };
             batch.Add(isFar ? cloud.MeshIndex + CloudFieldSettings.MeshCount : cloud.MeshIndex, matrix, scale);
+        }
+
+        // Bias, envelope and boost at the cloud's absolute position, then the lift; false when a latent cloud is not condensed there.
+        private bool ApplyLandmarks(CloudBatch batch, in CloudInstance cloud, double x, double z, ref double size, ref double altitude) {
+            List<LandmarkSkyShape> shapes = batch.LandmarkShapes;
+            if (shapes.Count == 0) return !cloud.IsLatent;
+
+            double bias = _influence.GiantBias(shapes, x, z, _heading);
+            double envelope = _scatter.Envelope(cloud, bias);
+            if (envelope <= 0.0) return false;
+
+            size *= _scatter.SizeBoost(cloud.Class, bias) * envelope;
+            double cap = _scatter.Settings.BoostCap(_scatter.Settings.ClassOf(cloud.Class));
+            altitude += _influence.Lift(shapes, x, z, cloud.Reach * cap, cloud.Altitude);
+            return true;
+        }
+
+        // Re-queried once the camera moved past the refresh distance, or every frame while the provider still lacks some.
+        private void RefreshShapes(CloudBatch batch, double absoluteX, double absoluteZ) {
+            if (_influence == null) return;
+
+            double movedX = absoluteX - batch.ShapesX;
+            double movedZ = absoluteZ - batch.ShapesZ;
+            bool isNear = movedX * movedX + movedZ * movedZ < LandmarkRefreshMetres * LandmarkRefreshMetres;
+            if (batch.HasShapes && batch.AreShapesComplete && isNear) return;
+
+            batch.LandmarkShapes.Clear();
+            batch.AreShapesComplete = _landmarks.TryGetNearby(absoluteX, absoluteZ, _landmarkReach, batch.LandmarkShapes);
+            batch.ShapesX = absoluteX;
+            batch.ShapesZ = absoluteZ;
+            batch.HasShapes = true;
+        }
+
+        private void BindLandmarks() {
+            CloudLandmarkSettings settings = _scatter != null ? _scatter.Settings.Landmarks : null;
+            _influence = settings != null && _landmarks != null ? new CloudLandmarkInfluence(settings) : null;
+            if (_influence == null) return;
+
+            double reach = 0.0;
+            foreach (CloudClassSettings cloudClass in _scatter.Settings.Classes) {
+                reach = Math.Max(reach, cloudClass.MotionReach + _scatter.Settings.MaxReach(cloudClass) * _scatter.Settings.BoostCap(cloudClass));
+            }
+            _landmarkReach = _scatter.Settings.WindowRadius + reach + settings.InfluenceReach + LandmarkRefreshMetres;
+        }
+
+        private static double LargestBoost(CloudFieldSettings settings) {
+            double boost = 1.0;
+            foreach (CloudClassSettings cloudClass in settings.Classes) boost = Math.Max(boost, settings.BoostCap(cloudClass));
+            return boost;
         }
 
         private CloudCell CellOf(CloudClass cloudClass, long cellX, long cellZ) {
@@ -697,13 +796,26 @@ namespace AlpineLib.Sky {
         private void EnsureMaterial() {
             if (_template == null || _material != null) return;
 
-            if (Mathf.Approximately(_template.GetFloat(StylizedLitShader.FogScale), _fogScale)) {
+            if (MatchesFog(_template)) {
                 _material = _template;
                 return;
             }
 
             _material = new Material(_template) { name = $"{_template.name} (fog {_fogScale:0.00})", hideFlags = HideFlags.DontSave };
             _material.SetFloat(StylizedLitShader.FogScale, _fogScale);
+            if (!_hasHaze) return;
+
+            _material.SetFloat(StylizedLitShader.FogScaleFar, _hazeFar);
+            _material.SetVector(StylizedLitShader.FogScaleRamp, _hazeRamp);
+        }
+
+        private bool MatchesFog(Material material) {
+            if (!Mathf.Approximately(material.GetFloat(StylizedLitShader.FogScale), _fogScale)) return false;
+            if (!_hasHaze) return true;
+
+            Vector4 ramp = material.GetVector(StylizedLitShader.FogScaleRamp);
+            return Mathf.Approximately(material.GetFloat(StylizedLitShader.FogScaleFar), _hazeFar)
+                && Mathf.Approximately(ramp.x, _hazeRamp.x) && Mathf.Approximately(ramp.y, _hazeRamp.y);
         }
 
         private void DestroyClone() {

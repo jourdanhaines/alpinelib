@@ -26,6 +26,7 @@ namespace AlpineLib.Procedural.Sky {
     /// </remarks>
     public sealed class CloudFieldScatter {
         private const int Neighbourhood = 9;
+        private const int WideNeighbourhood = 25;
         private const ulong CoverageSalt = 0x434F5645UL;
         private const ulong WanderXSalt = 0x57414E58UL;
         private const ulong WanderZSalt = 0x57414E5AUL;
@@ -54,6 +55,7 @@ namespace AlpineLib.Procedural.Sky {
         [ThreadStatic] private static double[] _candidateReach;
         [ThreadStatic] private static ulong[] _candidatePriority;
         [ThreadStatic] private static bool[] _candidateCovered;
+        [ThreadStatic] private static bool[] _candidateKept;
 
         /// <summary>A scatter of <paramref name="seed"/> shaped by <paramref name="settings"/> (validated).</summary>
         public CloudFieldScatter(ulong seed, CloudFieldSettings settings) {
@@ -102,13 +104,18 @@ namespace AlpineLib.Procedural.Sky {
             if (clouds == null) throw new ArgumentNullException(nameof(clouds));
 
             CloudClassSettings classSettings = Settings.ClassOf(cloudClass);
+            if (Settings.Landmarks != null) {
+                AppendLandmarkCell(cloudClass, classSettings, cellX, cellZ, clouds);
+                return;
+            }
+
             int perCell = classSettings.CandidatesPerCell;
             int candidates = Neighbourhood * perCell;
             EnsureScratch(candidates);
             for (int neighbour = 0; neighbour < Neighbourhood; neighbour++) {
-                long otherX = cellX + neighbour % 3 - 1;
-                long otherZ = cellZ + neighbour / 3 - 1;
-                for (int slot = 0; slot < perCell; slot++) DrawCandidate(cloudClass, classSettings, otherX, otherZ, neighbour, slot, neighbour * perCell + slot);
+                int stepX = neighbour % 3 - 1;
+                int stepZ = neighbour / 3 - 1;
+                for (int slot = 0; slot < perCell; slot++) DrawCandidate(cloudClass, classSettings, cellX + stepX, cellZ + stepZ, stepX, stepZ, slot, neighbour * perCell + slot, 1.0);
             }
 
             int own = 4 * perCell;
@@ -117,12 +124,13 @@ namespace AlpineLib.Procedural.Sky {
             }
         }
 
-        private void DrawCandidate(CloudClass cloudClass, CloudClassSettings classSettings, long cellX, long cellZ, int neighbour, int slot, int index) {
+        // A candidate stepX, stepZ cells from the built one, its reach grown by reachScale (the boost cap with landmarks).
+        private void DrawCandidate(CloudClass cloudClass, CloudClassSettings classSettings, long cellX, long cellZ, int stepX, int stepZ, int slot, int index, double reachScale) {
             var random = new SplitMix64(SlotSeed(_seed, cloudClass, cellX, cellZ, slot));
             ReadPlace(random, classSettings, out double localX, out double localZ, out _candidatePriority[index], out double keepRoll, out int variant, out double scale);
-            _candidateX[index] = (neighbour % 3 - 1) * Settings.CellSize + localX;
-            _candidateZ[index] = (neighbour / 3 - 1) * Settings.CellSize + localZ;
-            _candidateReach[index] = CloudFieldSettings.ReachOf(MeshDiameter(cloudClass, variant), scale);
+            _candidateX[index] = stepX * Settings.CellSize + localX;
+            _candidateZ[index] = stepZ * Settings.CellSize + localZ;
+            _candidateReach[index] = CloudFieldSettings.ReachOf(MeshDiameter(cloudClass, variant), scale) * reachScale;
             _candidateCovered[index] = keepRoll < Coverage(cloudClass, cellX, cellZ, localX, localZ);
         }
 
@@ -134,6 +142,99 @@ namespace AlpineLib.Procedural.Sky {
             _candidateReach = new double[candidates];
             _candidatePriority = new ulong[candidates];
             _candidateCovered = new bool[candidates];
+            _candidateKept = new bool[candidates];
+        }
+
+        // With landmarks: the regular clouds of the 3 x 3 about the cell are settled first (their own 3 x 3, so a 5 x 5
+        // of candidates, every reach grown by the boost cap), then latent candidates of the 3 x 3 are kept where no kept
+        // regular cloud and no higher-priority latent one crowds them. Regular clouds come first, then latent, each in slot order.
+        private void AppendLandmarkCell(CloudClass cloudClass, CloudClassSettings classSettings, long cellX, long cellZ, List<CloudInstance> clouds) {
+            int perCell = classSettings.CandidatesPerCell;
+            int latentPerCell = Settings.Landmarks.LatentOf(cloudClass);
+            int regular = WideNeighbourhood * perCell;
+            int total = regular + Neighbourhood * latentPerCell;
+            double reachScale = Settings.BoostCap(classSettings);
+            EnsureScratch(total);
+            for (int neighbour = 0; neighbour < WideNeighbourhood; neighbour++) {
+                int stepX = neighbour % 5 - 2;
+                int stepZ = neighbour / 5 - 2;
+                for (int slot = 0; slot < perCell; slot++) DrawCandidate(cloudClass, classSettings, cellX + stepX, cellZ + stepZ, stepX, stepZ, slot, neighbour * perCell + slot, reachScale);
+            }
+            SettleRegular(classSettings, perCell, regular);
+            DrawLatent(cloudClass, classSettings, cellX, cellZ, perCell, latentPerCell, regular, reachScale);
+
+            int own = 12 * perCell;
+            for (int slot = 0; slot < perCell; slot++) {
+                if (_candidateKept[own + slot]) clouds.Add(CreateCloud(cloudClass, classSettings, cellX, cellZ, slot));
+            }
+
+            int ownLatent = regular + 4 * latentPerCell;
+            for (int latent = 0; latent < latentPerCell; latent++) {
+                if (IsLatentKept(classSettings, ownLatent + latent, perCell, regular, total)) clouds.Add(CreateLatentCloud(cloudClass, classSettings, cellX, cellZ, perCell + latent));
+            }
+        }
+
+        // Kept flags of the regular candidates of the inner 3 x 3 (indices of the 5 x 5); the outer ring is only ever crowding.
+        private void SettleRegular(CloudClassSettings classSettings, int perCell, int regular) {
+            for (int neighbour = 0; neighbour < WideNeighbourhood; neighbour++) {
+                bool isInner = IsInner(neighbour);
+                for (int slot = 0; slot < perCell; slot++) {
+                    int index = neighbour * perCell + slot;
+                    _candidateKept[index] = isInner && IsKept(classSettings, index, regular);
+                }
+            }
+        }
+
+        private static bool IsInner(int neighbour) {
+            int stepX = neighbour % 5 - 2;
+            int stepZ = neighbour / 5 - 2;
+            return stepX >= -1 && stepX <= 1 && stepZ >= -1 && stepZ <= 1;
+        }
+
+        // Latent slots follow the regular ones in the slot seeds, so they never shift a regular cloud's draws.
+        private void DrawLatent(CloudClass cloudClass, CloudClassSettings classSettings, long cellX, long cellZ, int perCell, int latentPerCell, int regular, double reachScale) {
+            for (int neighbour = 0; neighbour < Neighbourhood; neighbour++) {
+                int stepX = neighbour % 3 - 1;
+                int stepZ = neighbour / 3 - 1;
+                for (int latent = 0; latent < latentPerCell; latent++) {
+                    int index = regular + neighbour * latentPerCell + latent;
+                    DrawCandidate(cloudClass, classSettings, cellX + stepX, cellZ + stepZ, stepX, stepZ, perCell + latent, index, reachScale);
+                    _candidateCovered[index] = true;
+                }
+            }
+        }
+
+        private bool IsLatentKept(CloudClassSettings classSettings, int index, int perCell, int regular, int total) {
+            for (int other = 0; other < regular; other++) {
+                if (_candidateKept[other] && IsCrowding(classSettings, other, index)) return false;
+            }
+            for (int other = regular; other < total; other++) {
+                if (other != index && Outranks(other, index) && IsCrowding(classSettings, other, index)) return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Share of its size <paramref name="cloud"/> is drawn at under giant bias <paramref name="bias"/>: 1 for a
+        /// regular cloud; a latent one condenses from 0 to 1 as its density (coverage + bias × class weight) climbs the
+        /// last <see cref="CloudLandmarkSettings.EnvelopeWidth"/> to its threshold.
+        /// </summary>
+        public double Envelope(in CloudInstance cloud, double bias) {
+            if (!cloud.IsLatent) return 1.0;
+
+            CloudLandmarkSettings landmarks = Settings.Landmarks;
+            if (landmarks == null) return 0.0;
+
+            double density = cloud.BaseDensity + bias * landmarks.WeightOf(cloud.Class);
+            return CloudLandmarkInfluence.SmoothStep(cloud.Threshold - landmarks.EnvelopeWidth, cloud.Threshold, density);
+        }
+
+        /// <summary>Scale factor a cloud of <paramref name="cloudClass"/> grows by under giant bias <paramref name="bias"/>, held at its <see cref="CloudFieldSettings.BoostCap"/>.</summary>
+        public double SizeBoost(CloudClass cloudClass, double bias) {
+            CloudLandmarkSettings landmarks = Settings.Landmarks;
+            if (landmarks == null || !(bias > 0.0)) return 1.0;
+
+            return Math.Min(1.0 + landmarks.SizeBoost * bias, Settings.BoostCap(Settings.ClassOf(cloudClass)));
         }
 
         /// <summary>
@@ -274,13 +375,24 @@ namespace AlpineLib.Procedural.Sky {
         // Every slot reads the same draws in the same order whatever it ends up as.
         private CloudInstance CreateCloud(CloudClass cloudClass, CloudClassSettings classSettings, long cellX, long cellZ, int slot) {
             var random = new SplitMix64(SlotSeed(_seed, cloudClass, cellX, cellZ, slot));
-            ReadPlace(random, classSettings, out double localX, out double localZ, out ulong _, out double _, out int variant, out double scale);
+            ReadPlace(random, classSettings, out double localX, out double localZ, out ulong _, out double keepRoll, out int variant, out double scale);
             double yaw = random.NextDouble() * 2.0 * Math.PI;
             double altitude = Lerp(classSettings.MinAltitude, classSettings.MaxAltitude, random.NextDouble());
             ulong wanderSeed = random.NextULong();
             ulong seed = random.NextULong();
             double reach = CloudFieldSettings.ReachOf(MeshDiameter(cloudClass, variant), scale);
-            return new CloudInstance(localX, localZ, altitude, cloudClass, variant, scale, reach, yaw, wanderSeed, seed);
+            if (Settings.Landmarks == null) return new CloudInstance(localX, localZ, altitude, cloudClass, variant, scale, reach, yaw, wanderSeed, seed);
+
+            double coverage = Coverage(cloudClass, cellX, cellZ, localX, localZ);
+            return new CloudInstance(localX, localZ, altitude, cloudClass, variant, scale, reach, yaw, wanderSeed, seed, false, keepRoll, coverage);
+        }
+
+        // A latent slot's keep roll places its threshold in (1 + envelope width, 1 + giant bias]: above any coverage alone.
+        private CloudInstance CreateLatentCloud(CloudClass cloudClass, CloudClassSettings classSettings, long cellX, long cellZ, int slot) {
+            CloudInstance cloud = CreateCloud(cloudClass, classSettings, cellX, cellZ, slot);
+            CloudLandmarkSettings landmarks = Settings.Landmarks;
+            double threshold = 1.0 + landmarks.EnvelopeWidth + cloud.Threshold * (landmarks.GiantBias - landmarks.EnvelopeWidth);
+            return new CloudInstance(cloud.AnchorX, cloud.AnchorZ, cloud.Altitude, cloudClass, cloud.Variant, cloud.Scale, cloud.Reach, cloud.Yaw, cloud.WanderSeed, cloud.Seed, true, threshold, cloud.BaseDensity);
         }
 
         private static double Lerp(double low, double high, double share) {

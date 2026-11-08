@@ -7,7 +7,7 @@ namespace AlpineLib.Sky {
         public int Resolution { get; set; } = 512;
 
         /// <summary>Metres the cookie spans along each light-space axis, centred on the camera's ground point.</summary>
-        public float CookieSize { get; set; } = 800f;
+        public float CookieSize { get; set; } = 1400f;
 
         /// <summary>Share of the sun left under a cloud's core (1 = no shadow).</summary>
         public float ShadowLight { get; set; } = 0.55f;

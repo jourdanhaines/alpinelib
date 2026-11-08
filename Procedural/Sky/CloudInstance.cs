@@ -6,7 +6,12 @@ namespace AlpineLib.Procedural.Sky {
     /// which mesh, its size and heading, and the seed of its wander and surge. Pure data, the same for every client of a seed.
     /// </summary>
     public readonly struct CloudInstance {
-        public CloudInstance(double anchorX, double anchorZ, double altitude, CloudClass cloudClass, int variant, double scale, double reach, double yaw, ulong wanderSeed, ulong seed) {
+        public CloudInstance(double anchorX, double anchorZ, double altitude, CloudClass cloudClass, int variant, double scale, double reach, double yaw, ulong wanderSeed, ulong seed)
+            : this(anchorX, anchorZ, altitude, cloudClass, variant, scale, reach, yaw, wanderSeed, seed, false, 0.0, 1.0) {
+        }
+
+        /// <summary>A cloud that may be latent: shown only where its density passes <paramref name="threshold"/> (<see cref="CloudFieldScatter.Envelope"/>).</summary>
+        public CloudInstance(double anchorX, double anchorZ, double altitude, CloudClass cloudClass, int variant, double scale, double reach, double yaw, ulong wanderSeed, ulong seed, bool isLatent, double threshold, double baseDensity) {
             AnchorX = anchorX;
             AnchorZ = anchorZ;
             Altitude = altitude;
@@ -19,6 +24,9 @@ namespace AlpineLib.Procedural.Sky {
             YawSin = Math.Sin(yaw);
             WanderSeed = wanderSeed;
             Seed = seed;
+            IsLatent = isLatent;
+            Threshold = threshold;
+            BaseDensity = baseDensity;
         }
 
         /// <summary>Anchor within its field cell, metres from the cell's minimum corner in its class's wind frame.</summary>
@@ -51,6 +59,15 @@ namespace AlpineLib.Procedural.Sky {
 
         /// <summary>The cloud's own seed, for anything else that wants to vary per cloud.</summary>
         public ulong Seed { get; }
+
+        /// <summary>True for a latent cloud: drawn only where giants raise the density past its <see cref="Threshold"/>.</summary>
+        public bool IsLatent { get; }
+
+        /// <summary>Density a latent cloud is full size at (its keep roll for a regular one).</summary>
+        public double Threshold { get; }
+
+        /// <summary>Coverage at its anchor in the wind frame: its density away from giants.</summary>
+        public double BaseDensity { get; }
 
         /// <summary>Index of its mesh among <see cref="CloudFieldSettings.MeshCount"/>: class-major.</summary>
         public int MeshIndex => (int)Class * CloudFieldSettings.VariantsPerClass + Variant;

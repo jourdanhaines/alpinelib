@@ -60,6 +60,13 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Most a cloud's centre ever sits from its anchor, metres (wander plus surge).</summary>
         public double MotionReach => WanderAmplitude + SurgeAmplitude;
 
+        /// <summary>A copy whose altitude band starts no lower than <paramref name="floor"/> (its top raised to match when below it).</summary>
+        public CloudClassSettings WithMinAltitude(double floor) {
+            double low = Math.Max(MinAltitude, floor);
+            return new CloudClassSettings(MinDiameter, MaxDiameter, low, Math.Max(MaxAltitude, low), MinPuffs, MaxPuffs, CandidatesPerCell, FaceBudget,
+                HeightShare, DriftFactor, WanderAmplitude, SurgeAmplitude, OneShadowDisc);
+        }
+
         /// <summary>Throws when a value is out of range.</summary>
         public void Validate() {
             if (!(MinDiameter > 0.0 && MaxDiameter >= MinDiameter)) throw new ArgumentOutOfRangeException(nameof(MaxDiameter), MaxDiameter, "Need 0 < min <= max diameter.");

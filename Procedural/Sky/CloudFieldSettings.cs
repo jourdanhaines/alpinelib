@@ -62,6 +62,9 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>The classes, indexed by <see cref="CloudClass"/>.</summary>
         public CloudClassSettings[] Classes { get; set; } = DefaultClasses();
 
+        /// <summary>How clouds react to landmarks (lift, giant clustering, latent clouds); null = a field that ignores them.</summary>
+        public CloudLandmarkSettings Landmarks { get; set; }
+
         /// <summary>The shipped field.</summary>
         public static CloudFieldSettings Default => new CloudFieldSettings();
 
@@ -115,6 +118,18 @@ namespace AlpineLib.Procedural.Sky {
         }
 
         /// <summary>
+        /// Most a cloud of <paramref name="cloudClass"/> grows in a giant's zone: 1 + size boost × giant bias, held where
+        /// two of the class's largest clouds so grown still fit one cell; 1 without <see cref="Landmarks"/>.
+        /// </summary>
+        public double BoostCap(CloudClassSettings cloudClass) {
+            if (Landmarks == null) return 1.0;
+
+            double room = CellSize - MinGap - 2.0 * cloudClass.MotionReach;
+            double fits = room / (2.0 * MaxReach(cloudClass));
+            return Math.Max(1.0, Math.Min(1.0 + Landmarks.SizeBoost * Landmarks.GiantBias, fits));
+        }
+
+        /// <summary>
         /// Least distance between the anchors of two clouds of <paramref name="cloudClass"/> with footprint radii
         /// <paramref name="reach"/> and <paramref name="otherReach"/>: both radii, the gap and both clouds' motion.
         /// </summary>
@@ -163,6 +178,7 @@ namespace AlpineLib.Procedural.Sky {
             if (!(MinScale > 0.0 && MaxScale >= MinScale)) throw new ArgumentOutOfRangeException(nameof(MaxScale), MaxScale, "Need 0 < min <= max scale.");
             if (!(FarMeshHysteresis >= 0.0 && FarMeshRadius > FarMeshHysteresis)) throw new ArgumentOutOfRangeException(nameof(FarMeshRadius), FarMeshRadius, "Need 0 <= hysteresis < far mesh radius.");
             ValidateClasses();
+            Landmarks?.Validate();
         }
 
         private void ValidateClasses() {
