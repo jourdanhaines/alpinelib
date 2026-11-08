@@ -76,7 +76,10 @@ namespace AlpineLib.Sky {
             set => _maxConcurrentPrepares = Mathf.Max(1, value);
         }
 
-        /// <summary>Payload meshes uploaded per <see cref="Tick"/> (<see cref="PrepareAllNow"/> uploads every one).</summary>
+        /// <summary>
+        /// Payload meshes uploaded per <see cref="Tick"/> (<see cref="PrepareAllNow"/> uploads every one), oldest result
+        /// first whatever its size or distance: keep payloads small, with normals, so two never hitch a frame.
+        /// </summary>
         public int MaxUploadsPerFrame {
             get => _maxUploadsPerFrame;
             set => _maxUploadsPerFrame = Mathf.Max(1, value);
@@ -150,7 +153,7 @@ namespace AlpineLib.Sky {
             return _visibility != null && _visibility.TryGetShownSince(cell, out since);
         }
 
-        /// <summary>Copies the cell would draw (0 until prepared).</summary>
+        /// <summary>Copies the cell would draw, each payload mesh counting as one (0 until prepared and uploaded).</summary>
         public int InstanceCountOf(CellCoord cell) {
             return _cells.TryGetValue(cell, out FarPropLayerCell tracked) && tracked.IsReady ? tracked.InstanceCount : 0;
         }
@@ -160,7 +163,7 @@ namespace AlpineLib.Sky {
             return _cells.TryGetValue(cell, out FarPropLayerCell tracked) && tracked.IsReady ? tracked.PayloadMeshes.Count : 0;
         }
 
-        /// <summary>Copies the cell draws right now (0 when hidden or suppressed).</summary>
+        /// <summary>Copies the cell draws right now, payload meshes included (0 when hidden or suppressed).</summary>
         public int DrawnCountOf(CellCoord cell) {
             return _visibility != null && _visibility.IsDrawn(cell) ? InstanceCountOf(cell) : 0;
         }
@@ -409,12 +412,16 @@ namespace AlpineLib.Sky {
             }
         }
 
-        // Oldest result first, one mesh at a time; a cell turns ready with its last upload.
+        // Oldest result first, one mesh at a time (the budget counts meshes, not vertices); a cell turns ready with
+        // its last upload, and a failed upload frees that cell's meshes and retries its prepare like a failed one.
         private void UploadPayloads(int budget) {
             while (budget > 0 && _uploads.Count > 0) {
                 FarPropLayerCell cell = _uploads[0];
-                UploadNext(cell);
                 budget--;
+                if (!TryUploadNext(cell)) {
+                    FailUpload(cell);
+                    continue;
+                }
                 if (cell.PayloadMeshes.Count < cell.Pending.MeshPayloads.Count) continue;
 
                 _uploads.RemoveAt(0);
@@ -424,17 +431,32 @@ namespace AlpineLib.Sky {
             }
         }
 
-        private void UploadNext(FarPropLayerCell cell) {
+        private bool TryUploadNext(FarPropLayerCell cell) {
             int index = cell.PayloadMeshes.Count;
-            FarPropMeshPayload payload = cell.Pending.MeshPayloads[index];
-            cell.PayloadMeshes.Add(payload.CreateMesh($"Far Payload {cell.Coord} {index}"));
+            try {
+                FarPropMeshPayload payload = cell.Pending.MeshPayloads[index];
+                cell.PayloadMeshes.Add(payload.CreateMesh($"Far Payload {cell.Coord} {index}"));
+                return true;
+            } catch (Exception exception) {
+                Debug.LogWarning($"FarPropLayer: cell {cell.Coord} payload {index} upload failed: {exception}", this);
+                return false;
+            }
         }
 
+        private void FailUpload(FarPropLayerCell cell) {
+            _uploads.Remove(cell);
+            DestroyPayloadMeshes(cell);
+            cell.Pending = null;
+            AdoptOrRetry(cell, null, true);
+        }
+
+        // Each payload draws as one copy and counts as one in the cell's instance count.
         private static void AddPayloadBatches(FarPropLayerCell cell, FarPropCell result) {
             for (int index = 0; index < cell.PayloadMeshes.Count; index++) {
                 FarPropMeshPayload payload = result.MeshPayloads[index];
                 Material material = result.PayloadMaterials[payload.MaterialSlot];
                 cell.Batches.Add(new InstancedBatch(cell.PayloadMeshes[index], material, 0, PayloadPlacement, payload.Bounds));
+                cell.InstanceCount++;
             }
         }
 

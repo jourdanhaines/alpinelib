@@ -18,6 +18,7 @@ namespace AlpineLib.Sky {
             PayloadMaterials = payloadMaterials ?? Array.Empty<Material>();
             foreach (FarPropBatch batch in Batches) InstanceCount += batch.Matrices.Length;
             foreach (FarPropMeshPayload payload in MeshPayloads) RequireSlot(payload);
+            InstanceCount += MeshPayloads.Count;
         }
 
         public IReadOnlyList<FarPropBatch> Batches { get; }
@@ -28,12 +29,15 @@ namespace AlpineLib.Sky {
         /// <summary>The materials <see cref="FarPropMeshPayload.MaterialSlot"/> indexes (referenced, never touched on the worker).</summary>
         public IReadOnlyList<Material> PayloadMaterials { get; }
 
-        /// <summary>Copies over every batch.</summary>
+        /// <summary>Copies over every batch, each mesh payload counting as one.</summary>
         public int InstanceCount { get; }
 
         private void RequireSlot(FarPropMeshPayload payload) {
             if (payload == null) throw new ArgumentException("Mesh payloads must not be null.", nameof(MeshPayloads));
             if (payload.MaterialSlot >= PayloadMaterials.Count) throw new ArgumentOutOfRangeException(nameof(MeshPayloads), payload.MaterialSlot, $"Slot outside the {PayloadMaterials.Count} payload materials.");
+
+            // Reference check only: Unity's null test touches the engine, which a worker must not.
+            if (ReferenceEquals(PayloadMaterials[payload.MaterialSlot], null)) throw new ArgumentException($"Payload material slot {payload.MaterialSlot} is null.", nameof(PayloadMaterials));
         }
     }
 }

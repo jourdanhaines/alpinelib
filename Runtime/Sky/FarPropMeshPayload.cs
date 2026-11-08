@@ -20,7 +20,7 @@ namespace AlpineLib.Sky {
         /// inside cell-local <paramref name="bounds"/>. Arrays are kept, not copied.
         /// </summary>
         public FarPropMeshPayload(Vector3[] vertices, Vector3[] normals, Vector2[] uv0, Color32[] colors, int[] indices, int materialSlot, Bounds bounds) {
-            Validate(vertices, normals, uv0, colors, indices, materialSlot);
+            Validate(vertices, normals, uv0, colors, indices, materialSlot, bounds);
             Vertices = vertices;
             Normals = normals;
             Uv0 = uv0;
@@ -53,13 +53,14 @@ namespace AlpineLib.Sky {
         public bool NeedsUInt32Indices => Vertices.Length > MaxUInt16Vertices;
 
         /// <summary>Throws when the arrays cannot form one triangle mesh.</summary>
-        public static void Validate(Vector3[] vertices, Vector3[] normals, Vector2[] uv0, Color32[] colors, int[] indices, int materialSlot) {
+        public static void Validate(Vector3[] vertices, Vector3[] normals, Vector2[] uv0, Color32[] colors, int[] indices, int materialSlot, Bounds bounds) {
             if (vertices == null || vertices.Length == 0) throw new ArgumentException("Need at least one vertex.", nameof(vertices));
             if (uv0 == null || uv0.Length != vertices.Length) throw new ArgumentException("Need one uv0 per vertex.", nameof(uv0));
             if (normals != null && normals.Length != vertices.Length) throw new ArgumentException("Need one normal per vertex (or none).", nameof(normals));
             if (colors != null && colors.Length != vertices.Length) throw new ArgumentException("Need one colour per vertex (or none).", nameof(colors));
             if (indices == null || indices.Length == 0 || indices.Length % 3 != 0) throw new ArgumentException("Need a non-empty triangle list.", nameof(indices));
             if (materialSlot < 0) throw new ArgumentOutOfRangeException(nameof(materialSlot), materialSlot, "Must not be negative.");
+            RequireBounds(bounds);
 
             int vertexCount = vertices.Length;
             foreach (int index in indices) {
@@ -67,7 +68,18 @@ namespace AlpineLib.Sky {
             }
         }
 
-        /// <summary>Main thread: a new mesh of this payload (owned by the caller), 32-bit indexed when needed.</summary>
+        // A default (zero-size), inverted or non-finite box would cull the mesh wrongly; a flat box (one axis 0) is fine.
+        private static void RequireBounds(Bounds bounds) {
+            Vector3 size = bounds.size;
+            bool isFinite = float.IsFinite(size.x) && float.IsFinite(size.y) && float.IsFinite(size.z) && float.IsFinite(bounds.center.x) && float.IsFinite(bounds.center.y) && float.IsFinite(bounds.center.z);
+            if (!isFinite || size.x < 0f || size.y < 0f || size.z < 0f) throw new ArgumentException("Bounds must be finite and not inverted.", nameof(bounds));
+            if (size.x + size.y + size.z <= 0f) throw new ArgumentException("Bounds must not be zero-size.", nameof(bounds));
+        }
+
+        /// <summary>
+        /// Main thread: a new mesh of this payload (owned by the caller), 32-bit indexed when needed, its CPU copy
+        /// released once uploaded (not readable afterwards).
+        /// </summary>
         public Mesh CreateMesh(string name) {
             var mesh = new Mesh { name = name, hideFlags = HideFlags.DontSave };
             mesh.indexFormat = NeedsUInt32Indices ? IndexFormat.UInt32 : IndexFormat.UInt16;
@@ -78,6 +90,7 @@ namespace AlpineLib.Sky {
             if (Normals != null) mesh.SetNormals(Normals);
             else mesh.RecalculateNormals();
             mesh.bounds = Bounds;
+            mesh.UploadMeshData(true);
             return mesh;
         }
     }
