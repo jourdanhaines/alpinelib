@@ -123,6 +123,14 @@ namespace AlpineLib.Server.Tests {
             Assert.Throws<NetProtocolException>(() => Deserialize(bytes.AsSpan(0, PlainShapeByteCount + 1).ToArray()));
         }
 
+        [Fact]
+        public void AZeroLengthEdgeIsRefusedOnRead() {
+            byte[] bytes = Serialize(CollisionShape.MakePrism(Vector3.Zero, 1f, Pentagon(Vector2.Zero)));
+            Array.Copy(bytes, PlainShapeByteCount + 1, bytes, PlainShapeByteCount + 1 + 8, 8);
+
+            Assert.Throws<NetProtocolException>(() => Deserialize(bytes));
+        }
+
         /// <summary>A CCW pentagon whose bounding box is [−2, 2] × [−1.5, 1.5] about <paramref name="shift"/>.</summary>
         internal static Vector2[] Pentagon(Vector2 shift) {
             return new[] {

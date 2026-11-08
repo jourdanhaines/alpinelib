@@ -347,6 +347,21 @@ namespace AlpineLib.Netcode.Collision {
                 float z = reader.ReadFloat();
                 Plan.SetVertex(index, x, z);
             }
+
+            RejectShortEdges(in Plan);
+        }
+
+        // A zero-length edge would give the resolver a NaN signed distance; refuse it like a bad count.
+        private static void RejectShortEdges(in PrismPlan plan) {
+            for (int index = 0; index < plan.Count; index++) {
+                plan.GetVertex(index, out float x, out float z);
+                plan.GetVertex((index + 1) % plan.Count, out float nextX, out float nextZ);
+                float edgeX = nextX - x;
+                float edgeZ = nextZ - z;
+                if (!(edgeX * edgeX + edgeZ * edgeZ > MinPrismEdge * MinPrismEdge)) {
+                    throw new NetProtocolException("Prism plan edge " + index + " is shorter than 1e-4.");
+                }
+            }
         }
     }
 }

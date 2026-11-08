@@ -26,7 +26,7 @@ namespace AlpineLib.Procedural.Meshing {
 
         /// <summary>At most <paramref name="budget"/> pieces holding the faces of <paramref name="corners"/> between two heights.</summary>
         public static List<PrismPiece> Decompose(IReadOnlyList<Vector3> corners, double bottom, double top, PrismEnvelopeSettings settings, int budget) {
-            List<List<Vector3>> fragments = SlabFragments(corners, bottom, top);
+            List<List<SlabPoint>> fragments = SlabFragments(corners, bottom, top);
             var pieces = new List<PrismPiece>();
             if (fragments.Count == 0) return pieces;
 
@@ -45,29 +45,68 @@ namespace AlpineLib.Procedural.Meshing {
             return pieces;
         }
 
-        /// <summary>The faces' parts between two heights, each a plan-convex polygon.</summary>
-        public static List<List<Vector3>> SlabFragments(IReadOnlyList<Vector3> corners, double bottom, double top) {
-            var fragments = new List<List<Vector3>>();
-            var face = new List<Vector3>(3);
-            var above = new List<Vector3>(8);
+        /// <summary>The faces' parts between two heights in double precision, each a plan-convex polygon.</summary>
+        public static List<List<SlabPoint>> SlabFragments(IReadOnlyList<Vector3> corners, double bottom, double top) {
+            var fragments = new List<List<SlabPoint>>();
+            var face = new List<SlabPoint>(3);
             for (int index = 0; index + 2 < corners.Count; index += 3) {
                 face.Clear();
-                face.Add(corners[index]);
-                face.Add(corners[index + 1]);
-                face.Add(corners[index + 2]);
-                PolygonClip.Clip(face, above, 1, bottom, true);
-                var slab = new List<Vector3>(8);
-                PolygonClip.Clip(above, slab, 1, top, false);
+                for (int corner = 0; corner < 3; corner++) face.Add(new SlabPoint(corners[index + corner].X, corners[index + corner].Y, corners[index + corner].Z));
+                List<SlabPoint> above = Clip(face, 0.0, -1.0, 0.0, -bottom);
+                List<SlabPoint> slab = Clip(above, 0.0, 1.0, 0.0, top);
                 if (slab.Count > 0) fragments.Add(slab);
             }
             return fragments;
         }
 
         /// <summary>
+        /// Sutherland–Hodgman: the part of a fragment where <c>a·x + b·y + c·z ≤ offset</c>, consecutive repeats
+        /// dropped. A fragment that only touches the boundary from outside gives nothing, so a cut never spawns a
+        /// sliver; one lying wholly on the boundary is kept.
+        /// </summary>
+        public static List<SlabPoint> Clip(List<SlabPoint> fragment, double a, double b, double c, double offset) {
+            var output = new List<SlabPoint>(fragment.Count + 1);
+            if (!HasInside(fragment, a, b, c, offset)) return output;
+
+            for (int index = 0; index < fragment.Count; index++) {
+                SlabPoint current = fragment[index];
+                SlabPoint next = fragment[(index + 1) % fragment.Count];
+                double currentSide = a * current.X + b * current.Y + c * current.Z - offset;
+                double nextSide = a * next.X + b * next.Y + c * next.Z - offset;
+                if (currentSide <= 0.0) AddDistinct(output, current);
+                if ((currentSide <= 0.0) == (nextSide <= 0.0)) continue;
+
+                double share = currentSide / (currentSide - nextSide);
+                AddDistinct(output, new SlabPoint(current.X + (next.X - current.X) * share, current.Y + (next.Y - current.Y) * share, current.Z + (next.Z - current.Z) * share));
+            }
+            if (output.Count > 1 && output[0].Equals(output[output.Count - 1])) output.RemoveAt(output.Count - 1);
+            return output;
+        }
+
+        // True when some point is strictly inside, or every point lies on the boundary.
+        private static bool HasInside(List<SlabPoint> fragment, double a, double b, double c, double offset) {
+            bool allOn = true;
+            foreach (SlabPoint point in fragment) {
+                double side = a * point.X + b * point.Y + c * point.Z - offset;
+                if (side < 0.0) return true;
+                if (side != 0.0) allOn = false;
+            }
+            return allOn && fragment.Count > 0;
+        }
+
+        private static void AddDistinct(List<SlabPoint> output, SlabPoint point) {
+            if (output.Count > 0 && output[output.Count - 1].Equals(point)) return;
+
+            output.Add(point);
+        }
+
+        /// <summary>
         /// A prism plan of 3 to <see cref="PrismEnvelopeSettings.MaxVertices"/> vertices holding the points that
         /// survives rounding and a turn: hull, enclose, outward cleanup, else the least-area holding rectangle.
         /// </summary>
-        public static List<PlanPoint> FinishPlan(List<PlanPoint> points, PrismEnvelopeSettings settings) {
+        /// <remarks><paramref name="fellBack"/> is set when cleanup could not fix the plan and the rectangle was used.</remarks>
+        public static List<PlanPoint> FinishPlan(List<PlanPoint> points, PrismEnvelopeSettings settings, out bool fellBack) {
+            fellBack = false;
             List<PlanPoint> hull = ConvexPlan.Hull(points);
             if (hull.Count < 3 || !(ConvexPlan.Area(hull) > settings.MinEdge * settings.MinEdge)) return ThinRectangle(hull, settings.MinEdge);
 
@@ -75,6 +114,7 @@ namespace AlpineLib.Procedural.Meshing {
             List<PlanPoint> cleaned = ConvexPlan.Clean(enclosed, settings.MinTurn, settings.MinEdge, settings.MinEdge * 2.0);
             if (IsRobust(cleaned, settings)) return cleaned;
 
+            fellBack = true;
             return LeastRectangle(hull, settings.MinEdge);
         }
 
@@ -91,7 +131,8 @@ namespace AlpineLib.Procedural.Meshing {
 
         // Accepts the piece or cuts it at its deepest notch and recurses, larger side first.
         private void Split(PrismPiece piece, List<PrismPiece> accepted) {
-            piece.Plan = FinishPlan(piece.PlanPoints(), _settings);
+            piece.Plan = FinishPlan(piece.PlanPoints(), _settings, out bool fellBack);
+            piece.FellBack = fellBack;
             if (_splitsLeft <= 0 || !TryWorstGap(piece, out double startX, out double startZ, out double inwardX, out double inwardZ)) {
                 accepted.Add(piece);
                 return;
@@ -118,7 +159,8 @@ namespace AlpineLib.Procedural.Meshing {
             for (int first = 0; first < pieces.Count; first++) {
                 for (int second = first + 1; second < pieces.Count; second++) {
                     PrismPiece merged = PrismPiece.Merge(pieces[first], pieces[second]);
-                    merged.Plan = FinishPlan(merged.PlanPoints(), _settings);
+                    merged.Plan = FinishPlan(merged.PlanPoints(), _settings, out bool fellBack);
+                    merged.FellBack = fellBack;
                     if (WorstGap(merged, out double _, out double _, out double _, out double _) > _settings.NotchTolerance) continue;
 
                     pieces[first] = merged;
@@ -180,9 +222,9 @@ namespace AlpineLib.Procedural.Meshing {
 
         // The piece's part on the side normal·p ≤ offset, or null when nothing of it is there.
         private PrismPiece Side(PrismPiece piece, double normalX, double normalZ, double offset) {
-            var fragments = new List<List<Vector3>>();
-            foreach (List<Vector3> fragment in piece.Fragments) {
-                List<Vector3> clipped = ClipFragment(fragment, normalX, normalZ, offset);
+            var fragments = new List<List<SlabPoint>>();
+            foreach (List<SlabPoint> fragment in piece.Fragments) {
+                List<SlabPoint> clipped = Clip(fragment, normalX, 0.0, normalZ, offset);
                 if (clipped.Count > 0) fragments.Add(clipped);
             }
             if (fragments.Count == 0) return null;
@@ -197,30 +239,10 @@ namespace AlpineLib.Procedural.Meshing {
             return new PrismPiece(fragments, cells);
         }
 
-        // Sutherland–Hodgman against a vertical half-space, heights interpolated along the crossing edges.
-        private static List<Vector3> ClipFragment(List<Vector3> fragment, double normalX, double normalZ, double offset) {
-            var output = new List<Vector3>(fragment.Count + 1);
-            for (int index = 0; index < fragment.Count; index++) {
-                Vector3 current = fragment[index];
-                Vector3 next = fragment[(index + 1) % fragment.Count];
-                double currentSide = normalX * current.X + normalZ * current.Z - offset;
-                double nextSide = normalX * next.X + normalZ * next.Z - offset;
-                if (currentSide <= 0.0) output.Add(current);
-                if ((currentSide <= 0.0) == (nextSide <= 0.0)) continue;
-
-                double share = currentSide / (currentSide - nextSide);
-                output.Add(new Vector3(
-                    (float)(current.X + (next.X - (double)current.X) * share),
-                    (float)(current.Y + (next.Y - (double)current.Y) * share),
-                    (float)(current.Z + (next.Z - (double)current.Z) * share)));
-            }
-            return output;
-        }
-
-        private static PlanFrame FrameAround(List<List<Vector3>> fragments, double cell) {
+        private static PlanFrame FrameAround(List<List<SlabPoint>> fragments, double cell) {
             double minX = double.PositiveInfinity, maxX = double.NegativeInfinity, minZ = double.PositiveInfinity, maxZ = double.NegativeInfinity;
-            foreach (List<Vector3> fragment in fragments) {
-                foreach (Vector3 point in fragment) {
+            foreach (List<SlabPoint> fragment in fragments) {
+                foreach (SlabPoint point in fragment) {
                     minX = Math.Min(minX, point.X);
                     maxX = Math.Max(maxX, point.X);
                     minZ = Math.Min(minZ, point.Z);
@@ -231,23 +253,28 @@ namespace AlpineLib.Procedural.Meshing {
             return PlanFrame.Around(0, cell, minX - pad, maxX + pad, minZ - pad, maxZ + pad);
         }
 
-        // Fragments fanned back into triangles; a fragment of one or two points becomes a flat sliver.
-        private static List<Vector3> Triangles(List<List<Vector3>> fragments) {
+        // Fragments fanned back into float triangles for the raster, which only guides cuts; a fragment of one or
+        // two points becomes a flat sliver.
+        private static List<Vector3> Triangles(List<List<SlabPoint>> fragments) {
             var triangles = new List<Vector3>();
-            foreach (List<Vector3> fragment in fragments) {
+            foreach (List<SlabPoint> fragment in fragments) {
                 if (fragment.Count < 3) {
-                    triangles.Add(fragment[0]);
-                    triangles.Add(fragment[fragment.Count - 1]);
-                    triangles.Add(fragment[0]);
+                    triangles.Add(ToFloat(fragment[0]));
+                    triangles.Add(ToFloat(fragment[fragment.Count - 1]));
+                    triangles.Add(ToFloat(fragment[0]));
                     continue;
                 }
                 for (int fan = 1; fan + 1 < fragment.Count; fan++) {
-                    triangles.Add(fragment[0]);
-                    triangles.Add(fragment[fan]);
-                    triangles.Add(fragment[fan + 1]);
+                    triangles.Add(ToFloat(fragment[0]));
+                    triangles.Add(ToFloat(fragment[fan]));
+                    triangles.Add(ToFloat(fragment[fan + 1]));
                 }
             }
             return triangles;
+        }
+
+        private static Vector3 ToFloat(SlabPoint point) {
+            return new Vector3((float)point.X, (float)point.Y, (float)point.Z);
         }
 
         // A rectangle half a minimum edge either side of a degenerate hull (a point or a segment).

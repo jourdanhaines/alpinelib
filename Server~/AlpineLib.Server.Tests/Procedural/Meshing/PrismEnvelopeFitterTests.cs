@@ -23,6 +23,8 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
             _output.WriteLine(fit.Report);
 
             Assert.True(fit.MeetsTargets);
+            Assert.Equal(0, fit.FallbackCount);
+            Assert.Contains("rectangle fallbacks 0", fit.Report);
             Assert.InRange(fit.StandoffP90, 0.0, 0.3);
             Assert.InRange(fit.Prisms.Count, 1, 24);
             Assert.InRange(fit.WorstOutside, 0.0, 0.05);

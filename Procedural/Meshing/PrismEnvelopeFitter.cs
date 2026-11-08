@@ -140,10 +140,10 @@ namespace AlpineLib.Procedural.Meshing {
             return farthest;
         }
 
-        private static List<PlanPoint> PlanPointsOf(List<List<Vector3>> fragments) {
+        private static List<PlanPoint> PlanPointsOf(List<List<SlabPoint>> fragments) {
             var points = new List<PlanPoint>();
-            foreach (List<Vector3> fragment in fragments) {
-                foreach (Vector3 point in fragment) points.Add(new PlanPoint(point.X, point.Z));
+            foreach (List<SlabPoint> fragment in fragments) {
+                foreach (SlabPoint point in fragment) points.Add(new PlanPoint(point.X, point.Z));
             }
             return points;
         }
@@ -162,10 +162,11 @@ namespace AlpineLib.Procedural.Meshing {
             double standoffMax = EnvelopeMetrics.Quantile(standoff, 1.0);
             double ledgeAirMax = EnvelopeMetrics.Quantile(air, 1.0);
             string missed = MissedTargets(prisms.Count, standoffP90, standoffMax, ledgeAirMax, settings);
-            string report = Report(edges, bands, prisms.Count, standoffP90, standoffMax, ledgeAirMax, worstOutside, settings);
+            int fallbacks = Fallbacks(bands);
+            string report = Report(edges, bands, prisms.Count, standoffP90, standoffMax, ledgeAirMax, worstOutside, fallbacks, settings);
             if (settings.Strict && missed.Length > 0) throw new InvalidOperationException("Prism fit misses its targets: " + missed + ".\n" + report);
 
-            return new PrismEnvelopeFit(prisms, edges, metrics, standoffP90, standoffMax, ledgeAirMax, worstOutside, missed.Length == 0, report);
+            return new PrismEnvelopeFit(prisms, edges, metrics, standoffP90, standoffMax, ledgeAirMax, worstOutside, fallbacks, missed.Length == 0, report);
         }
 
         // Comma-separated targets the fit misses; empty when it meets them all.
@@ -190,6 +191,14 @@ namespace AlpineLib.Procedural.Meshing {
             return prisms;
         }
 
+        private static int Fallbacks(List<List<PrismPiece>> bands) {
+            int count = 0;
+            foreach (List<PrismPiece> band in bands) {
+                foreach (PrismPiece piece in band) count += piece.FellBack ? 1 : 0;
+            }
+            return count;
+        }
+
         private static int Count(List<List<PrismPiece>> bands) {
             int count = 0;
             foreach (List<PrismPiece> band in bands) count += band.Count;
@@ -206,37 +215,45 @@ namespace AlpineLib.Procedural.Meshing {
             return worst;
         }
 
+        // Barycentric samples of one face in double precision.
         private static double WorstOutsideFace(Vector3 a, Vector3 b, Vector3 c, IReadOnlyList<EnvelopePrism> prisms, double spacing) {
-            double longest = Math.Max(Vector3.Distance(a, b), Math.Max(Vector3.Distance(b, c), Vector3.Distance(c, a)));
+            double abX = (double)b.X - a.X, abY = (double)b.Y - a.Y, abZ = (double)b.Z - a.Z;
+            double acX = (double)c.X - a.X, acY = (double)c.Y - a.Y, acZ = (double)c.Z - a.Z;
+            double bcX = acX - abX, bcY = acY - abY, bcZ = acZ - abZ;
+            double longest = Math.Sqrt(Math.Max(abX * abX + abY * abY + abZ * abZ, Math.Max(acX * acX + acY * acY + acZ * acZ, bcX * bcX + bcY * bcY + bcZ * bcZ)));
             int steps = Math.Max(1, (int)Math.Ceiling(longest / spacing));
             double worst = 0.0;
             for (int first = 0; first <= steps; first++) {
                 for (int second = 0; first + second <= steps; second++) {
-                    float u = (float)first / steps, v = (float)second / steps;
-                    worst = Math.Max(worst, Outside(a + (b - a) * u + (c - a) * v, prisms));
+                    double u = (double)first / steps, v = (double)second / steps;
+                    worst = Math.Max(worst, Outside(a.X + abX * u + acX * v, a.Y + abY * u + acY * v, a.Z + abZ * u + acZ * v, prisms));
                 }
             }
             return worst;
         }
 
-        private static double Outside(Vector3 point, IReadOnlyList<EnvelopePrism> prisms) {
+        private static double Outside(double x, double y, double z, IReadOnlyList<EnvelopePrism> prisms) {
             double best = double.PositiveInfinity;
             foreach (EnvelopePrism prism in prisms) {
-                best = Math.Min(best, prism.DistanceOutside(point));
+                best = Math.Min(best, prism.DistanceOutside(x, y, z));
                 if (best <= 0.0) return 0.0;
             }
             return best;
         }
 
-        private static string Report(List<double> edges, List<List<PrismPiece>> bands, int total, double standoffP90, double standoffMax, double ledgeAirMax, double worstOutside, PrismEnvelopeSettings settings) {
+        private static string Report(List<double> edges, List<List<PrismPiece>> bands, int total, double standoffP90, double standoffMax, double ledgeAirMax, double worstOutside, int fallbacks, PrismEnvelopeSettings settings) {
             var text = new StringBuilder();
             for (int band = 0; band < bands.Count; band++) {
-                text.Append("band ").Append(Format(edges[band])).Append("–").Append(Format(edges[band + 1])).Append(": ").Append(bands[band].Count).Append(" prism(s)\n");
+                text.Append("band ").Append(Format(edges[band])).Append("–").Append(Format(edges[band + 1])).Append(": ").Append(bands[band].Count).Append(" prism(s)");
+                int bandFallbacks = Fallbacks(bands.GetRange(band, 1));
+                if (bandFallbacks > 0) text.Append(", ").Append(bandFallbacks).Append(" rectangle fallback(s)");
+                text.Append('\n');
             }
             text.Append("prisms ").Append(total).Append('/').Append(settings.MaxPrisms)
                 .Append(", standoff p90 ").Append(Format(standoffP90)).Append(" max ").Append(Format(standoffMax))
                 .Append(", ledge air max ").Append(Format(ledgeAirMax)).Append(ledgeAirMax > settings.LedgeAirMax ? " (over)" : string.Empty)
-                .Append(", worst outside ").Append(Format(worstOutside));
+                .Append(", worst outside ").Append(Format(worstOutside))
+                .Append(", rectangle fallbacks ").Append(fallbacks);
             return text.ToString();
         }
 

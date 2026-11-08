@@ -3,7 +3,7 @@ using System.Collections.Generic;
 namespace AlpineLib.Procedural.Meshing {
     /// <summary>The prisms of a <see cref="PrismEnvelopeFitter"/> run, bottom band first, and how they sit around the look.</summary>
     public sealed class PrismEnvelopeFit {
-        internal PrismEnvelopeFit(List<EnvelopePrism> prisms, List<double> bandEdges, EnvelopeMetrics metrics, double standoffP90, double standoffMax, double ledgeAirMax, double worstOutside, bool meetsTargets, string report) {
+        internal PrismEnvelopeFit(List<EnvelopePrism> prisms, List<double> bandEdges, EnvelopeMetrics metrics, double standoffP90, double standoffMax, double ledgeAirMax, double worstOutside, int fallbackCount, bool meetsTargets, string report) {
             Prisms = prisms.AsReadOnly();
             BandEdges = bandEdges.AsReadOnly();
             Metrics = metrics;
@@ -11,6 +11,7 @@ namespace AlpineLib.Procedural.Meshing {
             StandoffMax = standoffMax;
             LedgeAirMax = ledgeAirMax;
             WorstOutside = worstOutside;
+            FallbackCount = fallbackCount;
             MeetsTargets = meetsTargets;
             Report = report;
         }
@@ -35,6 +36,9 @@ namespace AlpineLib.Procedural.Meshing {
 
         /// <summary>Furthest any containment sample of the look lay outside every prism, look metres.</summary>
         public double WorstOutside { get; }
+
+        /// <summary>Prisms whose plan fell back to the least-area rectangle because cleanup could not fix it.</summary>
+        public int FallbackCount { get; }
 
         /// <summary>
         /// True when the count is within the budget, walking-band standoff p90 and max within their targets and

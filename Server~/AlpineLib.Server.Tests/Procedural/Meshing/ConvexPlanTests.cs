@@ -84,6 +84,24 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
         }
 
         [Fact]
+        public void TouchingAndOutsideClipsGiveNothingAndNoRepeats() {
+            var square = new List<PlanPoint> { new PlanPoint(0.0, 0.0), new PlanPoint(1.0, 0.0), new PlanPoint(1.0, 1.0), new PlanPoint(0.0, 1.0) };
+            double half = Math.Sqrt(0.5);
+
+            Assert.Empty(ConvexPlan.ClipHalfPlane(square, half, half, 0.0));
+            Assert.Empty(ConvexPlan.ClipHalfPlane(square, 1.0, 0.0, 0.0));
+            Assert.Empty(ConvexPlan.ClipHalfPlane(square, 1.0, 0.0, -0.5));
+            Assert.Equal(4, ConvexPlan.ClipHalfPlane(square, -half, -half, 0.0).Count);
+            List<PlanPoint> corner = ConvexPlan.ClipHalfPlane(square, -1.0, 0.0, -1.0);
+            Assert.Empty(corner);
+            List<PlanPoint> half1 = ConvexPlan.ClipHalfPlane(square, 1.0, 0.0, 0.5);
+            Assert.Equal(4, half1.Count);
+            Assert.Equal(half1.Count, new HashSet<PlanPoint>(half1).Count);
+            var onLine = new List<PlanPoint> { new PlanPoint(0.0, 0.0), new PlanPoint(0.0, 1.0) };
+            Assert.Equal(2, ConvexPlan.ClipHalfPlane(onLine, 1.0, 0.0, 0.0).Count);
+        }
+
+        [Fact]
         public void DistanceIsZeroInsideAndExactOutside() {
             var square = new List<PlanPoint> { new PlanPoint(0.0, 0.0), new PlanPoint(1.0, 0.0), new PlanPoint(1.0, 1.0), new PlanPoint(0.0, 1.0) };
 

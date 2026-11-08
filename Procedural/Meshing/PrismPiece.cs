@@ -8,7 +8,7 @@ namespace AlpineLib.Procedural.Meshing {
     /// it holds, the raster cells it owns, and the prism plan and height range around them.
     /// </summary>
     internal sealed class PrismPiece {
-        public PrismPiece(List<List<Vector3>> fragments, bool[] cells) {
+        public PrismPiece(List<List<SlabPoint>> fragments, bool[] cells) {
             Fragments = fragments;
             Cells = cells;
             HeightRange(fragments, out double bottom, out double top);
@@ -17,13 +17,16 @@ namespace AlpineLib.Procedural.Meshing {
         }
 
         /// <summary>Clipped faces, each a polygon of one to many points.</summary>
-        public List<List<Vector3>> Fragments { get; }
+        public List<List<SlabPoint>> Fragments { get; }
 
         /// <summary>Raster cells (occupied or not) this piece is responsible for.</summary>
         public bool[] Cells { get; }
 
         /// <summary>The finished prism plan, set by the decomposer.</summary>
         public List<PlanPoint> Plan { get; set; }
+
+        /// <summary>True when the plan is the fallback rectangle because cleanup could not fix the enclosed hull.</summary>
+        public bool FellBack { get; set; }
 
         /// <summary>Lowest fragment height, rounded down to the grid.</summary>
         public double Bottom { get; }
@@ -34,15 +37,15 @@ namespace AlpineLib.Procedural.Meshing {
         /// <summary>Every fragment point on the plan.</summary>
         public List<PlanPoint> PlanPoints() {
             var points = new List<PlanPoint>();
-            foreach (List<Vector3> fragment in Fragments) {
-                foreach (Vector3 point in fragment) points.Add(new PlanPoint(point.X, point.Z));
+            foreach (List<SlabPoint> fragment in Fragments) {
+                foreach (SlabPoint point in fragment) points.Add(new PlanPoint(point.X, point.Z));
             }
             return points;
         }
 
         /// <summary>A piece holding both pieces' fragments and cells.</summary>
         public static PrismPiece Merge(PrismPiece first, PrismPiece second) {
-            var fragments = new List<List<Vector3>>(first.Fragments.Count + second.Fragments.Count);
+            var fragments = new List<List<SlabPoint>>(first.Fragments.Count + second.Fragments.Count);
             fragments.AddRange(first.Fragments);
             fragments.AddRange(second.Fragments);
             var cells = new bool[first.Cells.Length];
@@ -56,11 +59,11 @@ namespace AlpineLib.Procedural.Meshing {
             return new EnvelopePrism(Bottom, top, Plan);
         }
 
-        private static void HeightRange(List<List<Vector3>> fragments, out double bottom, out double top) {
+        private static void HeightRange(List<List<SlabPoint>> fragments, out double bottom, out double top) {
             bottom = double.PositiveInfinity;
             top = double.NegativeInfinity;
-            foreach (List<Vector3> fragment in fragments) {
-                foreach (Vector3 point in fragment) {
+            foreach (List<SlabPoint> fragment in fragments) {
+                foreach (SlabPoint point in fragment) {
                     bottom = Math.Min(bottom, point.Y);
                     top = Math.Max(top, point.Y);
                 }

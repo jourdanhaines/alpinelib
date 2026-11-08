@@ -91,23 +91,27 @@ namespace AlpineLib.Procedural.Meshing {
 
         /// <summary>
         /// The part of <paramref name="polygon"/> where <c>normalX·x + normalZ·z ≤ offset</c> (Sutherland–Hodgman).
+        /// Repeated points are dropped and a polygon only touching the line from outside gives nothing.
         /// Crossing points are not rounded; whatever stores the result rounds it.
         /// </summary>
         public static List<PlanPoint> ClipHalfPlane(IReadOnlyList<PlanPoint> polygon, double normalX, double normalZ, double offset) {
             if (polygon == null) throw new ArgumentNullException(nameof(polygon));
 
             var output = new List<PlanPoint>(polygon.Count + 1);
+            if (!HasInside(polygon, normalX, normalZ, offset)) return output;
+
             for (int index = 0; index < polygon.Count; index++) {
                 PlanPoint current = polygon[index];
                 PlanPoint next = polygon[(index + 1) % polygon.Count];
                 double currentSide = normalX * current.X + normalZ * current.Z - offset;
                 double nextSide = normalX * next.X + normalZ * next.Z - offset;
-                if (currentSide <= 0.0) output.Add(current);
+                if (currentSide <= 0.0) AddDistinct(output, current);
                 if ((currentSide <= 0.0) == (nextSide <= 0.0)) continue;
 
                 double share = currentSide / (currentSide - nextSide);
-                output.Add(new PlanPoint(current.X + (next.X - current.X) * share, current.Z + (next.Z - current.Z) * share));
+                AddDistinct(output, new PlanPoint(current.X + (next.X - current.X) * share, current.Z + (next.Z - current.Z) * share));
             }
+            if (output.Count > 1 && output[0].Equals(output[output.Count - 1])) output.RemoveAt(output.Count - 1);
             return output;
         }
 
@@ -198,6 +202,23 @@ namespace AlpineLib.Procedural.Meshing {
             return lengths > 0.0 ? (inX * outZ - inZ * outX) / lengths : -1.0;
         }
 
+        // True when some vertex is strictly inside, or every vertex lies on the line.
+        private static bool HasInside(IReadOnlyList<PlanPoint> polygon, double normalX, double normalZ, double offset) {
+            bool allOn = true;
+            foreach (PlanPoint point in polygon) {
+                double side = normalX * point.X + normalZ * point.Z - offset;
+                if (side < 0.0) return true;
+                if (side != 0.0) allOn = false;
+            }
+            return allOn && polygon.Count > 0;
+        }
+
+        private static void AddDistinct(List<PlanPoint> output, PlanPoint point) {
+            if (output.Count > 0 && output[output.Count - 1].Equals(point)) return;
+
+            output.Add(point);
+        }
+
         private static int CompareXThenZ(PlanPoint left, PlanPoint right) {
             int byX = left.X.CompareTo(right.X);
             return byX != 0 ? byX : left.Z.CompareTo(right.Z);
@@ -268,7 +289,8 @@ namespace AlpineLib.Procedural.Meshing {
             double outward = Math.Max(0.0, (meet.X - start.X) * wZ - (meet.Z - start.Z) * wX);
             double length = Math.Sqrt(wX * wX + wZ * wZ);
             area = 0.5 * outward;
-            spike = length > 0.0 ? outward / length : Math.Sqrt(SegmentSquared(meet.X - start.X, meet.Z - start.Z, 0.0, 0.0));
+            // The new point's distance from the removed edge segment, not its line, so an obtuse end counts in full.
+            spike = Math.Sqrt(SegmentSquared(meet.X - start.X, meet.Z - start.Z, wX, wZ));
             return true;
         }
 

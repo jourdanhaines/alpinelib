@@ -33,8 +33,13 @@ namespace AlpineLib.Procedural.Meshing {
 
         /// <summary>How far <paramref name="point"/> lies outside the prism; 0 on or inside it.</summary>
         public double DistanceOutside(Vector3 point) {
-            double plan = ConvexPlan.Distance(Plan, point.X, point.Z);
-            double vertical = Math.Max(0.0, Math.Max(Bottom - point.Y, point.Y - Top));
+            return DistanceOutside(point.X, point.Y, point.Z);
+        }
+
+        /// <summary>How far (<paramref name="x"/>, <paramref name="y"/>, <paramref name="z"/>) lies outside the prism; 0 on or inside it.</summary>
+        public double DistanceOutside(double x, double y, double z) {
+            double plan = ConvexPlan.Distance(Plan, x, z);
+            double vertical = Math.Max(0.0, Math.Max(Bottom - y, y - Top));
             return Math.Sqrt(plan * plan + vertical * vertical);
         }
 
