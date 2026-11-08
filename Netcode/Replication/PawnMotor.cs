@@ -23,10 +23,9 @@ namespace AlpineLib.Netcode.Replication {
     /// is spelled out componentwise instead of leaning on an operator whose lowering is the JIT's
     /// business. The only arithmetic on the position path is <c>+ - * /</c> plus
     /// <see cref="MathF.Sqrt"/>, <see cref="MathF.Min"/>, <see cref="MathF.Max"/> and
-    /// <see cref="MathF.Abs"/>. There is exactly one trigonometric call per step —
-    /// <see cref="MathF.Cos"/> of the profile's slope limit, turning an authored angle into the threshold
-    /// a surface normal is compared against — and a libm difference of one ulp there can only flip
-    /// walkability for a surface sitting exactly on the limit, which the next correction absorbs.
+    /// <see cref="MathF.Abs"/>. The slope threshold and air drag decay are libm results, so the profile
+    /// computes them once in double (<see cref="MovementProfile.WalkableNormalY"/>,
+    /// <see cref="MovementProfile.GetAirDragDecay"/>) and the step only reads them.
     /// <see cref="MathF.Atan2"/> derives yaw but never feeds back into position, so a facing may differ
     /// by a hair without ever moving a pawn somewhere else. Substep counts and iteration counts are fixed
     /// by comparison, never by "iterate until it stops changing".
@@ -101,7 +100,6 @@ namespace AlpineLib.Netcode.Replication {
         public const int MaxDepenetrationIterations = 4;
 
         /// <summary>Degrees to radians, for the one slope-limit cosine each step takes.</summary>
-        private const float DegreesToRadians = MathF.PI / 180f;
 
         /// <summary>
         /// Shortest horizontal part of a contact normal a wall push will divide by. A normal barely off
@@ -446,10 +444,8 @@ namespace AlpineLib.Netcode.Replication {
         /// measured against the surface directly below it, and told it was still falling, for ever.
         /// </para>
         /// <para>
-        /// Walkability is the only trigonometry in the step: <see cref="MathF.Cos"/> of the authored slope
-        /// limit, compared against the surface normal's vertical component. A surface sitting exactly on
-        /// the limit may therefore be judged differently by one ulp on the two ends; a pawn balanced there
-        /// is a pawn about to be corrected either way.
+        /// Walkability compares the surface normal's vertical component against the profile's cached
+        /// <see cref="MovementProfile.WalkableNormalY"/>, so no trigonometry runs here.
         /// </para>
         /// </remarks>
         private static bool ResolveGrounding(
@@ -469,8 +465,7 @@ namespace AlpineLib.Netcode.Replication {
                 return false;
             }
 
-            float walkableThreshold = (float)MathF.Cos((float)(profile.SlopeLimitDegrees * DegreesToRadians));
-            if (hit.Normal.Y <= 0f || hit.Normal.Y < walkableThreshold) {
+            if (hit.Normal.Y <= 0f || hit.Normal.Y < profile.WalkableNormalY) {
                 return false;
             }
 
@@ -524,7 +519,7 @@ namespace AlpineLib.Netcode.Replication {
 
             if (!hasIntent) {
                 if (profile.AirDrag > 0f) {
-                    float decay = (float)MathF.Exp((float)(-profile.AirDrag * deltaSeconds));
+                    float decay = profile.GetAirDragDecay(deltaSeconds);
                     velocityX = (float)(velocityX * decay);
                     velocityZ = (float)(velocityZ * decay);
                 }

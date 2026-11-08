@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 
 namespace AlpineLib.Netcode.Protocol {
     /// <summary>
@@ -48,11 +49,22 @@ namespace AlpineLib.Netcode.Protocol {
         /// </summary>
         public float AirAcceleration { get; set; } = 16f;
 
+        private float airDrag;
+        private float slopeLimitDegrees = 50f;
+        private float walkableNormalY = DegreesToWalkableNormalY(50f);
+        private long airDragDecayCache;
+
         /// <summary>
         /// Exponential decay per second applied to horizontal air velocity while no input is held. Zero
         /// carries momentum through the whole arc.
         /// </summary>
-        public float AirDrag { get; set; }
+        public float AirDrag {
+            get => airDrag;
+            set {
+                airDrag = value;
+                Volatile.Write(ref airDragDecayCache, 0L);
+            }
+        }
 
         /// <summary>
         /// Radius of the pawn's collision capsule, in metres. The shared motor sweeps this against the
@@ -77,7 +89,19 @@ namespace AlpineLib.Netcode.Protocol {
         /// slides down. The motor compares surface normals against the cosine of this angle rather than
         /// taking an inverse cosine per contact, which keeps trigonometry off the position path.
         /// </summary>
-        public float SlopeLimitDegrees { get; set; } = 50f;
+        public float SlopeLimitDegrees {
+            get => slopeLimitDegrees;
+            set {
+                slopeLimitDegrees = value;
+                walkableNormalY = DegreesToWalkableNormalY(value);
+            }
+        }
+
+        /// <summary>
+        /// Lowest surface-normal Y the pawn stands on: the cosine of <see cref="SlopeLimitDegrees"/>, taken once
+        /// in double and rounded, so the motor's hot path makes no libm call whose last bit varies by platform.
+        /// </summary>
+        public float WalkableNormalY => walkableNormalY;
 
         /// <summary>Fastest gait in the profile — the ceiling the validator uses when a gait is unknown.</summary>
         public float MaxSpeed {
@@ -89,6 +113,20 @@ namespace AlpineLib.Netcode.Protocol {
 
                 return fastest;
             }
+        }
+
+        /// <summary>
+        /// Factor horizontal air velocity is multiplied by per idle airborne step of <paramref name="deltaSeconds"/>:
+        /// <c>exp(-AirDrag · dt)</c> in double, rounded once and cached for the last step length.
+        /// </summary>
+        public float GetAirDragDecay(float deltaSeconds) {
+            long cached = Volatile.Read(ref airDragDecayCache);
+            if (cached != 0L && (int)(cached >> 32) == BitConverter.SingleToInt32Bits(deltaSeconds)) return BitConverter.Int32BitsToSingle((int)cached);
+
+            float decay = (float)Math.Exp(-(double)airDrag * deltaSeconds);
+            long packed = ((long)BitConverter.SingleToInt32Bits(deltaSeconds) << 32) | (uint)BitConverter.SingleToInt32Bits(decay);
+            Volatile.Write(ref airDragDecayCache, packed);
+            return decay;
         }
 
         /// <summary>
@@ -106,6 +144,11 @@ namespace AlpineLib.Netcode.Protocol {
                 case 5: return CrouchFastSpeed;
                 default: return MaxSpeed;
             }
+        }
+
+        // Cosine in double from the degree value, so the result never depends on a float libm.
+        private static float DegreesToWalkableNormalY(float degrees) {
+            return (float)Math.Cos(degrees * (Math.PI / 180.0));
         }
     }
 }

@@ -10,7 +10,7 @@ namespace AlpineLib.Netcode.Collision {
     /// what height should it be clamped to, and is there a ledge low enough to step onto — because they
     /// are all the same question asked over a vertical span. <see cref="Normal"/> is what decides
     /// walkability: a face steeper than the profile's slope limit is a wall the pawn slides down, not a
-    /// floor it stands on, and the motor compares against <c>MathF.Cos(slopeLimit)</c> rather than taking
+    /// floor it stands on, and the motor compares against the cosine of the slope limit rather than taking
     /// an inverse cosine of the normal.
     /// </remarks>
     public struct SupportHit {

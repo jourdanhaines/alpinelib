@@ -298,7 +298,7 @@ namespace AlpineLib.Netcode.Collision {
         /// <remarks>
         /// "Highest" and not "highest walkable": this call has no slope limit and does not want one. It
         /// reports the surface and its normal, and the motor decides whether that normal is something it
-        /// can stand on by comparing against <c>MathF.Cos(slopeLimit)</c> — keeping the profile out of the
+        /// can stand on by comparing against the cosine of its slope limit — keeping the profile out of the
         /// world means the same world answers the same query identically for every pawn on it.
         /// </remarks>
         /// <returns>True when something was found inside the span.</returns>
