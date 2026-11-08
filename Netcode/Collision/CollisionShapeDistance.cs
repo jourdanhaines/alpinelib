@@ -19,6 +19,8 @@ namespace AlpineLib.Netcode.Collision {
                     return Math.Max(0.0, SegmentDistance(shape, point) - shape.Radius);
                 case CollisionShapeType.Box:
                     return BoxOutside(shape, point);
+                case CollisionShapeType.Prism:
+                    return PrismOutside(shape, point);
                 default:
                     throw new ArgumentOutOfRangeException(nameof(shape), shape.Type, "Unknown shape type.");
             }
@@ -42,6 +44,35 @@ namespace AlpineLib.Netcode.Collision {
             double y = Math.Max(0.0, Math.Abs((double)Vector3.Dot(offset, shape.AxisUp)) - shape.HalfExtents.Y);
             double z = Math.Max(0.0, Math.Abs((double)Vector3.Dot(offset, shape.AxisForward)) - shape.HalfExtents.Z);
             return Math.Sqrt(x * x + y * y + z * z);
+        }
+
+        // Plan distance to the polygon (0 inside) and height-range excess, combined.
+        private static double PrismOutside(in CollisionShape shape, Vector3 point) {
+            double planDistance = PlanDistance(shape.Plan, (double)point.X - shape.Center.X, (double)point.Z - shape.Center.Z);
+            double vertical = Math.Max(0.0, Math.Abs((double)point.Y - shape.Center.Y) - shape.HalfExtents.Y);
+            return Math.Sqrt(planDistance * planDistance + vertical * vertical);
+        }
+
+        // Distance from (x, z) to a convex CCW plan, 0 on or inside it.
+        private static double PlanDistance(in PrismPlan plan, double x, double z) {
+            bool inside = true;
+            double best = double.PositiveInfinity;
+            for (int index = 0; index < plan.Count; index++) {
+                plan.GetVertex(index, out float startX, out float startZ);
+                plan.GetVertex((index + 1) % plan.Count, out float endX, out float endZ);
+                double edgeX = (double)endX - startX;
+                double edgeZ = (double)endZ - startZ;
+                double offsetX = x - startX;
+                double offsetZ = z - startZ;
+                if (offsetX * edgeZ - offsetZ * edgeX > 0.0) inside = false;
+
+                double lengthSquared = edgeX * edgeX + edgeZ * edgeZ;
+                double along = Math.Max(0.0, Math.Min(1.0, (offsetX * edgeX + offsetZ * edgeZ) / lengthSquared));
+                double gapX = offsetX - edgeX * along;
+                double gapZ = offsetZ - edgeZ * along;
+                best = Math.Min(best, gapX * gapX + gapZ * gapZ);
+            }
+            return inside ? 0.0 : Math.Sqrt(best);
         }
 
         private static double SegmentDistance(in CollisionShape shape, Vector3 point) {

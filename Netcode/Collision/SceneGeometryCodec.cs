@@ -42,7 +42,14 @@ namespace AlpineLib.Netcode.Collision {
         public const uint Magic = 0x41474F31u;
 
         /// <summary>Layout version of the payload that follows the header. Bump on any field change.</summary>
-        public const ushort FormatVersion = 1;
+        /// <remarks>Version 2 adds the prism shape; version 1 files, which cannot hold one, still read.</remarks>
+        public const ushort FormatVersion = 2;
+
+        /// <summary>The oldest format version this build still reads.</summary>
+        public const ushort MinimumFormatVersion = 1;
+
+        /// <summary>The first format version that may hold a prism.</summary>
+        private const ushort PrismFormatVersion = 2;
 
         private const uint Fnv1aOffsetBasis = 2166136261u;
         private const uint Fnv1aPrime = 16777619u;
@@ -53,8 +60,14 @@ namespace AlpineLib.Netcode.Collision {
         /// <summary>A serialized <see cref="CollisionShape"/>: a type byte, five vectors, two floats.</summary>
         private const int ShapeByteCount = 1 + (5 * 12) + (2 * 4);
 
+        /// <summary>The widest serialized shape: a prism's count byte and eight (x, z) pairs on top.</summary>
+        private const int MaxShapeByteCount = ShapeByteCount + 1 + (PrismPlan.MaxVertices * 2 * 4);
+
         /// <summary>A mover's two ids plus its local shape, before the path.</summary>
         private const int MoverHeaderByteCount = 2 + 2 + ShapeByteCount;
+
+        /// <summary>The widest mover header, holding the widest shape.</summary>
+        private const int MaxMoverHeaderByteCount = 2 + 2 + MaxShapeByteCount;
 
         /// <summary>What follows a path's waypoints: speed, loop mode, phase.</summary>
         private const int PathTailByteCount = 4 + 1 + 4;
@@ -98,11 +111,11 @@ namespace AlpineLib.Netcode.Collision {
             }
 
             var reader = new NetReader(payload);
-            ReadHeader(ref reader);
+            ushort formatVersion = ReadHeader(ref reader);
             string sceneName = reader.ReadString();
             uint storedContentHash = reader.ReadUInt();
-            CollisionShape[] staticShapes = ReadShapes(ref reader);
-            MoverDefinition[] movers = ReadMovers(ref reader);
+            CollisionShape[] staticShapes = ReadShapes(ref reader, formatVersion);
+            MoverDefinition[] movers = ReadMovers(ref reader, formatVersion);
 
             var geometry = new SceneGeometry(sceneName, storedContentHash, staticShapes, movers);
             VerifyContentHash(geometry, storedContentHash);
@@ -167,7 +180,7 @@ namespace AlpineLib.Netcode.Collision {
             writer.WriteUInt(path.PhaseTicks);
         }
 
-        private static void ReadHeader(ref NetReader reader) {
+        private static ushort ReadHeader(ref NetReader reader) {
             uint magic = reader.ReadUInt();
             if (magic != Magic) {
                 throw new NetProtocolException(
@@ -176,37 +189,51 @@ namespace AlpineLib.Netcode.Collision {
             }
 
             ushort formatVersion = reader.ReadUShort();
-            if (formatVersion != FormatVersion) {
+            if (formatVersion < MinimumFormatVersion || formatVersion > FormatVersion) {
                 throw new NetProtocolException(
                     "Scene geometry is format version " + formatVersion.ToString(CultureInfo.InvariantCulture) +
-                    ", this build reads version " + FormatVersion.ToString(CultureInfo.InvariantCulture) + ".");
+                    ", this build reads versions " + MinimumFormatVersion.ToString(CultureInfo.InvariantCulture) +
+                    " to " + FormatVersion.ToString(CultureInfo.InvariantCulture) + ".");
             }
+
+            return formatVersion;
         }
 
-        private static CollisionShape[] ReadShapes(ref NetReader reader) {
+        private static CollisionShape[] ReadShapes(ref NetReader reader, ushort formatVersion) {
             int shapeCount = ReadCount(ref reader, ShapeByteCount, "static shape");
             var shapes = new CollisionShape[shapeCount];
             for (int shapeIndex = 0; shapeIndex < shapeCount; shapeIndex++) {
-                shapes[shapeIndex] = reader.ReadMessage<CollisionShape>();
+                shapes[shapeIndex] = ReadShape(ref reader, formatVersion);
             }
 
             return shapes;
         }
 
-        private static MoverDefinition[] ReadMovers(ref NetReader reader) {
+        // A prism in a stream older than the prism format is corruption, not geometry.
+        private static CollisionShape ReadShape(ref NetReader reader, ushort formatVersion) {
+            CollisionShape shape = reader.ReadMessage<CollisionShape>();
+            if (shape.Type == CollisionShapeType.Prism && formatVersion < PrismFormatVersion) {
+                throw new NetProtocolException(
+                    "Scene geometry format version " + formatVersion.ToString(CultureInfo.InvariantCulture) + " cannot hold a prism.");
+            }
+
+            return shape;
+        }
+
+        private static MoverDefinition[] ReadMovers(ref NetReader reader, ushort formatVersion) {
             int moverCount = ReadCount(ref reader, MinimumMoverByteCount, "mover");
             var movers = new MoverDefinition[moverCount];
             for (int moverIndex = 0; moverIndex < moverCount; moverIndex++) {
-                movers[moverIndex] = ReadMover(ref reader);
+                movers[moverIndex] = ReadMover(ref reader, formatVersion);
             }
 
             return movers;
         }
 
-        private static MoverDefinition ReadMover(ref NetReader reader) {
+        private static MoverDefinition ReadMover(ref NetReader reader, ushort formatVersion) {
             ushort moverId = reader.ReadUShort();
             ushort prefabId = reader.ReadUShort();
-            CollisionShape localShape = reader.ReadMessage<CollisionShape>();
+            CollisionShape localShape = ReadShape(ref reader, formatVersion);
             MoverPath path = ReadPath(ref reader);
             return new MoverDefinition(moverId, prefabId, in localShape, path);
         }
@@ -273,10 +300,10 @@ namespace AlpineLib.Netcode.Collision {
         }
 
         private static int MaxBodyByteCount(SceneGeometry geometry) {
-            int total = MaxVarUIntByteCount + (geometry.StaticShapes.Length * ShapeByteCount) + MaxVarUIntByteCount;
+            int total = MaxVarUIntByteCount + (geometry.StaticShapes.Length * MaxShapeByteCount) + MaxVarUIntByteCount;
             MoverDefinition[] movers = geometry.Movers;
             for (int moverIndex = 0; moverIndex < movers.Length; moverIndex++) {
-                total += MoverHeaderByteCount + MaxVarUIntByteCount + PathTailByteCount;
+                total += MaxMoverHeaderByteCount + MaxVarUIntByteCount + PathTailByteCount;
                 total += WaypointCount(movers[moverIndex]) * WaypointByteCount;
             }
 

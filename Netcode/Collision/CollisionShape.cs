@@ -23,7 +23,8 @@ namespace AlpineLib.Netcode.Collision {
     /// therefore never move a wall.
     /// </para>
     /// <para>
-    /// The wire form is every field in declaration order at full float precision. Geometry is exported
+    /// The wire form is every field in declaration order at full float precision; a prism appends its vertex
+    /// count and its (x, z) pairs, so every other primitive keeps its exact bytes. Geometry is exported
     /// once and hashed, not streamed per tick, so there is nothing to gain from quantizing it and a great
     /// deal to lose: a rounded wall is a wall in a different place on each end.
     /// </para>
@@ -52,6 +53,15 @@ namespace AlpineLib.Netcode.Collision {
 
         /// <summary>Half the capsule's segment length, measured from <see cref="Center"/>. Capsule only.</summary>
         public float HalfLength;
+
+        /// <summary>A prism's plan polygon, as offsets from <see cref="Center"/> in world XZ. Prism only.</summary>
+        public PrismPlan Plan;
+
+        /// <summary>Shortest prism edge <see cref="MakePrism"/> accepts, metres.</summary>
+        public const float MinPrismEdge = 1e-4f;
+
+        /// <summary>Smallest turn cross product (<c>ex·fz − ez·fx</c>) at a prism vertex <see cref="MakePrism"/> accepts.</summary>
+        public const float MinPrismTurn = 1e-7f;
 
         /// <summary>An infinite horizontal floor at <paramref name="height"/>.</summary>
         public static CollisionShape MakePlane(float height) {
@@ -100,6 +110,59 @@ namespace AlpineLib.Netcode.Collision {
             shape.AxisUp = axisUp;
             shape.HalfLength = halfLength;
             shape.Radius = radius;
+            return shape;
+        }
+
+        /// <summary>
+        /// A vertical convex prism: the plan <paramref name="offsets"/> (x, z) around <paramref name="center"/>,
+        /// extruded <paramref name="halfHeight"/> above and below it. Yaw is baked into the offsets.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The offsets must be strictly convex and counter-clockwise by sign: shoelace area &gt; 0 and every turn
+        /// cross <c>ex·fz − ez·fx</c> &gt; <see cref="MinPrismTurn"/>, so the outward normal of edge (dx, dz) is
+        /// (dz, −dx). Every vertex must also sit inside every edge it is not on, which rules out a polygon
+        /// that winds twice. Anything else throws <see cref="ArgumentException"/>.
+        /// </para>
+        /// <para>
+        /// The plan is recentred on its bounding box, moving <see cref="Center"/> by the same amount, so
+        /// <see cref="HalfExtents"/> X and Z are the box's half sizes and identity axes let the box path answer
+        /// <see cref="Translated"/>, <see cref="GetBoundsXZ"/> and the resolver's vertical reach.
+        /// <see cref="Radius"/> is the farthest vertex from the centre, an early-reject bound.
+        /// </para>
+        /// </remarks>
+        public static CollisionShape MakePrism(Vector3 center, float halfHeight, ReadOnlySpan<Vector2> offsets) {
+            if (offsets.Length < PrismPlan.MinVertices || offsets.Length > PrismPlan.MaxVertices) {
+                throw new ArgumentException("A prism needs 3 to 8 plan vertices.", nameof(offsets));
+            }
+
+            if (!IsFinite(center.X) || !IsFinite(center.Y) || !IsFinite(center.Z) || !IsFinite(halfHeight) || !(halfHeight > 0f)) {
+                throw new ArgumentException("A prism needs a finite centre and a positive finite half height.", nameof(halfHeight));
+            }
+
+            GetPlanBounds(offsets, out float minX, out float maxX, out float minZ, out float maxZ);
+            float middleX = (minX + maxX) * 0.5f;
+            float middleZ = (minZ + maxZ) * 0.5f;
+            var plan = default(PrismPlan);
+            plan.Count = (byte)offsets.Length;
+            float radiusSquared = 0f;
+            for (int index = 0; index < offsets.Length; index++) {
+                float x = offsets[index].X - middleX;
+                float z = offsets[index].Y - middleZ;
+                plan.SetVertex(index, x, z);
+                radiusSquared = MathF.Max(radiusSquared, x * x + z * z);
+            }
+
+            ValidatePrismPlan(in plan);
+            var shape = default(CollisionShape);
+            shape.Type = CollisionShapeType.Prism;
+            shape.Center = new Vector3(center.X + middleX, center.Y, center.Z + middleZ);
+            shape.AxisRight = Vector3.UnitX;
+            shape.AxisUp = Vector3.UnitY;
+            shape.AxisForward = Vector3.UnitZ;
+            shape.HalfExtents = new Vector3((maxX - minX) * 0.5f, halfHeight, (maxZ - minZ) * 0.5f);
+            shape.Radius = MathF.Sqrt(radiusSquared);
+            shape.Plan = plan;
             return shape;
         }
 
@@ -170,6 +233,71 @@ namespace AlpineLib.Netcode.Collision {
                 + MathF.Abs(AxisForward.Z) * HalfExtents.Z;
         }
 
+        // The offsets' bounding box; throws on a non-finite offset.
+        private static void GetPlanBounds(ReadOnlySpan<Vector2> offsets, out float minX, out float maxX, out float minZ, out float maxZ) {
+            minX = float.MaxValue;
+            maxX = float.MinValue;
+            minZ = float.MaxValue;
+            maxZ = float.MinValue;
+            for (int index = 0; index < offsets.Length; index++) {
+                Vector2 offset = offsets[index];
+                if (!IsFinite(offset.X) || !IsFinite(offset.Y)) {
+                    throw new ArgumentException("Prism plan offsets must be finite.", nameof(offsets));
+                }
+
+                minX = MathF.Min(minX, offset.X);
+                maxX = MathF.Max(maxX, offset.X);
+                minZ = MathF.Min(minZ, offset.Y);
+                maxZ = MathF.Max(maxZ, offset.Y);
+            }
+        }
+
+        // Throws unless every edge is long enough and the polygon strictly convex CCW.
+        private static void ValidatePrismPlan(in PrismPlan plan) {
+            int count = plan.Count;
+            float doubleArea = 0f;
+            for (int index = 0; index < count; index++) {
+                plan.GetVertex(index, out float x, out float z);
+                plan.GetVertex((index + 1) % count, out float nextX, out float nextZ);
+                plan.GetVertex((index + 2) % count, out float afterX, out float afterZ);
+                float edgeX = nextX - x;
+                float edgeZ = nextZ - z;
+                if (edgeX * edgeX + edgeZ * edgeZ <= MinPrismEdge * MinPrismEdge) {
+                    throw new ArgumentException("A prism plan edge is shorter than 1e-4.", nameof(plan));
+                }
+
+                float turn = edgeX * (afterZ - nextZ) - edgeZ * (afterX - nextX);
+                if (!(turn > MinPrismTurn)) {
+                    throw new ArgumentException("A prism plan must be strictly convex and counter-clockwise.", nameof(plan));
+                }
+
+                doubleArea += x * nextZ - nextX * z;
+                ValidateEdgeHoldsPlan(in plan, index);
+            }
+
+            if (!(doubleArea > 0f)) {
+                throw new ArgumentException("A prism plan must have positive (counter-clockwise) area.", nameof(plan));
+            }
+        }
+
+        // Every vertex off edge `edge` lies strictly on its inner side; a polygon winding twice fails here.
+        private static void ValidateEdgeHoldsPlan(in PrismPlan plan, int edge) {
+            int count = plan.Count;
+            plan.GetVertex(edge, out float x, out float z);
+            plan.GetVertex((edge + 1) % count, out float nextX, out float nextZ);
+            for (int other = 2; other < count; other++) {
+                plan.GetVertex((edge + other) % count, out float otherX, out float otherZ);
+                float cross = (nextX - x) * (otherZ - z) - (nextZ - z) * (otherX - x);
+                if (!(cross > 0f)) {
+                    throw new ArgumentException("A prism plan must be a simple convex polygon.", nameof(plan));
+                }
+            }
+        }
+
+        private static bool IsFinite(float value) {
+            return !float.IsNaN(value) && !float.IsInfinity(value);
+        }
+
         /// <inheritdoc />
         public void Serialize(ref NetWriter writer) {
             writer.WriteByte((byte)Type);
@@ -180,6 +308,16 @@ namespace AlpineLib.Netcode.Collision {
             writer.WriteVector3(HalfExtents);
             writer.WriteFloat(Radius);
             writer.WriteFloat(HalfLength);
+            if (Type != CollisionShapeType.Prism) {
+                return;
+            }
+
+            writer.WriteByte(Plan.Count);
+            for (int index = 0; index < Plan.Count; index++) {
+                Plan.GetVertex(index, out float x, out float z);
+                writer.WriteFloat(x);
+                writer.WriteFloat(z);
+            }
         }
 
         /// <inheritdoc />
@@ -192,6 +330,23 @@ namespace AlpineLib.Netcode.Collision {
             HalfExtents = reader.ReadVector3();
             Radius = reader.ReadFloat();
             HalfLength = reader.ReadFloat();
+            Plan = default;
+            if (Type != CollisionShapeType.Prism) {
+                return;
+            }
+
+            // Range-checked before any float is read: these bytes may come off the network.
+            byte count = reader.ReadByte();
+            if (count < PrismPlan.MinVertices || count > PrismPlan.MaxVertices) {
+                throw new NetProtocolException("Prism plan declares " + count + " vertices; 3 to 8 are allowed.");
+            }
+
+            Plan.Count = count;
+            for (int index = 0; index < count; index++) {
+                float x = reader.ReadFloat();
+                float z = reader.ReadFloat();
+                Plan.SetVertex(index, x, z);
+            }
         }
     }
 }
