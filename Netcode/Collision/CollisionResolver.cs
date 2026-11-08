@@ -92,6 +92,10 @@ namespace AlpineLib.Netcode.Collision {
                 return TryGetCapsuleContact(pose, shape, out contact);
             }
 
+            if (shape.Type == CollisionShapeType.Prism) {
+                return CollisionPrismResolver.TryGetPrismContact(pose, shape, out contact);
+            }
+
             contact = default;
             return false;
         }
@@ -440,6 +444,10 @@ namespace AlpineLib.Netcode.Collision {
 
             if (shape.Type == CollisionShapeType.Capsule) {
                 return TryGetCapsuleSurfaceHeight(shape, x, z, out height, out normal);
+            }
+
+            if (shape.Type == CollisionShapeType.Prism) {
+                return CollisionPrismResolver.TryGetPrismSurfaceHeight(shape, x, z, out height, out normal);
             }
 
             height = 0f;
