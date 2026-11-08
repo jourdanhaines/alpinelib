@@ -13,7 +13,7 @@ namespace AlpineLib.Procedural.Meshing {
         private readonly IReadOnlyList<Vector3> _corners;
         private readonly double _cell;
         private readonly Dictionary<(int, int), List<int>> _buckets = new Dictionary<(int, int), List<int>>();
-        private int _maxColumn = int.MinValue;
+        private readonly Dictionary<int, List<int>> _rows = new Dictionary<int, List<int>>();
 
         /// <summary>Buckets the faces of <paramref name="corners"/> on a plan grid of <paramref name="cell"/> metres.</summary>
         public TriangleProximity(IReadOnlyList<Vector3> corners, double cell) {
@@ -58,20 +58,28 @@ namespace AlpineLib.Procedural.Meshing {
         /// Overlapping shells add up, and shells need no caps since only walls are crossed.
         /// </summary>
         public bool IsInside(double x, double y, double z) {
-            int row = Bucket(z);
             int winding = 0;
-            for (int column = Bucket(x); column <= _maxColumn; column++) {
-                if (!_buckets.TryGetValue((column, row), out List<int> faces)) continue;
-
-                foreach (int face in faces) winding += Crossing(face, x, y, z, column);
-            }
+            foreach (int face in RowFaces(Bucket(z))) winding += Crossing(face, x, y, z);
             return winding != 0;
         }
 
-        // ±1 when the face's slice at height y crosses the ray z = const beyond x inside this bucket column, else 0.
-        private int Crossing(int face, double x, double y, double z, int column) {
+        // Every face touching a bucket row once, in face order, built on first use.
+        private List<int> RowFaces(int row) {
+            if (_rows.TryGetValue(row, out List<int> faces)) return faces;
+
+            faces = new List<int>();
+            for (int face = 0; face + 2 < _corners.Count; face += 3) {
+                Vector3 a = _corners[face], b = _corners[face + 1], c = _corners[face + 2];
+                if (Bucket(Math.Min(a.Z, Math.Min(b.Z, c.Z))) <= row && Bucket(Math.Max(a.Z, Math.Max(b.Z, c.Z))) >= row) faces.Add(face);
+            }
+            _rows.Add(row, faces);
+            return faces;
+        }
+
+        // ±1 when the face's slice at height y crosses the ray z = const beyond x, else 0.
+        private int Crossing(int face, double x, double y, double z) {
             Vector3 a = _corners[face], b = _corners[face + 1], c = _corners[face + 2];
-            if (!TrySliceCrossing(a, b, c, y, z, out double crossX) || !(crossX > x) || Bucket(crossX) != column) return 0;
+            if (!TrySliceCrossing(a, b, c, y, z, out double crossX) || !(crossX > x)) return 0;
 
             double normalX = ((double)b.Y - a.Y) * ((double)c.Z - a.Z) - ((double)b.Z - a.Z) * ((double)c.Y - a.Y);
             return normalX > 0.0 ? 1 : normalX < 0.0 ? -1 : 0;
@@ -129,7 +137,6 @@ namespace AlpineLib.Procedural.Meshing {
             for (int row = minRow; row <= maxRow; row++) {
                 for (int column = minColumn; column <= maxColumn; column++) Faces(column, row).Add(face);
             }
-            _maxColumn = Math.Max(_maxColumn, maxColumn);
         }
 
         private List<int> Faces(int column, int row) {

@@ -48,16 +48,10 @@ namespace AlpineLib.Procedural.Meshing {
         /// <summary>The most distant over-target samples (point, inward normal, layer), deepest first, for two-notch cuts.</summary>
         public List<(PlanPoint Point, PlanPoint Inward, int Layer, double Distance)> OverSamples { get; } = new List<(PlanPoint, PlanPoint, int, double)>();
 
-        /// <summary>True when some spanned layer meets target, so a height split can help the standoff.</summary>
-        public bool LeansInHeight { get; set; }
-
         /// <summary>Lowest layer kind among the layers over target (or of the cap), the piece's split priority.</summary>
         public int Kind { get; set; }
 
-        /// <summary>How far the cap's worst spot over air lies from the look under it, look metres; 0 when none.</summary>
-        public double CapOverAir { get; set; }
-
-        /// <summary>Where that cap spot is.</summary>
+        /// <summary>Where a forced cut (a ledge or side the final metric found) goes through.</summary>
         public PlanPoint CapPoint { get; set; }
 
         /// <summary>True once no split of this piece helped; it is not tried again.</summary>
@@ -75,14 +69,6 @@ namespace AlpineLib.Procedural.Meshing {
 
         /// <summary>The fragments of one spanned layer.</summary>
         public List<List<SlabPoint>> Fragments(int layer) => LayerFragments[layer - FirstLayer];
-
-        /// <summary>True when any spanned layer holds a fragment.</summary>
-        public bool HasFragments() {
-            foreach (List<List<SlabPoint>> fragments in LayerFragments) {
-                if (fragments.Count > 0) return true;
-            }
-            return false;
-        }
 
         /// <summary>The prism this piece became.</summary>
         public EnvelopePrism ToPrism() {

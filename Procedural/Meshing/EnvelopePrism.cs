@@ -17,6 +17,31 @@ namespace AlpineLib.Procedural.Meshing {
             Bottom = bottom;
             Top = top;
             Plan = new List<PlanPoint>(plan).AsReadOnly();
+            _minX = _minZ = double.PositiveInfinity;
+            _maxX = _maxZ = double.NegativeInfinity;
+            foreach (PlanPoint point in Plan) {
+                _minX = Math.Min(_minX, point.X);
+                _maxX = Math.Max(_maxX, point.X);
+                _minZ = Math.Min(_minZ, point.Z);
+                _maxZ = Math.Max(_maxZ, point.Z);
+            }
+        }
+
+        private readonly double _minX, _maxX, _minZ, _maxZ;
+
+        /// <summary>True when the point lies within <paramref name="tolerance"/> of the prism; a bounding-box test first.</summary>
+        public bool Holds(double x, double y, double z, double tolerance) {
+            if (x < _minX - tolerance || x > _maxX + tolerance || z < _minZ - tolerance || z > _maxZ + tolerance) return false;
+            if (y < Bottom - tolerance || y > Top + tolerance) return false;
+
+            return DistanceOutside(x, y, z) <= tolerance;
+        }
+
+        /// <summary>True when the plan point lies within <paramref name="tolerance"/> of the plan; a bounding-box test first.</summary>
+        public bool PlanHolds(double x, double z, double tolerance) {
+            if (x < _minX - tolerance || x > _maxX + tolerance || z < _minZ - tolerance || z > _maxZ + tolerance) return false;
+
+            return ConvexPlan.Distance(Plan, x, z) <= tolerance;
         }
 
         /// <summary>Lowest height.</summary>

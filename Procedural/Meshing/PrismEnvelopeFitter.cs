@@ -7,12 +7,13 @@ using System.Text;
 namespace AlpineLib.Procedural.Meshing {
     /// <summary>
     /// Fits stacked vertical convex prisms (up to 16 plan vertices) to a look so a walking capsule meets no invisible
-    /// wall. Bands: feet (just under the motor's real step), fine bands to the walking top (halved where the look
-    /// leans), one band to the jump reach, then one containment-only band per plateau tier. Each band starts as
-    /// one <see cref="PrismBand"/> piece; the piece with the worst exposed plan standoff over target is cut at its
-    /// notch, walking bands before the reach band, until every piece meets target or the budget is spent, then
-    /// nearby pieces merge where the merge stays within target. A sampled containment check refuses a fit that
-    /// leaves the look outside.
+    /// wall. Everything up to the jump reach is a <see cref="PrismRegion"/> of thin layers: feet (just under the motor's
+    /// real step), the fine walking band, then the reach band. Pieces start one per band and merge where they can; the
+    /// piece furthest over its standoff target (gate layers first, then the rest of the walking band, the feet, the
+    /// reach) is split in plan or in height, first against the max target, then the p90 target, within the budget.
+    /// The final metric then drives forced cuts through any ledge or standoff it still finds. The budget left buys
+    /// containment-only bands above the jump reach, one per plateau tier. A sampled containment check refuses a fit
+    /// that leaves the look outside.
     /// </summary>
     /// <remarks>
     /// Double maths, fixed orders and bounded loops only, no trigonometry. Heights round outward to
@@ -28,6 +29,7 @@ namespace AlpineLib.Procedural.Meshing {
         private const double HeightEpsilon = 1e-6;
         private const double FlatNormal = 0.7;
         private const int MergeRounds = 3;
+        private const int RepairRounds = 6;
 
         /// <summary>The prisms around the faces in <paramref name="corners"/> (three per face).</summary>
         /// <exception cref="InvalidOperationException">
@@ -49,16 +51,14 @@ namespace AlpineLib.Procedural.Meshing {
                 double reachTop = Math.Min(high, ConvexPlan.Round(settings.LookHeight(settings.JumpReach)));
                 bool hasUpper = high > reachTop + HeightEpsilon;
                 List<(double Bottom, double Top, int Kind, int Group)> slabs = RegionSlabs(settings, low, reachTop);
-                double coverTop = Math.Min(high, reachTop + settings.ReachLayer / settings.MaxScale);
-                region = new PrismRegion(corners, slabs, coverTop, settings, new TriangleProximity(corners, 0.5));
+                region = new PrismRegion(corners, slabs, settings);
                 foreach ((double bottom, double _, int _, int _) in slabs) edges.Add(bottom);
                 edges.Add(reachTop);
                 List<double> single = hasUpper ? new List<double> { reachTop, high } : new List<double>();
                 int budget = settings.MaxPrisms - (hasUpper ? 1 : 0);
                 if (region.HasLook) {
                     region.Start(budget);
-                    ranOut = Refine(region, settings, budget);
-                    RepairLedges(corners, settings, region, CoarsePieces(corners, settings, single), budget);
+                    ranOut = Refine(corners, settings, region, CoarsePieces(corners, settings, single), budget);
                 }
 
                 // The budget the walking band left buys the plateau tiers above the jump reach, at least one band.
@@ -202,12 +202,14 @@ namespace AlpineLib.Procedural.Meshing {
 
         // Splits the worst piece over target, most important kind first, within the budget; then merges, a few rounds.
         // Returns where the budget ran out, or an empty string.
-        // First every piece is brought under the standoff max target (and every cap off the air), then, with the
-        // budget left, under the p90 target: the max is a hard gate, the p90 only needs most samples close.
-        private static string Refine(PrismRegion region, PrismEnvelopeSettings settings, int budget) {
+        // First every piece is brought under the standoff max target, then, with the budget left, under the p90
+        // target (the max is a hard gate, the p90 only needs most samples close); then the final metric's misses
+        // are repaired where budget remains.
+        private static string Refine(IReadOnlyList<Vector3> corners, PrismEnvelopeSettings settings, PrismRegion region, List<PrismPiece> coarse, int budget) {
             string ranOut = RefineTo(region, budget);
             region.SetTarget(settings.StandoffP90Target * settings.PieceStandoffShare);
             string ranOutLater = RefineTo(region, budget);
+            RepairLedges(corners, settings, region, coarse, budget);
             return ranOut.Length > 0 ? ranOut : ranOutLater;
         }
 
@@ -220,19 +222,28 @@ namespace AlpineLib.Procedural.Meshing {
             return ranOut;
         }
 
-        // Cuts through the worst reachable ledge the final metric finds, while one is over the gate and budget remains.
-        private static void RepairLedges(IReadOnlyList<Vector3> corners, PrismEnvelopeSettings settings, PrismRegion region, List<PrismPiece> coarse, int budget) {
-            for (int round = 0; round < budget && region.Pieces.Count < budget; round++) {
+        // Cuts where the final metric finds the worst reachable ledge, else the worst side standoff, while a gate is
+        // missed and budget remains.
+        // Returns true once the gates pass.
+        private static bool RepairLedges(IReadOnlyList<Vector3> corners, PrismEnvelopeSettings settings, PrismRegion region, List<PrismPiece> coarse, int budget) {
+            for (int round = 0; round < RepairRounds; round++) {
                 var prisms = new List<EnvelopePrism>();
                 foreach (PrismPiece piece in region.Pieces) prisms.Add(piece.ToPrism());
                 foreach (PrismPiece piece in coarse) prisms.Add(piece.ToPrism());
                 EnvelopeMetrics metrics = Metrics(corners, prisms, settings);
                 List<double> air = metrics.LedgeAir(settings.Ground, settings.LookHeight(settings.StepOffset), settings.LookHeight(settings.ReachableTop));
-                if (!(EnvelopeMetrics.Quantile(air, 1.0) > settings.LedgeAirMax)) return;
+                if (EnvelopeMetrics.Quantile(air, 1.0) > settings.LedgeAirMax) {
+                    Vector3 spot = metrics.WorstLedgePoint;
+                    if (region.Pieces.Count >= budget || !region.ForceCapCut(new Vector3(spot.X, spot.Y - 0.02f, spot.Z))) return false;
 
-                Vector3 spot = metrics.WorstLedgePoint;
-                if (!region.ForceCapCut(new Vector3(spot.X, spot.Y - 0.02f, spot.Z))) return;
+                    continue;
+                }
+
+                List<double> standoff = metrics.Standoff(settings.LookHeight(settings.WalkingLow), settings.LookHeight(settings.GateTop), StandoffCap);
+                if (!(EnvelopeMetrics.Quantile(standoff, 1.0) > settings.StandoffMaxTarget) && !(EnvelopeMetrics.Quantile(standoff, 0.9) > settings.StandoffP90Target)) return true;
+                if (region.Pieces.Count >= budget || !region.ForceSideCut(metrics.WorstStandoffPoint)) return false;
             }
+            return false;
         }
 
         private static string SplitWhileOver(PrismRegion region, int budget) {
@@ -241,7 +252,7 @@ namespace AlpineLib.Procedural.Meshing {
                 PrismPiece worst = region.WorstOver();
                 if (worst == null) return string.Empty;
                 if (region.Pieces.Count >= budget) {
-                    return "budget ran out at a piece " + Format(worst.Bottom) + "–" + Format(worst.Top) + " with standoff " + Format(worst.Standoff) + ", cap over air " + Format(worst.CapOverAir);
+                    return "budget ran out at a piece " + Format(worst.Bottom) + "–" + Format(worst.Top) + " with standoff " + Format(worst.Standoff);
                 }
 
                 region.TrySplit(worst);
@@ -343,7 +354,7 @@ namespace AlpineLib.Procedural.Meshing {
                 PrismPiece piece = pieces[index];
                 text.Append(index < regionCount ? "prism " : "coarse ").Append(Format(piece.Bottom)).Append("–").Append(Format(piece.Top))
                     .Append(": ").Append(piece.Plan.Count).Append(" vertices");
-                if (index < regionCount) text.Append(", standoff ").Append(Format(piece.Standoff)).Append(" (layer ").Append(piece.WorstLayer).Append(", kind ").Append(piece.Kind).Append(")").Append(", cap over air ").Append(Format(piece.CapOverAir));
+                if (index < regionCount) text.Append(", standoff ").Append(Format(piece.Standoff)).Append(" (layer ").Append(piece.WorstLayer).Append(", kind ").Append(piece.Kind).Append(")");
                 if (piece.FellBack) text.Append(", rectangle fallback");
                 if (piece.Unsplittable) text.Append(", stuck");
                 text.Append('\n');

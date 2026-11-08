@@ -4,7 +4,7 @@ using System.Numerics;
 
 namespace AlpineLib.Procedural.Meshing {
     /// <summary>
-    /// Geometry helpers for <see cref="PrismBand"/>: slab clipping of look faces in double precision and the
+    /// Geometry helpers for <see cref="PrismRegion"/>: slab clipping of look faces in double precision and the
     /// finishing of a prism plan (hull, outward enclosure to the vertex budget, outward cleanup, rectangle fallback).
     /// </summary>
     internal static class PrismBandDecomposer {
@@ -187,17 +187,6 @@ namespace AlpineLib.Procedural.Meshing {
                 corners.Add(ConvexPlan.Round(new PlanPoint(origin.X + unitX * along - unitZ * across, origin.Z + unitZ * along + unitX * across)));
             }
             return corners;
-        }
-
-        public static double MinWidth(List<PlanPoint> plan) {
-            double minX = double.PositiveInfinity, maxX = double.NegativeInfinity, minZ = double.PositiveInfinity, maxZ = double.NegativeInfinity;
-            foreach (PlanPoint point in plan) {
-                minX = Math.Min(minX, point.X);
-                maxX = Math.Max(maxX, point.X);
-                minZ = Math.Min(minZ, point.Z);
-                maxZ = Math.Max(maxZ, point.Z);
-            }
-            return Math.Min(maxX - minX, maxZ - minZ);
         }
 
         public static double Diameter(List<PlanPoint> plan) {

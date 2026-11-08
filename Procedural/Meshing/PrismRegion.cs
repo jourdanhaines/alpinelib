@@ -8,13 +8,12 @@ namespace AlpineLib.Procedural.Meshing {
     /// <see cref="PrismLayer"/>s and fitted with <see cref="PrismPiece"/>s that each span a run of layers. A piece's
     /// plan is the hull of its fragments and of the walled-in cells of its region, enclosed to the vertex budget.
     /// Its standoff is the farthest exposed plan sample from the look, measured layer by layer, so a column over a
-    /// leaning wall shows the lean. A piece over target is split either in plan (at its worst notch, or through a cap
-    /// spot over air) or in height (on a layer edge), whichever leaves the smaller worst excess.
+    /// leaning wall shows the lean. A piece over target is split either in plan (at its worst notch, or on a line
+    /// joining two notches) or in height (on a layer edge), whichever leaves the smaller worst excess. Forced cuts go
+    /// through ledges and sides the final metric finds.
     /// </summary>
     /// <remarks>Every fragment lands in some piece and every plan holds its fragments, so the pieces hold the region.</remarks>
     internal sealed class PrismRegion {
-        private const double CapSpacing = 0.25;
-        private const double CapSlack = 0.02;
         private const double DistanceCap = 10.0;
         private const int OverSampleCount = 48;
         private const int TwoNotchTries = 1;
@@ -23,29 +22,19 @@ namespace AlpineLib.Procedural.Meshing {
         private const double FallbackPenalty = 100.0;
 
         private readonly PrismEnvelopeSettings _settings;
-        private readonly TriangleProximity _look;
-        private readonly PlanFootprint _cover;
         private double _target;
         private readonly List<int> _groups = new List<int>();
 
         // Pairs whose merge missed target; targets only tighten, so they would miss again.
         private readonly HashSet<(PrismPiece, PrismPiece)> _failedMerges = new HashSet<(PrismPiece, PrismPiece)>();
-        private readonly double _capLow;
-        private readonly double _capHigh;
 
-        // Caps above the reachable top are no ledge a capsule can use, so they are not checked.
-        private readonly double _capReach;
 
         // A sample in a touched cell lies within a cell diagonal of the look.
         private readonly double _occupiedReach;
 
-        public PrismRegion(IReadOnlyList<Vector3> corners, List<(double Bottom, double Top, int Kind, int Group)> slabs, double coverTop, PrismEnvelopeSettings settings, TriangleProximity look) {
+        public PrismRegion(IReadOnlyList<Vector3> corners, List<(double Bottom, double Top, int Kind, int Group)> slabs, PrismEnvelopeSettings settings) {
             _settings = settings;
-            _look = look;
             _target = settings.StandoffMaxTarget * settings.PieceStandoffShare;
-            _capLow = settings.LookHeight(settings.StepOffset);
-            _capHigh = slabs.Count > 0 ? slabs[slabs.Count - 1].Top + 1e-6 : 0.0;
-            _capReach = Math.Min(_capHigh, settings.LookHeight(settings.ReachableTop) + 1e-6);
             _occupiedReach = settings.Cell * 1.5;
             var all = new List<List<List<SlabPoint>>>();
             var everything = new List<List<SlabPoint>>();
@@ -59,7 +48,6 @@ namespace AlpineLib.Procedural.Meshing {
             Frame = PlanFootprint.FrameAround(everything, settings.Cell);
             for (int layer = 0; layer < slabs.Count; layer++) Layers.Add(new PrismLayer(slabs[layer].Bottom, slabs[layer].Top, slabs[layer].Kind, all[layer], Frame));
             foreach ((double _, double _, int _, int group) in slabs) _groups.Add(group);
-            if (coverTop > _capHigh) _cover = new PlanFootprint(PrismBandDecomposer.SlabFragments(corners, _capHigh, coverTop), coverTop, Frame);
         }
 
         public PlanFrame Frame { get; }
@@ -158,7 +146,7 @@ namespace AlpineLib.Procedural.Meshing {
                 if (Math.Abs(piece.Top - spot.Y) > 0.05 || ConvexPlan.Distance(piece.Plan, spot.X, spot.Z) > 1e-3) continue;
 
                 piece.CapPoint = new PlanPoint(spot.X, spot.Z);
-                if (!TryForcedSides(piece, piece.CapPoint, out PrismPiece first, out PrismPiece second)) return false;
+                if (!TryForcedSides(piece, piece.CapPoint, piece.LastLayer, out PrismPiece first, out PrismPiece second)) return false;
 
                 int index = Pieces.IndexOf(piece);
                 Pieces[index] = first;
@@ -169,18 +157,58 @@ namespace AlpineLib.Procedural.Meshing {
         }
 
         // At the notch under the spot (inward from its nearest edge), else across the edge through it, else below the top layer.
-        private bool TryForcedSides(PrismPiece piece, PlanPoint spot, out PrismPiece first, out PrismPiece second) {
+        private bool TryForcedSides(PrismPiece piece, PlanPoint spot, int layer, out PrismPiece first, out PrismPiece second) {
             first = second = null;
             if (TryCapLine(piece, out double normalX, out double normalZ, out double offset)) {
                 var inward = new PlanPoint(normalZ, -normalX);
                 if (ConvexPlan.Distance(piece.Plan, spot.X + inward.X * 0.01, spot.Z + inward.Z * 0.01) > 0.0) inward = new PlanPoint(-normalZ, normalX);
-                if (TryNotchHit(piece, spot, inward, piece.LastLayer, out PlanPoint hit)) {
+                if (TryNotchHit(piece, spot, inward, layer, out PlanPoint hit)) {
                     double lineX = -inward.Z, lineZ = inward.X;
                     if (TryPlanSides(piece, lineX, lineZ, lineX * hit.X + lineZ * hit.Z, out first, out second)) return true;
                 }
                 if (TryPlanSides(piece, normalX, normalZ, offset, out first, out second)) return true;
             }
-            return piece.LastLayer > piece.FirstLayer && TryHeightSides(piece, piece.LastLayer, out first, out second);
+            if (piece.LastLayer == piece.FirstLayer) return false;
+
+            return TryHeightSides(piece, Math.Max(piece.FirstLayer + 1, Math.Min(piece.LastLayer, layer == piece.LastLayer ? layer : layer + 1)), out first, out second);
+        }
+
+        /// <summary>
+        /// Cuts the piece whose side holds <paramref name="point"/> (the worst standoff the final metric found) at the
+        /// notch inward of it; false when no piece owns it or no cut divides the piece.
+        /// </summary>
+        public bool ForceSideCut(Vector3 point) {
+            foreach (PrismPiece piece in Pieces) {
+                if (point.Y < piece.Bottom - 1e-3 || point.Y > piece.Top + 1e-3 || !IsOnRim(piece.Plan, point.X, point.Z)) continue;
+
+                piece.CapPoint = new PlanPoint(point.X, point.Z);
+                if (!TryForcedSides(piece, piece.CapPoint, LayerAt(piece, point.Y), out PrismPiece first, out PrismPiece second)) return false;
+
+                int index = Pieces.IndexOf(piece);
+                Pieces[index] = first;
+                Pieces.Insert(index + 1, second);
+                return true;
+            }
+            return false;
+        }
+
+        private static bool IsOnRim(List<PlanPoint> plan, double x, double z) {
+            if (ConvexPlan.Distance(plan, x, z) > 1e-3) return false;
+
+            for (int edge = 0; edge < plan.Count; edge++) {
+                PlanPoint start = plan[edge], end = plan[(edge + 1) % plan.Count];
+                double edgeX = end.X - start.X, edgeZ = end.Z - start.Z;
+                double length = Math.Sqrt(edgeX * edgeX + edgeZ * edgeZ);
+                if (Math.Abs((x - start.X) * edgeZ - (z - start.Z) * edgeX) / length <= 1e-3) return true;
+            }
+            return false;
+        }
+
+        private int LayerAt(PrismPiece piece, double y) {
+            for (int layer = piece.FirstLayer; layer <= piece.LastLayer; layer++) {
+                if (y <= Layers[layer].Top) return layer;
+            }
+            return piece.LastLayer;
         }
 
         /// <summary>Merges pairs of touching pieces, earliest pair first, while the merged piece meets target.</summary>
@@ -249,16 +277,10 @@ namespace AlpineLib.Procedural.Meshing {
             return false;
         }
 
-        // Plan cut (cap spot or notch), layer splits around the worst layer, and the axis cut when nothing else divides.
+        // Notch cut, two-notch cuts, layer splits around the worst layer, and the axis cut when nothing else divides.
         private IEnumerable<(PrismPiece First, PrismPiece Second)> Candidates(PrismPiece piece) {
             bool found = false;
-            if (piece.CapOverAir > 0.0 && TryCapLine(piece, out double normalX, out double normalZ, out double offset)) {
-                if (TryPlanSides(piece, normalX, normalZ, offset, out PrismPiece first, out PrismPiece second)) {
-                    found = true;
-                    yield return (first, second);
-                }
-            }
-            if (piece.Standoff > _target && TryNotchLine(piece, out normalX, out normalZ, out offset)) {
+            if (piece.Standoff > _target && TryNotchLine(piece, out double normalX, out double normalZ, out double offset)) {
                 if (TryPlanSides(piece, normalX, normalZ, offset, out PrismPiece first, out PrismPiece second)) {
                     found = true;
                     yield return (first, second);
@@ -387,8 +409,7 @@ namespace AlpineLib.Procedural.Meshing {
             piece.Bottom = Math.Floor(bottom / ConvexPlan.Grid) * ConvexPlan.Grid;
             piece.Top = Math.Ceiling(top / ConvexPlan.Grid) * ConvexPlan.Grid;
             MeasureStandoff(piece);
-            MeasureCap(piece);
-            piece.Excess = Math.Max(piece.Standoff - _target, piece.CapOverAir);
+            piece.Excess = piece.Standoff - _target;
             return true;
         }
 
@@ -456,7 +477,6 @@ namespace AlpineLib.Procedural.Meshing {
         private void MeasureStandoff(PrismPiece piece) {
             List<PlanPoint> plan = piece.Plan;
             piece.OverSamples.Clear();
-            var layerWorst = new double[piece.LastLayer - piece.FirstLayer + 1];
             double worst = -1.0;
             int kind = int.MaxValue;
             for (int edge = 0; edge < plan.Count; edge++) {
@@ -472,7 +492,6 @@ namespace AlpineLib.Procedural.Meshing {
                         if (footprint.IsOccupiedAt(x, z) && (worst >= _occupiedReach || footprint.IsInteriorAt(x, z))) continue;
 
                         double distance = footprint.Distance(x, z, DistanceCap);
-                        layerWorst[layer - piece.FirstLayer] = Math.Max(layerWorst[layer - piece.FirstLayer], distance);
                         if (distance > _target) {
                             kind = Math.Min(kind, Layers[layer].Kind);
                             KeepOverSample(piece, new PlanPoint(x, z), new PlanPoint(-edgeZ / length, edgeX / length), layer, distance);
@@ -487,9 +506,6 @@ namespace AlpineLib.Procedural.Meshing {
                 }
             }
             piece.Standoff = Math.Max(0.0, worst);
-            double best = double.PositiveInfinity;
-            foreach (double value in layerWorst) best = Math.Min(best, value);
-            piece.LeansInHeight = best <= _target;
             piece.Kind = kind == int.MaxValue ? Layers[piece.LastLayer].Kind : kind;
         }
 
@@ -508,53 +524,6 @@ namespace AlpineLib.Procedural.Meshing {
 
             samples.Insert(index, (point, inward, layer, distance));
             if (samples.Count > OverSampleCount) samples.RemoveAt(samples.Count - 1);
-        }
-
-        // The cap spot farthest from the look under it among those over more air than the ledge gate allows and
-        // further than the ledge lip from the look above (whose prisms will hold it), so exposed in the end.
-        private void MeasureCap(PrismPiece piece) {
-            piece.CapOverAir = 0.0;
-            if (!(piece.Top > _capLow) || piece.Top > _capReach) return;
-
-            PlanFootprint own = Layers[piece.LastLayer].Footprint;
-            PlanFootprint above = piece.LastLayer + 1 < Layers.Count ? Layers[piece.LastLayer + 1].Footprint : _cover;
-            foreach (PlanPoint sample in CapSamples(piece.Plan)) {
-                if (own.IsInteriorAt(sample.X, sample.Z) || (above != null && above.IsOccupiedAt(sample.X, sample.Z))) continue;
-
-                double away = own.Distance(sample.X, sample.Z, DistanceCap);
-                if (!(away > Math.Max(piece.CapOverAir, CapSlack)) || IsHeld(above, sample.X, sample.Z)) continue;
-                if (piece.Top - _look.HeightBelow(sample.X, sample.Z, piece.Top + 0.05, _settings.Ground) <= _settings.LedgeAirMax) continue;
-
-                piece.CapOverAir = away;
-                piece.CapPoint = sample;
-            }
-            if (piece.CapOverAir > 0.0) piece.Kind = Math.Min(piece.Kind, piece.Top <= _settings.LookHeight(_settings.ReachableTop) ? PrismLayer.Gate : Layers[piece.LastLayer].Kind);
-        }
-
-        private bool IsHeld(PlanFootprint above, double x, double z) {
-            if (above == null) return false;
-
-            return above.IsInteriorAt(x, z) || above.Distance(x, z, _settings.LedgeLip + 1.0) <= _settings.LedgeLip;
-        }
-
-        // The cap's rim every standoff spacing and its inside on a grid of the cap spacing.
-        private List<PlanPoint> CapSamples(List<PlanPoint> plan) {
-            var samples = new List<PlanPoint>();
-            for (int edge = 0; edge < plan.Count; edge++) {
-                PlanPoint start = plan[edge], end = plan[(edge + 1) % plan.Count];
-                double edgeX = end.X - start.X, edgeZ = end.Z - start.Z;
-                int steps = Math.Max(1, (int)Math.Ceiling(Math.Sqrt(edgeX * edgeX + edgeZ * edgeZ) / _settings.StandoffSpacing));
-                for (int step = 0; step < steps; step++) samples.Add(new PlanPoint(start.X + edgeX * step / steps, start.Z + edgeZ * step / steps));
-            }
-            Bounds(plan, out double minX, out double maxX, out double minZ, out double maxZ);
-            int columns = Math.Max(1, (int)Math.Ceiling((maxX - minX) / CapSpacing)), rows = Math.Max(1, (int)Math.Ceiling((maxZ - minZ) / CapSpacing));
-            for (int column = 1; column < columns; column++) {
-                for (int row = 1; row < rows; row++) {
-                    double x = minX + (maxX - minX) * column / columns, z = minZ + (maxZ - minZ) * row / rows;
-                    if (ConvexPlan.Distance(plan, x, z) <= 0.0) samples.Add(new PlanPoint(x, z));
-                }
-            }
-            return samples;
         }
 
         // From the worst sample, inward along its edge normal to the first footprint cell of its layer; the line runs along the march.

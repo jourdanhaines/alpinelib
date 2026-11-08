@@ -267,7 +267,7 @@ namespace AlpineLib.Procedural.Meshing {
                 if (index != sphereIndex && _spheres[index].DistanceOutside(point) <= 0.0) return true;
             }
             for (int index = 0; index < _prisms.Count; index++) {
-                if (index != prismIndex && _prisms[index].DistanceOutside(point) <= PrismRimTolerance) return true;
+                if (index != prismIndex && _prisms[index].Holds(point.X, point.Y, point.Z, PrismRimTolerance)) return true;
             }
             return false;
         }
@@ -277,7 +277,7 @@ namespace AlpineLib.Procedural.Meshing {
             for (int index = 0; index < _prisms.Count; index++) {
                 EnvelopePrism other = _prisms[index];
                 if (index == prismIndex || other.Bottom > point.Y || other.Top <= point.Y) continue;
-                if (ConvexPlan.Distance(other.Plan, point.X, point.Z) <= LedgeLip) return true;
+                if (other.PlanHolds(point.X, point.Z, LedgeLip)) return true;
             }
             return false;
         }
@@ -290,7 +290,7 @@ namespace AlpineLib.Procedural.Meshing {
                 if (sphere.DistanceOutside(point) <= 0.0) return true;
             }
             foreach (EnvelopePrism prism in _prisms) {
-                if (prism.DistanceOutside(point) <= PrismRimTolerance) return true;
+                if (prism.Holds(point.X, point.Y, point.Z, PrismRimTolerance)) return true;
             }
             return false;
         }

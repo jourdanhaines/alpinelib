@@ -5,7 +5,7 @@ namespace AlpineLib.Procedural.Meshing {
     /// <summary>
     /// The plan footprint of one band of a look: a fine raster (touched and walled-in cells) and the fragments'
     /// plan polygons bucketed for exact distance queries. Drives the standoff measure and the cuts of
-    /// <see cref="PrismBand"/>.
+    /// <see cref="PrismRegion"/>.
     /// </summary>
     internal sealed class PlanFootprint {
         private const double BucketSize = 1.0;
