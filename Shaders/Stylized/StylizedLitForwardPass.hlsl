@@ -43,7 +43,8 @@ struct Varyings
 };
 
 // _FogScale eased to _FogScaleFar between view depths _FogScaleRamp.x and .y (shared haze for far layers);
-// a ramp whose end is not past its start (the 0/0 default) is off and returns _FogScale exactly.
+// a ramp whose end is not past its start (the 0/0 default) is off and returns _FogScale exactly. Under
+// _FOG_SCALE_BLEND only this end is ramped: vertex alpha 1 still fogs at _FogScaleAlpha.
 half StylizedRampedFogScale(float viewZ)
 {
     if (!(_FogScaleRamp.y > _FogScaleRamp.x)) return _FogScale;
