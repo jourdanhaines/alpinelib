@@ -40,6 +40,12 @@ namespace AlpineLib.Rendering {
         public static readonly int VertexColorStrength = Shader.PropertyToID("_VertexColorStrength");
         public static readonly int FogScale = Shader.PropertyToID("_FogScale");
         public static readonly int FogScaleAlpha = Shader.PropertyToID("_FogScaleAlpha");
+
+        /// <summary>The fog scale <see cref="FogScale"/> ramps to by <see cref="FogScaleRamp"/>'s end.</summary>
+        public static readonly int FogScaleFar = Shader.PropertyToID("_FogScaleFar");
+
+        /// <summary>Vector: x ramp start, y ramp end (view depth, metres); end not past start (0, 0 default) is no ramp.</summary>
+        public static readonly int FogScaleRamp = Shader.PropertyToID("_FogScaleRamp");
         public static readonly int Cull = Shader.PropertyToID("_Cull");
 
         // Inspector toggles that mirror the keywords (Toggle / ToggleOff drawers).

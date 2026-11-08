@@ -42,9 +42,18 @@ struct Varyings
     UNITY_VERTEX_OUTPUT_STEREO
 };
 
-// Distance fog with the view depth scaled by _FogScale, so a material can sit further into (or out of) the fog;
-// with _FOG_SCALE_BLEND the scale runs to _FogScaleAlpha by the vertex alpha. _FOG_RADIAL fogs by the distance to
-// the camera instead, so sky objects fog alike across the screen and while the camera turns.
+// _FogScale eased to _FogScaleFar between view depths _FogScaleRamp.x and .y (shared haze for far layers);
+// a ramp whose end is not past its start (the 0/0 default) is off and returns _FogScale exactly.
+half StylizedRampedFogScale(float viewZ)
+{
+    if (!(_FogScaleRamp.y > _FogScaleRamp.x)) return _FogScale;
+
+    return lerp(_FogScale, _FogScaleFar, (half)smoothstep(_FogScaleRamp.x, _FogScaleRamp.y, viewZ));
+}
+
+// Distance fog with the view depth scaled by the (ramped) _FogScale, so a material can sit further into (or out of)
+// the fog; with _FOG_SCALE_BLEND the scale runs to _FogScaleAlpha by the vertex alpha. _FOG_RADIAL fogs by the
+// distance to the camera instead, so sky objects fog alike across the screen and while the camera turns.
 half StylizedFogFactor(float3 positionWS, half fogBlend)
 {
     bool anyFogEnabled = false;
@@ -65,7 +74,7 @@ half StylizedFogFactor(float3 positionWS, half fogBlend)
     float viewZ = -(mul(UNITY_MATRIX_V, float4(positionWS, 1.0)).z);
 #endif
     float nearToFarZ = max(viewZ - _ProjectionParams.y, 0.0);
-    half fogScale = lerp(_FogScale, _FogScaleAlpha, fogBlend);
+    half fogScale = lerp(StylizedRampedFogScale(viewZ), _FogScaleAlpha, fogBlend);
     return ComputeFogFactorZ0ToFar(nearToFarZ * fogScale);
 }
 

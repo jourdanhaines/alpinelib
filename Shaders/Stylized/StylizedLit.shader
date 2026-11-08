@@ -16,6 +16,8 @@ Shader "AlpineLib/Stylized/Lit"
         _VertexColorStrength("Vertex Colour Strength", Range(0.0, 1.0)) = 1.0
         _FogScale("Fog Distance Scale", Range(0.0, 2.0)) = 1.0
         _FogScaleAlpha("Fog Distance Scale At Vertex Alpha 1", Range(0.0, 2.0)) = 1.0
+        _FogScaleFar("Fog Distance Scale Far (ramp end)", Range(0.0, 2.0)) = 1.0
+        _FogScaleRamp("Fog Scale Ramp (x start, y end view depth; 0 0 off)", Vector) = (0, 0, 0, 0)
         [Enum(UnityEngine.Rendering.CullMode)] _Cull("Cull", Float) = 2.0
 
         [Toggle(_VERTEX_COLOR)] _VertexColor("Vertex Colour", Float) = 0.0

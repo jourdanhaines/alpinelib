@@ -20,6 +20,9 @@ CBUFFER_START(UnityPerMaterial)
     half _VertexColorStrength;
     half _FogScale;
     half _FogScaleAlpha;
+    // _FogScale ramps to _FogScaleFar from view depth x to y (x 0, y 0: no ramp).
+    half _FogScaleFar;
+    float4 _FogScaleRamp;
     // The screen-door amount of a non-instanced fading draw (kept here in every variant: SRP Batcher layout).
     float _FadeAmount;
     UNITY_TEXTURE_STREAMING_DEBUG_VARS;
