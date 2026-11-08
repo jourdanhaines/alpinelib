@@ -55,6 +55,10 @@ namespace AlpineLib.Netcode.Collision {
         }
 
         /// <summary>The cap height when the column passes through the plan, edges included; the cap is flat.</summary>
+        /// <remarks>
+        /// "Edges included" is exact arithmetic only: a float point on a slanted edge fails the test about a fifth of
+        /// the time, so two prisms sharing an edge can both miss a column on the seam. Boxes behave the same.
+        /// </remarks>
         public static bool TryGetPrismSurfaceHeight(in CollisionShape shape, float x, float z, out float height, out Vector3 normal) {
             height = 0f;
             normal = new Vector3(0f, 1f, 0f);

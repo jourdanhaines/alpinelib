@@ -130,6 +130,10 @@ namespace AlpineLib.Netcode.Collision {
         /// <see cref="Translated"/>, <see cref="GetBoundsXZ"/> and the resolver's vertical reach.
         /// <see cref="Radius"/> is the farthest vertex from the centre, an early-reject bound.
         /// </para>
+        /// <para>
+        /// A mirrored placement (negative scale on one plan axis) flips the winding: reverse the vertex order before
+        /// calling, or this throws.
+        /// </para>
         /// </remarks>
         public static CollisionShape MakePrism(Vector3 center, float halfHeight, ReadOnlySpan<Vector2> offsets) {
             if (offsets.Length < PrismPlan.MinVertices || offsets.Length > PrismPlan.MaxVertices) {

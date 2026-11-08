@@ -10,11 +10,14 @@ namespace AlpineLib.Procedural.Meshing {
     /// feet (up to just under the step), fine bands through the walking band, coarse bands above it. Each band is
     /// cut into convex pieces by <see cref="PrismBandDecomposer"/>. Lowest first, a fine band halves while its side
     /// standoff p90, its lean or the air under a reachable cap is over target, down to the minimum band and within
-    /// the prism budget. A containment proof samples the look and refuses a fit that leaves any of it outside.
+    /// the prism budget. A sampled containment check refuses a fit that leaves the look outside.
     /// </summary>
     /// <remarks>
-    /// Double maths, fixed orders and bounded loops only, no trigonometry; every plan vertex and height is rounded
-    /// outward to <see cref="ConvexPlan.Grid"/>. Plans keep <see cref="PrismEnvelopeSettings.MinEdge"/> and
+    /// Double maths, fixed orders and bounded loops only, no trigonometry. Heights round outward to
+    /// <see cref="ConvexPlan.Grid"/>; plan vertices round to the nearest grid point, so the look may sit about 1e-4
+    /// outside a plan. The containment check samples vertices and faces every
+    /// <see cref="PrismEnvelopeSettings.SampleSpacing"/> against <see cref="PrismEnvelopeSettings.ContainmentTolerance"/>,
+    /// so it is a gate, not a proof: a point between samples could sit up to about a spacing out. Plans keep <see cref="PrismEnvelopeSettings.MinEdge"/> and
     /// <see cref="PrismEnvelopeSettings.MinTurn"/> so a turned, scaled and rounded copy is still a valid
     /// collision prism.
     /// </remarks>

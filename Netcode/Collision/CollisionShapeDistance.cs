@@ -64,7 +64,9 @@ namespace AlpineLib.Netcode.Collision {
                 double edgeZ = (double)endZ - startZ;
                 double offsetX = x - startX;
                 double offsetZ = z - startZ;
-                if (offsetX * edgeZ - offsetZ * edgeX > 0.0) inside = false;
+                if (offsetX * edgeZ - offsetZ * edgeX > 0.0) {
+                    inside = false;
+                }
 
                 double lengthSquared = edgeX * edgeX + edgeZ * edgeZ;
                 double along = Math.Max(0.0, Math.Min(1.0, (offsetX * edgeX + offsetZ * edgeZ) / lengthSquared));

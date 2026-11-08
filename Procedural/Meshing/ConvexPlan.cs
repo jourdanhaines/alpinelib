@@ -50,7 +50,8 @@ namespace AlpineLib.Procedural.Meshing {
         }
 
         /// <summary>
-        /// A convex polygon of at most <paramref name="maxVertices"/> (≥ 3) vertices holding <paramref name="hull"/>:
+        /// A convex polygon of at most <paramref name="maxVertices"/> (≥ 3) vertices holding <paramref name="hull"/> up to
+        /// grid rounding (meets round to nearest, so a hull point may sit about 1e-4 outside):
         /// repeatedly the edge whose removal adds least area is collapsed, its two neighbouring edges extended
         /// until they meet. Collapses whose neighbours do not meet in front of the polygon are skipped.
         /// </summary>
@@ -275,22 +276,21 @@ namespace AlpineLib.Procedural.Meshing {
             PlanPoint start = polygon[edge];
             PlanPoint end = polygon[(edge + 1) % count];
             PlanPoint after = polygon[(edge + 2) % count];
-            double aX = start.X - before.X, aZ = start.Z - before.Z;
-            double cX = end.X - after.X, cZ = end.Z - after.Z;
-            double wX = end.X - start.X, wZ = end.Z - start.Z;
-            double denominator = aX * cZ - aZ * cX;
+            double incomingX = start.X - before.X, incomingZ = start.Z - before.Z;
+            double backwardX = end.X - after.X, backwardZ = end.Z - after.Z;
+            double edgeX = end.X - start.X, edgeZ = end.Z - start.Z;
+            double denominator = incomingX * backwardZ - incomingZ * backwardX;
             if (Math.Abs(denominator) <= ParallelEpsilon) return false;
 
-            double along = (wX * cZ - wZ * cX) / denominator;
-            double back = (wX * aZ - wZ * aX) / denominator;
-            if (along < 0.0 || back < 0.0) return false;
+            double forward = (edgeX * backwardZ - edgeZ * backwardX) / denominator;
+            double backward = (edgeX * incomingZ - edgeZ * incomingX) / denominator;
+            if (forward < 0.0 || backward < 0.0) return false;
 
-            meet = Round(new PlanPoint(start.X + aX * along, start.Z + aZ * along));
-            double outward = Math.Max(0.0, (meet.X - start.X) * wZ - (meet.Z - start.Z) * wX);
-            double length = Math.Sqrt(wX * wX + wZ * wZ);
+            meet = Round(new PlanPoint(start.X + incomingX * forward, start.Z + incomingZ * forward));
+            double outward = Math.Max(0.0, (meet.X - start.X) * edgeZ - (meet.Z - start.Z) * edgeX);
             area = 0.5 * outward;
             // The new point's distance from the removed edge segment, not its line, so an obtuse end counts in full.
-            spike = Math.Sqrt(SegmentSquared(meet.X - start.X, meet.Z - start.Z, wX, wZ));
+            spike = Math.Sqrt(SegmentSquared(meet.X - start.X, meet.Z - start.Z, edgeX, edgeZ));
             return true;
         }
 

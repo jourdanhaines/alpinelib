@@ -42,7 +42,10 @@ namespace AlpineLib.Netcode.Collision {
         public const uint Magic = 0x41474F31u;
 
         /// <summary>Layout version of the payload that follows the header. Bump on any field change.</summary>
-        /// <remarks>Version 2 adds the prism shape; version 1 files, which cannot hold one, still read.</remarks>
+        /// <remarks>
+        /// Version 2 adds the prism shape; version 1 files, which cannot hold one, still read. Encoding always writes
+        /// version 2, even for prism-free geometry, so builds that only read version 1 reject every new file.
+        /// </remarks>
         public const ushort FormatVersion = 2;
 
         /// <summary>The oldest format version this build still reads.</summary>
