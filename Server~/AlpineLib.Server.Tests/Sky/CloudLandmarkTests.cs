@@ -110,20 +110,26 @@ namespace AlpineLib.Server.Tests.Sky {
             Assert.Equal(1.0, CloudFieldSettings.Default.BoostCap(CloudFieldSettings.Default.Classes[2]));
         }
 
-        // Lift: full over the hull, smoothly to none 150 m out, never below the cloud's own altitude, the largest landmark wins.
+        // Dissolve: gone over the hull and within 20 m of it, smoothstepped back to whole 180 m out, symmetric, only for a
+        // cloud whose base is below the top + 5 m (any shape that tall blocks it, mesas too); the nearest blocking hull wins.
         [Fact]
-        public void LiftFallsOffSmoothlyOutsideTheHull() {
+        public void CloudsDissolveNearABlockingHull() {
             var influence = new CloudLandmarkInfluence(CloudLandmarkSettings.Default);
             var shapes = new List<LandmarkSkyShape> { Giant(0.0, 0.0, 150.0, 120.0) };
-            Assert.Equal(35.0, influence.Lift(shapes, 0.0, 0.0, 10.0, 140.0), 9);
-            Assert.Equal(35.0, influence.Lift(shapes, 125.0, 0.0, 10.0, 140.0), 6);
-            Assert.Equal(0.0, influence.Lift(shapes, 120.0 + 10.0 + 151.0, 0.0, 10.0, 140.0));
-            Assert.Equal(0.0, influence.Lift(shapes, 0.0, 0.0, 10.0, 180.0));
-            double previous = 35.0;
-            for (double x = 120.0; x < 300.0; x += 0.5) {
-                double lift = influence.Lift(shapes, x, 0.0, 10.0, 140.0);
-                Assert.True(lift <= previous + 1e-9 && previous - lift < 0.35, $"lift step at {x}: {previous} -> {lift}");
-                previous = lift;
+            Assert.Equal(0.0, influence.Dissolve(shapes, 0.0, 0.0, 10.0, 140.0));
+            Assert.Equal(0.0, influence.Dissolve(shapes, 120.0 + 10.0 + 20.0, 0.0, 10.0, 140.0), 9);
+            Assert.Equal(1.0, influence.Dissolve(shapes, 120.0 + 10.0 + 181.0, 0.0, 10.0, 140.0));
+            Assert.Equal(1.0, influence.Dissolve(shapes, 0.0, 0.0, 10.0, 155.0));
+            Assert.Equal(0.0, influence.Dissolve(shapes, 0.0, 0.0, 10.0, 154.9));
+            Assert.Equal(influence.Dissolve(shapes, 230.0, 0.0, 10.0, 140.0), influence.Dissolve(shapes, -230.0, 0.0, 10.0, 140.0), 6);
+            var mesa = new List<LandmarkSkyShape> { Mesa(0.0, 0.0, 90.0, 50.0) };
+            Assert.Equal(0.0, influence.Dissolve(mesa, 0.0, 0.0, 10.0, 94.0));
+            Assert.Equal(1.0, influence.Dissolve(mesa, 0.0, 0.0, 10.0, 120.0));
+            double previous = 0.0;
+            for (double x = 120.0; x < 400.0; x += 0.5) {
+                double share = influence.Dissolve(shapes, x, 0.0, 10.0, 140.0);
+                Assert.True(share >= previous - 1e-9 && share - previous < 0.006, $"dissolve step at {x}: {previous} -> {share}");
+                previous = share;
             }
         }
 
@@ -140,20 +146,21 @@ namespace AlpineLib.Server.Tests.Sky {
             Assert.Equal(0.0, influence.GiantBias(shapes, -3000.0, 0.0, heading));
         }
 
-        // A synthetic giant and mesa under the real wind for 600 s, every class: no drawn cloud over a hull sits under top + 20 m.
+        // A synthetic giant and mesa under the real wind for 600 s, every class: no drawn cloud's footprint overlaps a hull
+        // that blocks it, clouds do dissolve near them, and no cloud's share changes by more than 0.15 a second.
         [Fact]
-        public void CloudsClearASyntheticGiantByTwentyMetres() {
-            var total = new CloudClearance();
+        public void CloudsDissolveBeforeASyntheticGiant() {
+            var total = new CloudDissolveCheck();
             for (ulong seed = 1; seed <= 6; seed++) {
                 var scatter = new CloudFieldScatter(seed, LandmarkSettings());
                 var sweep = new CloudLandmarkSweep(scatter, new WindField(seed, WindSettings.Default));
-                var shapes = new List<LandmarkSkyShape> { Giant(0.0, 0.0, 150.0, 170.0), Mesa(900.0, 300.0, 90.0, 55.0) };
-                total.Merge(sweep.Clearance(shapes, 100.0 * seed, 600.0, 2.0));
+                var shapes = new List<LandmarkSkyShape> { Giant(0.0, 0.0, 150.0, 170.0), Mesa(900.0, 300.0, 130.0, 55.0) };
+                total.Merge(sweep.Dissolve(shapes, 100.0 * seed, 600.0, 2.0, 1.0));
             }
-            _output.WriteLine($"clearance least {total.Least:0.00} m over {total.Overlaps} overlaps, most lift {total.MostLift:0.0} m");
-            Assert.True(total.Overlaps > 1000, $"only {total.Overlaps} overlapping samples");
-            Assert.True(total.Least >= 20.0, $"a cloud base sat {total.Least:0.00} m over a landmark top");
-            Assert.True(total.MostLift > 20.0, "nothing was lifted");
+            _output.WriteLine($"dissolve: {total.Overlaps} overlaps over {total.Drawn} drawn samples, fastest {total.MostRate:0.000}/s");
+            Assert.True(total.Drawn > 1000, $"only {total.Drawn} drawn samples");
+            Assert.Equal(0, total.Overlaps);
+            Assert.InRange(total.MostRate, 0.001, 0.15);
         }
 
         // Giants' zones hold 1.4–1.8 times the clouds per km² of open sky (cover reported alongside).
@@ -173,11 +180,11 @@ namespace AlpineLib.Server.Tests.Sky {
             Assert.InRange(total.Ratio, 1.4, 1.8);
         }
 
-        // The binned lookups give exactly the lift and bias of testing every landmark.
+        // The binned lookups give exactly the dissolve and bias of testing every landmark.
         [Fact]
         public void IndexMatchesTheFullList() {
             var influence = new CloudLandmarkInfluence(CloudLandmarkSettings.Default);
-            var shapes = new List<LandmarkSkyShape> { Giant(0.0, 0.0, 150.0, 170.0), Giant(1900.0, 700.0, 95.0, 120.0), Mesa(600.0, -800.0, 90.0, 50.0), Mesa(-900.0, 400.0, 130.0, 60.0) };
+            var shapes = new List<LandmarkSkyShape> { Giant(0.0, 0.0, 150.0, 170.0), Giant(1900.0, 700.0, 95.0, 120.0), Mesa(600.0, -800.0, 90.0, 50.0), Mesa(-900.0, 400.0, 145.0, 60.0) };
             var index = new CloudLandmarkIndex();
             index.Build(shapes, influence.Settings, 120.0, 140.0);
             Assert.Equal(3, index.Count);
@@ -187,24 +194,24 @@ namespace AlpineLib.Server.Tests.Sky {
                 double x = random.NextDouble() * 6000.0 - 2500.0;
                 double z = random.NextDouble() * 6000.0 - 3000.0;
                 double altitude = 140.0 + random.NextDouble() * 60.0;
-                Assert.Equal(influence.Lift(shapes, x, z, 60.0, altitude), influence.Lift(index.LiftShapesAt(x, z), x, z, 60.0, altitude));
+                Assert.Equal(influence.Dissolve(shapes, x, z, 60.0, altitude), influence.Dissolve(index.BlockShapesAt(x, z), x, z, 60.0, altitude));
                 Assert.Equal(influence.GiantBias(shapes, x, z, heading), influence.GiantBias(index.BiasShapesAt(x, z), x, z, heading));
             }
             CheckBoxes(influence, shapes, index, random, heading);
         }
 
-        // A box's collected landmarks give every point inside it the full list's lift and bias.
+        // A box's collected landmarks give every point inside it the full list's dissolve and bias.
         private static void CheckBoxes(CloudLandmarkInfluence influence, List<LandmarkSkyShape> shapes, CloudLandmarkIndex index, Random random, WindVector heading) {
             for (int box = 0; box < 200; box++) {
                 double minX = random.NextDouble() * 6000.0 - 3000.0;
                 double minZ = random.NextDouble() * 6000.0 - 3000.0;
-                var lift = new List<LandmarkSkyShape>();
+                var block = new List<LandmarkSkyShape>();
                 var bias = new List<LandmarkSkyShape>();
-                index.CollectNear(minX, minZ, minX + 300.0, minZ + 300.0, influence.Settings, 140.0, lift, bias);
+                index.CollectNear(minX, minZ, minX + 300.0, minZ + 300.0, influence.Settings, 140.0, block, bias);
                 for (int sample = 0; sample < 50; sample++) {
                     double x = minX + random.NextDouble() * 300.0;
                     double z = minZ + random.NextDouble() * 300.0;
-                    Assert.Equal(influence.Lift(shapes, x, z, 60.0, 150.0), influence.Lift(lift, x, z, 60.0, 150.0));
+                    Assert.Equal(influence.Dissolve(shapes, x, z, 60.0, 150.0), influence.Dissolve(block, x, z, 60.0, 150.0));
                     Assert.Equal(influence.GiantBias(shapes, x, z, heading), influence.GiantBias(bias, x, z, heading));
                 }
             }

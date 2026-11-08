@@ -3,8 +3,8 @@ using System.Collections.Generic;
 
 namespace AlpineLib.Procedural.Sky {
     /// <summary>
-    /// What nearby landmarks do to a cloud at its current absolute position: how far it lifts so its base clears every
-    /// landmark top it hangs over, and how much giant bias its density gains there. Stateless and in double, so every
+    /// What nearby landmarks do to a cloud at its current absolute position: how much of it is left as it nears a landmark
+    /// that stands above its base (it dissolves before the rock), and how much giant bias its density gains there. Stateless and in double, so every
     /// client with the same landmarks, wind and time gets the same sky.
     /// </summary>
     public sealed class CloudLandmarkInfluence {
@@ -16,25 +16,30 @@ namespace AlpineLib.Procedural.Sky {
         public CloudLandmarkSettings Settings { get; }
 
         /// <summary>
-        /// Metres a cloud of footprint radius <paramref name="reach"/> centred at (<paramref name="x"/>, <paramref name="z"/>)
-        /// with its base at <paramref name="altitude"/> rises: for each landmark, the shortfall of its base under the top
-        /// plus <see cref="CloudLandmarkSettings.LiftClearance"/>, in full while the footprint overlaps the hull and
-        /// smoothly to none <see cref="CloudLandmarkSettings.LiftFalloff"/> further out; the largest over all landmarks.
+        /// Size share a cloud of footprint radius <paramref name="reach"/> centred at (<paramref name="x"/>, <paramref name="z"/>)
+        /// with its base at <paramref name="altitude"/> is drawn at: every landmark whose top plus
+        /// <see cref="CloudLandmarkSettings.BlockMargin"/> is above the base blocks it, and for the nearest blocking hull the
+        /// gap d from the footprint's edge (negative when they overlap) gives smoothstep(<see cref="CloudLandmarkSettings.DissolveNear"/>,
+        /// <see cref="CloudLandmarkSettings.DissolveFar"/>, d). 1 when nothing blocks it. Pure in position, so a cloud
+        /// shrinks as it drifts toward the rock and re-forms past it.
         /// </summary>
-        public double Lift(IReadOnlyList<LandmarkSkyShape> shapes, double x, double z, double reach, double altitude) {
-            if (shapes == null) return 0.0;
+        public double Dissolve(IReadOnlyList<LandmarkSkyShape> shapes, double x, double z, double reach, double altitude) {
+            if (shapes == null) return 1.0;
 
-            double lift = 0.0;
-            double falloff = Settings.LiftFalloff;
+            double gap = double.MaxValue;
+            double far = Settings.DissolveFar;
             for (int index = 0; index < shapes.Count; index++) {
                 LandmarkSkyShape shape = shapes[index];
-                double shortfall = shape.PlateauY + Settings.LiftClearance - altitude;
-                if (shortfall <= lift || IsBeyond(shape, x, z, shape.BoundRadius + reach + falloff)) continue;
+                if (shape.PlateauY + Settings.BlockMargin <= altitude || IsBeyond(shape, x, z, shape.BoundRadius + reach + far)) continue;
 
-                double gap = Math.Max(0.0, shape.DistanceTo(x, z) - reach);
-                lift = Math.Max(lift, shortfall * (1.0 - SmoothStep(0.0, falloff, gap)));
+                gap = Math.Min(gap, shape.DistanceTo(x, z) - reach);
             }
-            return lift;
+            return gap >= far ? 1.0 : SmoothStep(Settings.DissolveNear, far, gap);
+        }
+
+        /// <summary>True when a cloud drawn at <paramref name="share"/> of its size is too small to draw at all.</summary>
+        public bool IsDissolved(double share) {
+            return share < Settings.DissolveCutoff;
         }
 
         /// <summary>

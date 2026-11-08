@@ -4,8 +4,8 @@ using AlpineLib.Procedural.Meshing;
 
 namespace AlpineLib.Procedural.Sky {
     /// <summary>
-    /// One landmark as the sky sees it: the height of its top, its footprint hull and its anchor in absolute xz
-    /// (metres), and its tier. Pure data with a bounding circle, so a cloud far from it is ruled out with one test.
+    /// One landmark, or one mass of a landmark, as the sky sees it: the height of its top, its footprint hull and its
+    /// anchor in absolute xz (metres), and its tier. Pure data with a bounding circle, so a cloud far from it is ruled out with one test.
     /// </summary>
     public sealed class LandmarkSkyShape {
         private readonly PlanPoint[] _hull;

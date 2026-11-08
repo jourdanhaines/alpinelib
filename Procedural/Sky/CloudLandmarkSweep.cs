@@ -3,10 +3,10 @@ using System.Collections.Generic;
 
 namespace AlpineLib.Procedural.Sky {
     /// <summary>
-    /// Engine-free checks of a landmark-aware cloud field (gates and tests): the least clearance between a cloud's base
-    /// and the top of every landmark its drawn footprint overlaps over a span of session time, and how much denser the
-    /// sky is in giants' zones than in open sky. Places clouds exactly as the runtime field does (anchor, class drift,
-    /// smoothed wander and surge, then lift, envelope and size boost at the cloud's absolute position).
+    /// Engine-free checks of a landmark-aware cloud field (gates and tests): whether any drawn cloud's footprint overlaps
+    /// a landmark that blocks it, how fast clouds dissolve, and how much denser the sky is in giants' zones than in open
+    /// sky. Places clouds exactly as the runtime field does (anchor, class drift, smoothed wander and surge, then
+    /// envelope, size boost and dissolve at the cloud's absolute position).
     /// </summary>
     public sealed class CloudLandmarkSweep {
         private const int MaxCachedCells = 20000;
@@ -28,19 +28,18 @@ namespace AlpineLib.Procedural.Sky {
         public CloudLandmarkInfluence Influence => _influence;
 
         /// <summary>
-        /// Least (cloud base + lift − landmark top) over every cloud of every class whose drawn footprint overlaps the hull
-        /// of one of <paramref name="shapes"/>, sampled every <paramref name="step"/> seconds from <paramref name="start"/>
-        /// for <paramref name="seconds"/>. <see cref="CloudClearance.Overlaps"/> counts the samples that overlapped.
+        /// Every cloud of every class near one of <paramref name="shapes"/>, sampled every <paramref name="step"/> seconds
+        /// from <paramref name="start"/> for <paramref name="seconds"/>: drawn clouds (dissolve share at least the cutoff)
+        /// whose drawn footprint overlaps a hull that blocks them, and the fastest change of the dissolve share per second
+        /// (each sample against the same cloud <paramref name="rateStep"/> seconds on).
         /// </summary>
-        public CloudClearance Clearance(IReadOnlyList<LandmarkSkyShape> shapes, double start, double seconds, double step) {
-            var result = new CloudClearance();
+        public CloudDissolveCheck Dissolve(IReadOnlyList<LandmarkSkyShape> shapes, double start, double seconds, double step, double rateStep) {
+            var result = new CloudDissolveCheck();
             if (shapes == null || shapes.Count == 0) return result;
 
             for (double time = start; time <= start + seconds + 1e-9; time += step) {
-                WindVector heading = _wind.Direction(time);
-                WindVector displacement = _wind.Displacement(time);
                 foreach (LandmarkSkyShape shape in shapes) {
-                    for (int classIndex = 0; classIndex < CloudFieldSettings.ClassCount; classIndex++) SweepShape(shapes, shape, (CloudClass)classIndex, time, heading, displacement, result);
+                    for (int classIndex = 0; classIndex < CloudFieldSettings.ClassCount; classIndex++) SweepShape(shapes, shape, (CloudClass)classIndex, time, rateStep, result);
                 }
             }
             return result;
@@ -65,32 +64,48 @@ namespace AlpineLib.Procedural.Sky {
             return bias >= _influence.Settings.GiantBias * (1.0 - 1e-9);
         }
 
-        private void SweepShape(IReadOnlyList<LandmarkSkyShape> shapes, LandmarkSkyShape shape, CloudClass cloudClass, double time, WindVector heading, WindVector displacement, CloudClearance result) {
+        private void SweepShape(IReadOnlyList<LandmarkSkyShape> shapes, LandmarkSkyShape shape, CloudClass cloudClass, double time, double rateStep, CloudDissolveCheck result) {
             CloudFieldSettings settings = _scatter.Settings;
             CloudClassSettings classSettings = settings.ClassOf(cloudClass);
-            double cap = _scatter.LargestBoost(cloudClass);
-            double reach = shape.BoundRadius + settings.MaxReach(classSettings) * cap + classSettings.MotionReach;
-            CloudFieldFrame frame = CloudFieldFrame.Locate(shape.BoundX, shape.BoundZ, _scatter.DriftOf(cloudClass, displacement), settings.CellSize);
+            double reach = shape.BoundRadius + settings.MaxReach(classSettings) * _scatter.LargestBoost(cloudClass) + classSettings.MotionReach + _influence.Settings.DissolveFar;
+            CloudFieldFrame frame = CloudFieldFrame.Locate(shape.BoundX, shape.BoundZ, _scatter.DriftOf(cloudClass, _wind.Displacement(time)), settings.CellSize);
             int cells = (int)Math.Ceiling(reach / settings.CellSize) + 1;
             for (long cellZ = frame.CellZ - cells; cellZ <= frame.CellZ + cells; cellZ++) {
-                for (long cellX = frame.CellX - cells; cellX <= frame.CellX + cells; cellX++) SweepCell(shapes, shape, cloudClass, frame, cellX, cellZ, time, heading, result);
+                for (long cellX = frame.CellX - cells; cellX <= frame.CellX + cells; cellX++) SweepCell(shapes, shape, cloudClass, frame, cellX, cellZ, time, rateStep, result);
             }
         }
 
-        private void SweepCell(IReadOnlyList<LandmarkSkyShape> shapes, LandmarkSkyShape shape, CloudClass cloudClass, CloudFieldFrame frame, long cellX, long cellZ, double time, WindVector heading, CloudClearance result) {
-            double cap = _scatter.LargestBoost(cloudClass);
+        private void SweepCell(IReadOnlyList<LandmarkSkyShape> shapes, LandmarkSkyShape shape, CloudClass cloudClass, CloudFieldFrame frame, long cellX, long cellZ, double time, double rateStep, CloudDissolveCheck result) {
+            if (shape.PlateauY + _influence.Settings.BlockMargin <= _scatter.Settings.ClassOf(cloudClass).MinAltitude) return;
+
+            CloudFieldFrame later = CloudFieldFrame.Locate(shape.BoundX, shape.BoundZ, _scatter.DriftOf(cloudClass, _wind.Displacement(time + rateStep)), _scatter.Settings.CellSize);
             foreach (CloudInstance cloud in CellOf(cloudClass, cellX, cellZ)) {
                 Place(cloud, frame, cellX, cellZ, shape.BoundX, shape.BoundZ, time, out double x, out double z);
-                double bias = _influence.GiantBias(shapes, x, z, heading);
-                double envelope = _scatter.Envelope(cloud, bias);
-                if (envelope <= 0.0) continue;
+                double share = DrawnShare(shapes, cloud, x, z, time, out double drawn);
+                Place(cloud, later, cellX, cellZ, shape.BoundX, shape.BoundZ, time + rateStep, out double laterX, out double laterZ);
+                double laterShare = DrawnShare(shapes, cloud, laterX, laterZ, time + rateStep, out double _);
+                result.AddRate(Math.Abs(laterShare - share) / rateStep);
+                if (drawn <= 0.0) continue;
 
-                double drawn = cloud.Reach * _scatter.SizeBoost(cloud, bias) * envelope;
-                if (shape.DistanceTo(x, z) >= drawn) continue;
-
-                double lift = _influence.Lift(shapes, x, z, cloud.Reach * cap, cloud.Altitude);
-                result.Add(cloud.Altitude + lift - shape.PlateauY, lift);
+                result.AddDrawn(OverlapsBlocking(shapes, cloud.Altitude, x, z, drawn));
             }
+        }
+
+        // The cloud's dissolve share at its place and time, and its drawn footprint radius (0 when it is not drawn).
+        private double DrawnShare(IReadOnlyList<LandmarkSkyShape> shapes, in CloudInstance cloud, double x, double z, double time, out double drawn) {
+            double bias = _influence.GiantBias(shapes, x, z, _wind.Direction(time));
+            double envelope = _scatter.Envelope(cloud, bias);
+            double share = _influence.Dissolve(shapes, x, z, cloud.Reach * _scatter.LargestBoost(cloud.Class), cloud.Altitude);
+            bool isDrawn = envelope > 0.0 && !_influence.IsDissolved(share);
+            drawn = isDrawn ? cloud.Reach * _scatter.SizeBoost(cloud, bias) * envelope * share : 0.0;
+            return share;
+        }
+
+        private bool OverlapsBlocking(IReadOnlyList<LandmarkSkyShape> shapes, double altitude, double x, double z, double drawn) {
+            foreach (LandmarkSkyShape blocking in shapes) {
+                if (blocking.PlateauY + _influence.Settings.BlockMargin > altitude && blocking.DistanceTo(x, z) < drawn) return true;
+            }
+            return false;
         }
 
         private void CountClass(IReadOnlyList<LandmarkSkyShape> shapes, CloudClass cloudClass, double centreX, double centreZ, double radius, double time, WindVector heading, WindVector displacement, CloudDensity result) {

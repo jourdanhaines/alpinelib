@@ -2,9 +2,10 @@ using System;
 
 namespace AlpineLib.Procedural.Sky {
     /// <summary>
-    /// How a cloud field reacts to landmarks (<see cref="ILandmarkSkyProvider"/>): clouds lift clear of every
-    /// landmark's top, and giants gather clouds (orographic clustering) in a zone about them stretched downwind, where
-    /// extra latent clouds condense (packed tighter and grown a little). Regular clouds are never changed but lifted.
+    /// How a cloud field reacts to landmarks (<see cref="ILandmarkSkyProvider"/>): a cloud whose base is below a
+    /// landmark's top dissolves as it nears the rock and re-forms past it (never moving up or down), and giants gather
+    /// clouds (orographic clustering) in a zone about them stretched downwind, where extra latent clouds condense
+    /// (packed tighter and grown a little). The open sky's regular clouds are never changed.
     /// </summary>
     /// <remarks>
     /// A cloud's density is its coverage plus the giant bias at its current position (times its class weight); a
@@ -12,11 +13,17 @@ namespace AlpineLib.Procedural.Sky {
     /// (1 + <see cref="EnvelopeWidth"/>, 1 + <see cref="GiantBias"/>], so no latent cloud shows away from giants.
     /// </remarks>
     public sealed class CloudLandmarkSettings {
-        /// <summary>Least gap kept between a landmark's top and the base of a cloud over it, metres (plus the lift's own margin).</summary>
-        public double LiftClearance { get; set; } = 25.0;
+        /// <summary>A landmark blocks a cloud whose base is below its top plus this, metres.</summary>
+        public double BlockMargin { get; set; } = 5.0;
 
-        /// <summary>Distance outside a hull over which the lift falls from full to none, metres.</summary>
-        public double LiftFalloff { get; set; } = 150.0;
+        /// <summary>Gap from a blocked cloud's footprint edge to the hull at which it has dissolved, metres.</summary>
+        public double DissolveNear { get; set; } = 20.0;
+
+        /// <summary>Gap at which a blocked cloud starts to dissolve, metres.</summary>
+        public double DissolveFar { get; set; } = 180.0;
+
+        /// <summary>Size share below which a dissolving cloud is not drawn at all.</summary>
+        public double DissolveCutoff { get; set; } = 0.05;
 
         /// <summary>Density a giant adds to its zone at full strength.</summary>
         public double GiantBias { get; set; } = 0.6;
@@ -51,7 +58,7 @@ namespace AlpineLib.Procedural.Sky {
         public static CloudLandmarkSettings Default => new CloudLandmarkSettings();
 
         /// <summary>Farthest a landmark's hull can be from a cloud and still change it, metres (past the cloud's own reach).</summary>
-        public double InfluenceReach => Math.Max(LiftFalloff, BiasRadius + BiasDownwind + BiasFade);
+        public double InfluenceReach => Math.Max(DissolveFar, BiasRadius + BiasDownwind + BiasFade);
 
         public double WeightOf(CloudClass cloudClass) {
             return ClassWeights[(int)cloudClass];
@@ -67,8 +74,9 @@ namespace AlpineLib.Procedural.Sky {
 
         /// <summary>Throws when a value is out of range.</summary>
         public void Validate() {
-            if (!(LiftClearance >= 0.0)) throw new ArgumentOutOfRangeException(nameof(LiftClearance), LiftClearance, "Must not be negative.");
-            if (!(LiftFalloff > 0.0)) throw new ArgumentOutOfRangeException(nameof(LiftFalloff), LiftFalloff, "Must be positive.");
+            if (!(BlockMargin >= 0.0)) throw new ArgumentOutOfRangeException(nameof(BlockMargin), BlockMargin, "Must not be negative.");
+            if (!(DissolveNear >= 0.0 && DissolveFar > DissolveNear)) throw new ArgumentOutOfRangeException(nameof(DissolveFar), DissolveFar, "Need 0 <= near < far.");
+            if (!(DissolveCutoff > 0.0 && DissolveCutoff < 1.0)) throw new ArgumentOutOfRangeException(nameof(DissolveCutoff), DissolveCutoff, "Must be in (0, 1).");
             if (!(GiantBias > 0.0 && GiantBias <= 1.0)) throw new ArgumentOutOfRangeException(nameof(GiantBias), GiantBias, "Must be in (0, 1].");
             if (!(BiasRadius >= 0.0 && BiasDownwind >= 0.0 && BiasFade > 0.0)) throw new ArgumentOutOfRangeException(nameof(BiasFade), BiasFade, "Need radius, downwind >= 0 and fade > 0.");
             if (!(SizeBoost >= 0.0)) throw new ArgumentOutOfRangeException(nameof(SizeBoost), SizeBoost, "Must not be negative.");

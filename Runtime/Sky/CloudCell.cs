@@ -20,8 +20,8 @@ namespace AlpineLib.Sky {
         /// <summary>The cell's clouds, in slot order.</summary>
         public List<CloudInstance> Clouds { get; } = new List<CloudInstance>();
 
-        /// <summary>Landmarks whose lift or giant zone may reach this cell's clouds (<see cref="CloudLandmarkIndex.CollectNear"/>), cached per landmark query and 32 m drift step.</summary>
-        public List<LandmarkSkyShape> LiftShapes { get; } = new List<LandmarkSkyShape>();
+        /// <summary>Landmarks that may dissolve this cell's clouds, or whose giant zone may reach them (<see cref="CloudLandmarkIndex.CollectNear"/>), cached per landmark query and 32 m drift step.</summary>
+        public List<LandmarkSkyShape> BlockShapes { get; } = new List<LandmarkSkyShape>();
         public List<LandmarkSkyShape> BiasShapes { get; } = new List<LandmarkSkyShape>();
 
         /// <summary>The <see cref="BiasShapes"/> whose zone under the wind heading <see cref="ZoneHeading"/> (padded for a small turn) reaches the cell.</summary>
@@ -35,8 +35,8 @@ namespace AlpineLib.Sky {
         public long LandmarkStepX { get; set; }
         public long LandmarkStepZ { get; set; }
 
-        /// <summary>Highest landmark top plus the lift clearance among <see cref="LiftShapes"/>: clouds based at or above it never lift here.</summary>
-        public double LiftCeiling { get; set; }
+        /// <summary>Highest landmark top plus the block margin among <see cref="BlockShapes"/>: clouds based at or above it are never blocked here.</summary>
+        public double BlockCeiling { get; set; }
 
         /// <summary>Centre and half-diagonal of the box this cell's clouds stay in at the cached drift step, absolute metres.</summary>
         public double BoxX { get; set; }
@@ -44,7 +44,7 @@ namespace AlpineLib.Sky {
         public double BoxRadius { get; set; }
 
         /// <summary>True when some landmark may change a cloud of this cell.</summary>
-        public bool HasInfluence => LiftShapes.Count > 0 || BiasShapes.Count > 0;
+        public bool HasInfluence => BlockShapes.Count > 0 || BiasShapes.Count > 0;
 
         /// <summary>Clouds before the first latent one (the scatter lists regular clouds first).</summary>
         public int RegularCount { get; private set; }
@@ -108,7 +108,7 @@ namespace AlpineLib.Sky {
         /// <summary>Empties the cell for reuse.</summary>
         public void Clear() {
             Clouds.Clear();
-            LiftShapes.Clear();
+            BlockShapes.Clear();
             BiasShapes.Clear();
             ZoneShapes.Clear();
             ZoneRevision = -1;
