@@ -2,11 +2,20 @@ using System;
 using AlpineLib.Procedural.Grid;
 
 namespace AlpineLib.Procedural.Landmarks {
-    /// <summary>One landmark of a <see cref="LandmarkField"/> tier: where it stands and the seeds it is shaped from.</summary>
+    /// <summary>
+    /// One landmark of a <see cref="LandmarkField"/> tier: where it stands and the seeds it is shaped from. A cluster tier
+    /// member carries its cluster's anchor and offset plus its <see cref="Member"/> placement.
+    /// </summary>
     public readonly struct LandmarkSite : IEquatable<LandmarkSite> {
         /// <summary>Stores a site as given.</summary>
         public LandmarkSite(int tier, CellCoord block, CellCoord anchor, double offsetX, double offsetZ,
-                            ulong shapeSeed, LandmarkDraws uDraws, ulong id, bool isAttracted = false) {
+                            ulong shapeSeed, LandmarkDraws uDraws, ulong id, bool isAttracted = false)
+            : this(tier, block, anchor, offsetX, offsetZ, shapeSeed, uDraws, id, isAttracted, default) { }
+
+        /// <summary>Stores a cluster member site as given.</summary>
+        public LandmarkSite(int tier, CellCoord block, CellCoord anchor, double offsetX, double offsetZ,
+                            ulong shapeSeed, LandmarkDraws uDraws, ulong id, bool isAttracted, LandmarkMember member) {
+            Member = member;
             Tier = tier;
             Block = block;
             Anchor = anchor;
@@ -17,6 +26,9 @@ namespace AlpineLib.Procedural.Landmarks {
             Id = id;
             IsAttracted = isAttracted;
         }
+
+        /// <summary>The cluster placement (default with <see cref="LandmarkMember.Count"/> 0 for a classic tier).</summary>
+        public LandmarkMember Member { get; }
 
         /// <summary>True when the field bias moved the anchor off the drawn one.</summary>
         public bool IsAttracted { get; }
@@ -42,14 +54,15 @@ namespace AlpineLib.Procedural.Landmarks {
         /// <summary>Spare uniform draws.</summary>
         public LandmarkDraws UDraws { get; }
 
-        /// <summary>Stable identity: the tier stream mixed with the packed block.</summary>
+        /// <summary>Stable identity: the tier stream mixed with the packed block (and, for a cluster member, its slot).</summary>
         public ulong Id { get; }
 
         /// <inheritdoc />
         public bool Equals(LandmarkSite other) {
             return Tier == other.Tier && Block == other.Block && Anchor == other.Anchor
                 && OffsetX.Equals(other.OffsetX) && OffsetZ.Equals(other.OffsetZ)
-                && ShapeSeed == other.ShapeSeed && UDraws.Equals(other.UDraws) && Id == other.Id && IsAttracted == other.IsAttracted;
+                && ShapeSeed == other.ShapeSeed && UDraws.Equals(other.UDraws) && Id == other.Id && IsAttracted == other.IsAttracted
+                && Member.Equals(other.Member);
         }
 
         /// <inheritdoc />

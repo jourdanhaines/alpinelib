@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using AlpineLib.Procedural.Grid;
 using AlpineLib.Procedural.Landmarks;
 using Xunit;
@@ -11,6 +12,15 @@ namespace AlpineLib.Server.Tests.Procedural.Landmarks {
                 ulong seed = LandmarkFieldGolden.Seeds[index];
                 Assert.Equal(LandmarkFieldGolden.Fingerprints[index], LandmarkFieldGolden.Fingerprint(seed));
             }
+        }
+
+        [Fact]
+        public void ClusterFingerprintsMatchTheGoldenTable() {
+            var actual = new ulong[LandmarkFieldGolden.Seeds.Length];
+            for (int index = 0; index < actual.Length; index++) {
+                actual[index] = LandmarkFieldGolden.ClusterFingerprint(LandmarkFieldGolden.Seeds[index]);
+            }
+            Assert.True(LandmarkFieldGolden.ClusterFingerprints.SequenceEqual(actual), string.Join(", ", actual.Select((hash) => $"0x{hash:X16}")));
         }
 
         [Fact]

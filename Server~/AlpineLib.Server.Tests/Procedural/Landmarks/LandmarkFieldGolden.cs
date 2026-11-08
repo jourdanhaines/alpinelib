@@ -6,7 +6,7 @@ using AlpineLib.Procedural.Landmarks;
 
 namespace AlpineLib.Server.Tests.Procedural.Landmarks {
     /// <summary>
-    /// Pinned landmark outputs for the preset tiers [Mesa, Giant]. A consumer can port
+    /// Pinned landmark outputs for the preset tiers [Mesa, Giant] and the cluster tiers [Clusters, Lonely]. A consumer can port
     /// <see cref="Fingerprint"/> into a Mono smoke gate and compare against the same constants.
     /// </summary>
     public static class LandmarkFieldGolden {
@@ -24,6 +24,12 @@ namespace AlpineLib.Server.Tests.Procedural.Landmarks {
 
         /// <summary>Pinned <see cref="Fingerprint"/> per entry of <see cref="Seeds"/>.</summary>
         public static readonly ulong[] Fingerprints = { 0xAE4AB05B2B214515UL, 0x3467C11B7586784AUL, 0x421B1E17048F267FUL };
+
+        /// <summary>Pinned <see cref="ClusterFingerprint"/> per entry of <see cref="Seeds"/> for the tiers [Clusters, Lonely].</summary>
+        public static readonly ulong[] ClusterFingerprints = { 0xEC7384AC5F5CA520UL, 0x5923D23CAC069DB9UL, 0xA49560FEF1F30D28UL };
+
+        /// <summary>Lowest cell (both axes) of the cluster fingerprint window, inclusive; the highest is its negation, exclusive.</summary>
+        public const int ClusterWindowMin = -50;
 
         /// <summary>The seed <see cref="Sites"/> and <see cref="AbsentBlocks"/> are pinned for.</summary>
         public const ulong SiteSeed = 42UL;
@@ -47,6 +53,44 @@ namespace AlpineLib.Server.Tests.Procedural.Landmarks {
         /// <summary>The field the golden values come from.</summary>
         public static LandmarkField CreateField(ulong seed) {
             return new LandmarkField(seed, new[] { LandmarkTierSettings.Mesa, LandmarkTierSettings.Giant });
+        }
+
+        /// <summary>The cluster field the cluster golden values come from (no bias).</summary>
+        public static LandmarkField CreateClusterField(ulong seed) {
+            return new LandmarkField(seed, new[] { LandmarkTierSettings.Clusters, LandmarkTierSettings.Lonely });
+        }
+
+        /// <summary>
+        /// FNV-1a 64 over the cluster window (every 5th cell per axis, reach 1): per cell the site count, then each site
+        /// through <see cref="AppendSite"/> followed by <see cref="AppendMember"/>.
+        /// </summary>
+        public static ulong ClusterFingerprint(ulong seed) {
+            LandmarkField field = CreateClusterField(seed);
+            var sites = new List<LandmarkSite>();
+            ulong hash = StableHash.Fnv1a64OffsetBasis;
+            for (int cellY = ClusterWindowMin; cellY < -ClusterWindowMin; cellY += 5) {
+                for (int cellX = ClusterWindowMin; cellX < -ClusterWindowMin; cellX += 5) {
+                    sites.Clear();
+                    field.SitesTouching(new CellCoord(cellX, cellY), Reach, sites);
+                    hash = StableHash.Fnv1a64Append(hash, (uint)sites.Count);
+                    foreach (LandmarkSite site in sites) {
+                        hash = AppendMember(AppendSite(hash, site), site.Member);
+                    }
+                }
+            }
+            return hash;
+        }
+
+        /// <summary>Appends a member: kind, slot, count, large flag, bearing as uint words, then Across, Ring bits and the cluster id low word first.</summary>
+        public static ulong AppendMember(ulong hash, LandmarkMember member) {
+            hash = StableHash.Fnv1a64Append(hash, (uint)member.Kind);
+            hash = StableHash.Fnv1a64Append(hash, (uint)member.Slot);
+            hash = StableHash.Fnv1a64Append(hash, (uint)member.Count);
+            hash = StableHash.Fnv1a64Append(hash, member.IsLarge ? 1u : 0u);
+            hash = StableHash.Fnv1a64Append(hash, (uint)member.BearingDegrees);
+            hash = AppendULong(hash, (ulong)BitConverter.DoubleToInt64Bits(member.Across));
+            hash = AppendULong(hash, (ulong)BitConverter.DoubleToInt64Bits(member.Ring));
+            return AppendULong(hash, member.ClusterId);
         }
 
         /// <summary>
