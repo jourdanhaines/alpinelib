@@ -4,7 +4,7 @@ using System.Numerics;
 
 namespace AlpineLib.Procedural.Meshing {
     /// <summary>
-    /// How a set of envelope boxes and spheres sits around its look, for gates: the standoff of exposed collider
+    /// How a set of envelope boxes, spheres and prisms sits around its look, for gates: the standoff of exposed collider
     /// surface from the look in a height band (an invisible wall where it is large) and the air under exposed
     /// walkable collider tops (an invisible ledge). Sample spacing is <see cref="Spacing"/>; distances are capped.
     /// </summary>
@@ -17,13 +17,24 @@ namespace AlpineLib.Procedural.Meshing {
 
         private readonly IReadOnlyList<EnvelopeBox> _boxes;
         private readonly IReadOnlyList<EnvelopeSphere> _spheres;
+        private readonly IReadOnlyList<EnvelopePrism> _prisms;
         private readonly TriangleProximity _look;
         private double _worst;
 
         /// <summary>Metrics of <paramref name="boxes"/> and <paramref name="spheres"/> around the faces of <paramref name="corners"/>.</summary>
-        public EnvelopeMetrics(IReadOnlyList<Vector3> corners, IReadOnlyList<EnvelopeBox> boxes, IReadOnlyList<EnvelopeSphere> spheres, double spacing) {
+        public EnvelopeMetrics(IReadOnlyList<Vector3> corners, IReadOnlyList<EnvelopeBox> boxes, IReadOnlyList<EnvelopeSphere> spheres, double spacing)
+            : this(corners, boxes, spheres, null, spacing) { }
+
+        /// <summary>Metrics of <paramref name="boxes"/>, <paramref name="spheres"/> and <paramref name="prisms"/> around the faces of <paramref name="corners"/>.</summary>
+        public EnvelopeMetrics(
+            IReadOnlyList<Vector3> corners,
+            IReadOnlyList<EnvelopeBox> boxes,
+            IReadOnlyList<EnvelopeSphere> spheres,
+            IReadOnlyList<EnvelopePrism> prisms,
+            double spacing) {
             _boxes = boxes ?? Array.Empty<EnvelopeBox>();
             _spheres = spheres ?? Array.Empty<EnvelopeSphere>();
+            _prisms = prisms ?? Array.Empty<EnvelopePrism>();
             Spacing = spacing;
             _look = new TriangleProximity(corners, Math.Max(spacing * 4.0, 0.5));
         }
@@ -38,7 +49,7 @@ namespace AlpineLib.Procedural.Meshing {
         public double Spacing { get; }
 
         /// <summary>
-        /// Distances (ascending) from exposed side-face points of the boxes and surface points of the spheres with
+        /// Distances (ascending) from exposed side-face points of the boxes and prisms and surface points of the spheres with
         /// heights in [<paramref name="low"/>, <paramref name="high"/>] to the nearest look face, each at most <paramref name="cap"/>.
         /// </summary>
         public List<double> Standoff(double low, double high, double cap) {
@@ -46,19 +57,21 @@ namespace AlpineLib.Procedural.Meshing {
             _worst = double.NegativeInfinity;
             for (int index = 0; index < _boxes.Count; index++) BoxSides(index, low, high, cap, distances);
             for (int index = 0; index < _spheres.Count; index++) SphereSurface(index, low, high, cap, distances);
+            for (int index = 0; index < _prisms.Count; index++) PrismSides(index, low, high, cap, distances);
             distances.Sort();
             return distances;
         }
 
         /// <summary>
         /// Air (ascending) between exposed walkable collider tops with heights in [<paramref name="low"/>, <paramref name="high"/>]
-        /// and the look or <paramref name="ground"/> under them: box tops, and sphere surface no steeper than 45°.
+        /// and the look or <paramref name="ground"/> under them: box and prism caps, and sphere surface no steeper than 45°.
         /// </summary>
         public List<double> LedgeAir(double ground, double low, double high) {
             var air = new List<double>();
             _worst = double.NegativeInfinity;
             for (int index = 0; index < _boxes.Count; index++) BoxTop(index, ground, low, high, air);
             for (int index = 0; index < _spheres.Count; index++) SphereCap(index, ground, low, high, air);
+            for (int index = 0; index < _prisms.Count; index++) PrismTop(index, ground, low, high, air);
             air.Sort();
             return air;
         }
@@ -93,7 +106,7 @@ namespace AlpineLib.Procedural.Meshing {
                 for (int row = 0; row <= rows; row++) {
                     Vector3 point = middle + along * (float)(-width + 2.0 * width * column / columns);
                     point.Y = (float)(bottom + (top - bottom) * row / rows);
-                    if (!IsCovered(point + normal * (float)CoveredTolerance, index, -1)) AddStandoff(point, _look.Distance(point, cap), distances);
+                    if (!IsCovered(point + normal * (float)CoveredTolerance, index, -1, -1)) AddStandoff(point, _look.Distance(point, cap), distances);
                 }
             }
         }
@@ -102,7 +115,7 @@ namespace AlpineLib.Procedural.Meshing {
             EnvelopeSphere sphere = _spheres[index];
             foreach (Vector3 normal in SphereNormals()) {
                 Vector3 point = sphere.Center + normal * sphere.Radius;
-                if (point.Y < low || point.Y > high || IsCovered(point + normal * (float)CoveredTolerance, -1, index)) continue;
+                if (point.Y < low || point.Y > high || IsCovered(point + normal * (float)CoveredTolerance, -1, index, -1)) continue;
 
                 AddStandoff(point, _look.Distance(point, cap), distances);
             }
@@ -137,6 +150,68 @@ namespace AlpineLib.Procedural.Meshing {
             }
         }
 
+        // Every side face of the prism, sampled on a grid of about the spacing along the edge and up the band.
+        private void PrismSides(int index, double low, double high, double cap, List<double> distances) {
+            EnvelopePrism prism = _prisms[index];
+            double bottom = Math.Max(low, prism.Bottom);
+            double top = Math.Min(high, prism.Top);
+            if (bottom > top) return;
+
+            int rows = Math.Max(1, (int)Math.Ceiling((top - bottom) / Spacing));
+            for (int edge = 0; edge < prism.Plan.Count; edge++) {
+                PlanPoint start = prism.Plan[edge];
+                PlanPoint end = prism.Plan[(edge + 1) % prism.Plan.Count];
+                double edgeX = end.X - start.X, edgeZ = end.Z - start.Z;
+                double length = Math.Sqrt(edgeX * edgeX + edgeZ * edgeZ);
+                if (!(length > 0.0)) continue;
+
+                var normal = new Vector3((float)(edgeZ / length), 0f, (float)(-edgeX / length));
+                int columns = Math.Max(1, (int)Math.Ceiling(length / Spacing));
+                for (int column = 0; column <= columns; column++) {
+                    double share = (double)column / columns;
+                    for (int row = 0; row <= rows; row++) {
+                        var point = new Vector3((float)(start.X + edgeX * share), (float)(bottom + (top - bottom) * row / rows), (float)(start.Z + edgeZ * share));
+                        if (!IsCovered(point + normal * (float)CoveredTolerance, -1, -1, index)) AddStandoff(point, _look.Distance(point, cap), distances);
+                    }
+                }
+            }
+        }
+
+        // The cap sampled on the plan grid inside the polygon and along its rim.
+        private void PrismTop(int index, double ground, double low, double high, List<double> air) {
+            EnvelopePrism prism = _prisms[index];
+            if (prism.Top < low || prism.Top > high) return;
+
+            foreach (PlanPoint sample in CapSamples(prism.Plan)) {
+                var point = new Vector3((float)sample.X, (float)(prism.Top + TopLift), (float)sample.Z);
+                if (!IsInsideAny(point)) AddLedge(point, prism.Top - _look.HeightBelow(point.X, point.Z, prism.Top + OverTop, ground), air);
+            }
+        }
+
+        private List<PlanPoint> CapSamples(IReadOnlyList<PlanPoint> plan) {
+            var samples = new List<PlanPoint>();
+            double minX = double.PositiveInfinity, maxX = double.NegativeInfinity, minZ = double.PositiveInfinity, maxZ = double.NegativeInfinity;
+            for (int edge = 0; edge < plan.Count; edge++) {
+                PlanPoint start = plan[edge];
+                PlanPoint end = plan[(edge + 1) % plan.Count];
+                minX = Math.Min(minX, start.X);
+                maxX = Math.Max(maxX, start.X);
+                minZ = Math.Min(minZ, start.Z);
+                maxZ = Math.Max(maxZ, start.Z);
+                int steps = Math.Max(1, (int)Math.Ceiling(Math.Sqrt((end.X - start.X) * (end.X - start.X) + (end.Z - start.Z) * (end.Z - start.Z)) / Spacing));
+                for (int step = 0; step < steps; step++) samples.Add(new PlanPoint(start.X + (end.X - start.X) * step / steps, start.Z + (end.Z - start.Z) * step / steps));
+            }
+            int columns = Math.Max(1, (int)Math.Ceiling((maxX - minX) / Spacing));
+            int rows = Math.Max(1, (int)Math.Ceiling((maxZ - minZ) / Spacing));
+            for (int column = 1; column < columns; column++) {
+                for (int row = 1; row < rows; row++) {
+                    double x = minX + (maxX - minX) * column / columns, z = minZ + (maxZ - minZ) * row / rows;
+                    if (ConvexPlan.Distance(plan, x, z) <= 0.0) samples.Add(new PlanPoint(x, z));
+                }
+            }
+            return samples;
+        }
+
         private void AddStandoff(Vector3 point, double distance, List<double> distances) {
             distances.Add(distance);
             if (distance <= _worst) return;
@@ -167,12 +242,15 @@ namespace AlpineLib.Procedural.Meshing {
 
         // True when the point (a surface sample pushed just off its own collider) lies in any other collider:
         // the surface there is inside the union, not exposed.
-        private bool IsCovered(Vector3 point, int boxIndex, int sphereIndex) {
+        private bool IsCovered(Vector3 point, int boxIndex, int sphereIndex, int prismIndex) {
             for (int index = 0; index < _boxes.Count; index++) {
                 if (index != boxIndex && _boxes[index].DistanceOutside(point) <= 0.0) return true;
             }
             for (int index = 0; index < _spheres.Count; index++) {
                 if (index != sphereIndex && _spheres[index].DistanceOutside(point) <= 0.0) return true;
+            }
+            for (int index = 0; index < _prisms.Count; index++) {
+                if (index != prismIndex && _prisms[index].DistanceOutside(point) <= 0.0) return true;
             }
             return false;
         }
@@ -183,6 +261,9 @@ namespace AlpineLib.Procedural.Meshing {
             }
             foreach (EnvelopeSphere sphere in _spheres) {
                 if (sphere.DistanceOutside(point) <= 0.0) return true;
+            }
+            foreach (EnvelopePrism prism in _prisms) {
+                if (prism.DistanceOutside(point) <= 0.0) return true;
             }
             return false;
         }
