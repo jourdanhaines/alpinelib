@@ -50,12 +50,14 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
             for (int pillar = 0; pillar < 6; pillar++) look.AddRange(EnvelopeShapes.Cuboid(new Vector3(pillar * 2f, 1.5f, (pillar % 2) * 2f), new Vector3(0.4f, 1.5f, 0.4f), pillar * 10));
 
             PrismEnvelopeFit fit = PrismEnvelopeFitter.Fit(look, new PrismEnvelopeSettings { MaxPrisms = 10, Strict = false });
+            PrismEnvelopeFit tight = PrismEnvelopeFitter.Fit(look, new PrismEnvelopeSettings { MaxPrisms = 4, Strict = false });
             _output.WriteLine(fit.Report);
 
             Assert.InRange(fit.Prisms.Count, 1, 10);
+            Assert.InRange(tight.Prisms.Count, 1, 4);
             Assert.InRange(fit.WorstOutside, 0.0, 0.05);
-            Assert.False(fit.MeetsTargets);
-            InvalidOperationException strict = Assert.Throws<InvalidOperationException>(() => PrismEnvelopeFitter.Fit(look, new PrismEnvelopeSettings { MaxPrisms = 10 }));
+            Assert.False(tight.MeetsTargets);
+            InvalidOperationException strict = Assert.Throws<InvalidOperationException>(() => PrismEnvelopeFitter.Fit(look, new PrismEnvelopeSettings { MaxPrisms = 4 }));
             Assert.Contains("standoff p90", strict.Message);
         }
 
@@ -186,21 +188,51 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
         }
 
         [Fact]
-        public void TheBudgetRunsOutAboveTheWalkingBandFirst() {
-            var calm = new List<Vector3>();
-            for (int index = 0; index < 24; index++) {
-                double angle = 2.0 * Math.PI * index / 24.0;
-                calm.Add(new Vector3((float)(2.0 * Math.Cos(angle)), 0f, (float)(2.0 * Math.Sin(angle))));
-            }
-            List<Vector3> look = EnvelopeShapes.Prism(calm, -0.2f, 2.2f, Vector3.Zero);
-            look.AddRange(EnvelopeShapes.Prism(EnvelopeShapes.NoisyRing(24, 3f, 0.4f, 9), 2.4f, 3.4f, Vector3.Zero));
+        public void TheWalkingBandMeetsItsGatesBeforeAJaggedReachBandSpends() {
+            List<Vector3> look = JaggedWalkingAndReach();
 
-            PrismEnvelopeFit fit = PrismEnvelopeFitter.Fit(look, new PrismEnvelopeSettings { MaxPrisms = 4, Strict = false });
+            PrismEnvelopeFit fit = PrismEnvelopeFitter.Fit(look, new PrismEnvelopeSettings { MaxPrisms = 7, Strict = false });
             _output.WriteLine(fit.Report);
 
             Assert.InRange(fit.StandoffP90, 0.0, 0.3);
             Assert.InRange(fit.StandoffMax, 0.0, 0.5);
-            Assert.InRange(fit.Prisms.Count, 1, 4);
+            Assert.InRange(fit.Prisms.Count, 1, 7);
+        }
+
+        [Fact]
+        public void MoreBudgetNeverTurnsAPassIntoAMiss() {
+            List<Vector3> look = JaggedWalkingAndReach();
+            bool passed = false;
+            double failingScore = double.PositiveInfinity;
+            for (int budget = 6; budget <= 48; budget++) {
+                var settings = new PrismEnvelopeSettings { MaxPrisms = budget, Strict = false };
+                PrismEnvelopeFit fit = PrismEnvelopeFitter.Fit(look, settings);
+                double score = Math.Max(fit.StandoffP90 / settings.StandoffP90Target, Math.Max(fit.StandoffMax / settings.StandoffMaxTarget, fit.LedgeAirMax / settings.LedgeAirMax));
+                Assert.InRange(fit.Prisms.Count, 1, budget);
+                Assert.False(passed && !fit.MeetsTargets, "Budget " + budget + " misses where a smaller budget passed.");
+                Assert.True(fit.MeetsTargets || score <= failingScore + 1e-9, "Budget " + budget + " fits worse than a smaller one.");
+                passed |= fit.MeetsTargets;
+                if (!fit.MeetsTargets) failingScore = score;
+            }
+            Assert.True(passed);
+        }
+
+        // A ten-point star 2.3 m tall (the walking band) under a jagged fourteen-point star from 2.3 m to 3.6 m.
+        private static List<Vector3> JaggedWalkingAndReach() {
+            List<Vector3> look = EnvelopeShapes.Prism(Star(10, 3.0, 1.2, 1), -0.2f, 2.3f, Vector3.Zero);
+            look.AddRange(EnvelopeShapes.Prism(Star(14, 3.0, 2.0, 2), 2.3f, 3.6f, Vector3.Zero));
+            return look;
+        }
+
+        private static List<Vector3> Star(int points, double radius, double amplitude, int seed) {
+            var random = new Random(seed);
+            var ring = new List<Vector3>(points);
+            for (int index = 0; index < points; index++) {
+                double angle = 2.0 * Math.PI * index / points;
+                double reach = radius + (index % 2 == 0 ? amplitude : -amplitude) * random.NextDouble();
+                ring.Add(new Vector3((float)(reach * Math.Cos(angle)), 0f, (float)(reach * Math.Sin(angle))));
+            }
+            return ring;
         }
 
         // A capped 12-sided column 4 m tall, sunk 0.2 m, its rings leaning 0.16 m per metre along +x.

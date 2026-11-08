@@ -52,11 +52,18 @@ namespace AlpineLib.Procedural.Meshing {
         public double Spacing { get; }
 
         /// <summary>
-        /// A prism cap strip within this plan distance of another prism that rises above the cap is a lip against a
-        /// wall, not a ledge, and leaves no air in <see cref="LedgeAir"/>; level or lower neighbours never hide a cap.
-        /// Defaults to 0.02 here; <see cref="PrismEnvelopeFitter"/> sets <see cref="PrismEnvelopeSettings.LedgeLip"/>.
+        /// A prism cap strip within this plan distance of another prism that reaches at least <see cref="LipRise"/>
+        /// above the cap and starts within a capsule diameter (twice this) above it is a lip against a wall, not a
+        /// ledge, and leaves no air in <see cref="LedgeAir"/>; lower neighbours never hide a cap. Look metres (callers pass the capsule radius over the look's scale). Defaults to
+        /// 0.02; <see cref="PrismEnvelopeFitter"/> sets <see cref="PrismEnvelopeSettings.LedgeLip"/>.
         /// </summary>
         public double LedgeLip { get; set; } = CoveredTolerance;
+
+        /// <summary>
+        /// How far above a cap a neighbour must rise before a capsule on the cap's lip touches it, look metres.
+        /// Defaults to 0.15.
+        /// </summary>
+        public double LipRise { get; set; } = 0.15;
 
         /// <summary>
         /// Distances (ascending) from exposed side-face points of the boxes and prisms and surface points of the spheres with
@@ -276,7 +283,8 @@ namespace AlpineLib.Procedural.Meshing {
         private bool IsNearOtherPrism(Vector3 point, int prismIndex) {
             for (int index = 0; index < _prisms.Count; index++) {
                 EnvelopePrism other = _prisms[index];
-                if (index == prismIndex || other.Bottom > point.Y || other.Top <= point.Y) continue;
+                double cap = point.Y - TopLift;
+                if (index == prismIndex || other.Bottom > cap + 2.0 * LedgeLip || other.Top < cap + LipRise) continue;
                 if (other.PlanHolds(point.X, point.Z, LedgeLip)) return true;
             }
             return false;

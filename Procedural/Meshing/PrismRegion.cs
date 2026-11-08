@@ -16,13 +16,14 @@ namespace AlpineLib.Procedural.Meshing {
     internal sealed class PrismRegion {
         private const double DistanceCap = 10.0;
         private const int OverSampleCount = 48;
-        private const int TwoNotchTries = 1;
+        private const int TwoNotchTries = 4;
 
         // A split leaving a rectangle fallback is chosen only when nothing else divides the piece.
         private const double FallbackPenalty = 100.0;
 
         private readonly PrismEnvelopeSettings _settings;
         private double _target;
+        private int _maxKind = PrismLayer.Reach;
         private readonly List<int> _groups = new List<int>();
 
         // Pairs whose merge missed target; targets only tighten, so they would miss again.
@@ -65,7 +66,7 @@ namespace AlpineLib.Procedural.Meshing {
             List<List<PlanPoint>> whole = WholeRegion();
             int groups = 1;
             for (int layer = 1; layer < Layers.Count; layer++) groups += _groups[layer] != _groups[layer - 1] ? 1 : 0;
-            if (groups > budget) {
+            if (groups * 2 > budget) {
                 StartCoarsely(whole, budget);
                 return;
             }
@@ -80,10 +81,26 @@ namespace AlpineLib.Procedural.Meshing {
             Merge();
         }
 
+        // Feet, walking band and reach band as one piece each, as far as the budget allows.
         private void StartCoarsely(List<List<PlanPoint>> whole, int budget) {
-            bool feetApart = budget >= 2 && Layers.Count > 1 && Layers[0].Kind == PrismLayer.Feet;
-            if (feetApart) AddStartPiece(0, 0, whole);
-            AddStartPiece(feetApart ? 1 : 0, Layers.Count - 1, whole);
+            int first = 0;
+            if (budget >= 2 && Layers.Count > 1 && Layers[0].Kind == PrismLayer.Feet) {
+                AddStartPiece(0, 0, whole);
+                first = 1;
+            }
+            int reach = FirstReachLayer();
+            if (budget >= 3 && reach > first && reach < Layers.Count) {
+                AddStartPiece(first, reach - 1, whole);
+                first = reach;
+            }
+            if (first < Layers.Count) AddStartPiece(first, Layers.Count - 1, whole);
+        }
+
+        private int FirstReachLayer() {
+            for (int layer = 0; layer < Layers.Count; layer++) {
+                if (Layers[layer].Kind == PrismLayer.Reach) return layer;
+            }
+            return Layers.Count;
         }
 
         private void AddStartPiece(int first, int last, List<List<PlanPoint>> whole) {
@@ -93,9 +110,23 @@ namespace AlpineLib.Procedural.Meshing {
             if (Evaluate(piece)) Pieces.Add(piece);
         }
 
-        /// <summary>Sets the standoff a piece may keep and re-measures every piece against it.</summary>
-        public void SetTarget(double target) {
+        /// <summary>Drops every piece so the region can be fitted again from its layers.</summary>
+        public void Reset() {
+            Pieces.Clear();
+            _failedMerges.Clear();
+            _target = _settings.StandoffMaxTarget * _settings.PieceStandoffShare;
+            _maxKind = PrismLayer.Reach;
+        }
+
+        /// <summary>
+        /// Sets the standoff a piece may keep and the least important layer kind the phase answers for (layers of a
+        /// higher kind are not measured), and re-measures every piece.
+        /// </summary>
+        public void SetPhase(double target, int maxKind) {
+            // A merge that missed a target misses any tighter one, so failures are kept unless the target loosens.
+            if (target > _target) _failedMerges.Clear();
             _target = target;
+            _maxKind = maxKind;
             foreach (PrismPiece piece in Pieces) {
                 piece.Unsplittable = false;
                 Evaluate(piece);
@@ -217,6 +248,7 @@ namespace AlpineLib.Procedural.Meshing {
             for (int first = 0; first < Pieces.Count; first++) {
                 for (int second = first + 1; second < Pieces.Count; second++) {
                     if (!AreNear(Pieces[first], Pieces[second]) || _failedMerges.Contains((Pieces[first], Pieces[second]))) continue;
+                    if (!IsMeasured(Pieces[first]) || !IsMeasured(Pieces[second])) continue;
                     if (!BridgesHold(Pieces[first], Pieces[second])) {
                         _failedMerges.Add((Pieces[first], Pieces[second]));
                         continue;
@@ -235,6 +267,14 @@ namespace AlpineLib.Procedural.Meshing {
                 }
             }
             return merges;
+        }
+
+        // True when every layer the piece spans is measured in this phase, so a merge with it can be judged whole.
+        private bool IsMeasured(PrismPiece piece) {
+            for (int layer = piece.FirstLayer; layer <= piece.LastLayer; layer++) {
+                if (Layers[layer].Kind > _maxKind) return false;
+            }
+            return true;
         }
 
         // A child that kept the parent's layers and plan divided nothing.

@@ -78,10 +78,14 @@ namespace AlpineLib.Procedural.Meshing {
         public double LedgeAirMax { get; set; } = 0.35;
 
         /// <summary>
-        /// Cap strips narrower than this against a prism rising above the cap are lips no capsule stands on, look
-        /// metres: a capsule centred on such a strip overlaps that prism. Defaults to the default capsule radius.
+        /// Cap strips narrower than this against a prism rising at least <see cref="LipRise"/> above the cap are lips no
+        /// capsule stands on. LOOK metres: callers pass the pawn's capsule radius over <see cref="MaxScale"/> (0.48 /
+        /// MaxScale for the default pawn). Defaults to 0.35.
         /// </summary>
         public double LedgeLip { get; set; } = 0.35;
+
+        /// <summary>How far a neighbouring prism must rise above a cap for its lip to count, LOOK metres (0.15 / MaxScale).</summary>
+        public double LipRise { get; set; } = 0.15;
 
         /// <summary>Highest cap counted as reachable for the ledge rule.</summary>
         public double ReachableTop { get; set; } = 1.5;

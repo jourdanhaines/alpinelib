@@ -8,9 +8,12 @@ namespace AlpineLib.Procedural.Meshing {
     /// <summary>
     /// Fits stacked vertical convex prisms (up to 16 plan vertices) to a look so a walking capsule meets no invisible
     /// wall. Everything up to the jump reach is a <see cref="PrismRegion"/> of thin layers: feet (just under the motor's
-    /// real step), the fine walking band, then the reach band. Pieces start one per band and merge where they can; the
-    /// piece furthest over its standoff target (gate layers first, then the rest of the walking band, the feet, the
-    /// reach) is split in plan or in height, first against the max target, then the p90 target, within the budget.
+    /// real step), the fine walking band, then the reach band. Pieces start one per band (one for the feet, walking and
+    /// reach bands when the budget is short) and merge where they can; the piece furthest over its standoff target
+    /// (gate layers first, then the rest of the walking band, the feet, the reach) is split in plan or in height,
+    /// first against the max target, then the p90 target, within the budget. When that misses a gate the fit is
+    /// redone walking first (the walking band to both targets before the reach spends anything) and the closer of the
+    /// two is kept.
     /// The final metric then drives forced cuts through any ledge or standoff it still finds. The budget left buys
     /// containment-only bands above the jump reach, one per plateau tier. A sampled containment check refuses a fit
     /// that leaves the look outside.
@@ -42,23 +45,43 @@ namespace AlpineLib.Procedural.Meshing {
             if (corners.Count % 3 != 0) throw new ArgumentException("Corners must come three per face.", nameof(corners));
 
             settings.Validate();
+            PrismEnvelopeFit best = null;
+            var layout = new PrismRegionLayout(corners, settings);
+            foreach (bool walkingFirst in new[] { false, true }) {
+                PrismEnvelopeFit fit = FitOnce(corners, settings, layout, walkingFirst);
+                if (best == null || GateScore(fit, settings) < GateScore(best, settings)) best = fit;
+                if (best.MeetsTargets) break;
+            }
+            if (settings.Strict && !best.MeetsTargets) throw new InvalidOperationException("Prism fit misses its targets: " + best.Missed + ".\n" + best.Report);
+
+            return best;
+        }
+
+        // How far the fit is from its gates: the worst of standoff p90, max and ledge air over their targets.
+        private static double GateScore(PrismEnvelopeFit fit, PrismEnvelopeSettings settings) {
+            double standoff = Math.Max(fit.StandoffP90 / settings.StandoffP90Target, fit.StandoffMax / settings.StandoffMaxTarget);
+            return Math.Max(standoff, fit.LedgeAirMax / settings.LedgeAirMax);
+        }
+
+        // One fit: the whole region to the max target and then the p90 target, or walking first (the gate and walking
+        // layers to both targets before the feet and the reach band spend anything). Fit runs the first and, when it
+        // misses a gate, the second, keeping whichever is closer to its gates.
+        private static PrismEnvelopeFit FitOnce(IReadOnlyList<Vector3> corners, PrismEnvelopeSettings settings, PrismRegionLayout layout, bool walkingFirst) {
             var edges = new List<double>();
             var coarse = new List<PrismPiece>();
-            PrismRegion region = null;
+            PrismRegion region = layout.Region;
             string ranOut = string.Empty;
-            if (corners.Count > 0) {
-                LookRange(corners, out double low, out double high);
-                double reachTop = Math.Min(high, ConvexPlan.Round(settings.LookHeight(settings.JumpReach)));
+            if (region != null) {
+                region.Reset();
+                double high = layout.High, reachTop = layout.ReachTop;
                 bool hasUpper = high > reachTop + HeightEpsilon;
-                List<(double Bottom, double Top, int Kind, int Group)> slabs = RegionSlabs(settings, low, reachTop);
-                region = new PrismRegion(corners, slabs, settings);
-                foreach ((double bottom, double _, int _, int _) in slabs) edges.Add(bottom);
+                foreach (PrismLayer layer in region.Layers) edges.Add(layer.Bottom);
                 edges.Add(reachTop);
                 List<double> single = hasUpper ? new List<double> { reachTop, high } : new List<double>();
                 int budget = settings.MaxPrisms - (hasUpper ? 1 : 0);
                 if (region.HasLook) {
                     region.Start(budget);
-                    ranOut = Refine(corners, settings, region, CoarsePieces(corners, settings, single), budget);
+                    ranOut = Refine(corners, settings, region, CoarsePieces(corners, settings, single), budget, walkingFirst);
                 }
 
                 // The budget the walking band left buys the plateau tiers above the jump reach, at least one band.
@@ -70,7 +93,8 @@ namespace AlpineLib.Procedural.Meshing {
             return Finish(corners, settings, edges, region, coarse, ranOut);
         }
 
-        private static void LookRange(IReadOnlyList<Vector3> corners, out double low, out double high) {
+        /// <summary>The lowest and highest look points, rounded outward to the grid.</summary>
+        internal static void LookRange(IReadOnlyList<Vector3> corners, out double low, out double high) {
             low = double.PositiveInfinity;
             high = double.NegativeInfinity;
             foreach (Vector3 corner in corners) {
@@ -83,7 +107,7 @@ namespace AlpineLib.Procedural.Meshing {
 
         // The feet layer, the fine bands cut into layers no taller than the minimum band, the reach band in coarser
         // layers; each band is a group that starts as one piece.
-        private static List<(double Bottom, double Top, int Kind, int Group)> RegionSlabs(PrismEnvelopeSettings settings, double low, double top) {
+        internal static List<(double Bottom, double Top, int Kind, int Group)> RegionSlabs(PrismEnvelopeSettings settings, double low, double top) {
             var slabs = new List<(double Bottom, double Top, int Kind, int Group)>();
             double feetTop = ConvexPlan.Round(settings.LookHeight(settings.FeetTop));
             double walkingTop = ConvexPlan.Round(settings.LookHeight(settings.WalkingTop));
@@ -202,15 +226,23 @@ namespace AlpineLib.Procedural.Meshing {
 
         // Splits the worst piece over target, most important kind first, within the budget; then merges, a few rounds.
         // Returns where the budget ran out, or an empty string.
-        // First every piece is brought under the standoff max target, then, with the budget left, under the p90
-        // target (the max is a hard gate, the p90 only needs most samples close); then the final metric's misses
-        // are repaired where budget remains.
-        private static string Refine(IReadOnlyList<Vector3> corners, PrismEnvelopeSettings settings, PrismRegion region, List<PrismPiece> coarse, int budget) {
-            string ranOut = RefineTo(region, budget);
-            region.SetTarget(settings.StandoffP90Target * settings.PieceStandoffShare);
-            string ranOutLater = RefineTo(region, budget);
-            RepairLedges(corners, settings, region, coarse, budget);
-            return ranOut.Length > 0 ? ranOut : ranOutLater;
+        // Walking band first: its gate and walking layers go under the standoff max target, then the p90 target;
+        // only then are the feet and the reach band brought to the same two targets with the budget left (the max is
+        // a hard gate, the p90 only needs most samples close). Last, the final metric's misses are repaired.
+        private static string Refine(IReadOnlyList<Vector3> corners, PrismEnvelopeSettings settings, PrismRegion region, List<PrismPiece> coarse, int budget, bool walkingFirst) {
+            double maxTarget = settings.StandoffMaxTarget * settings.PieceStandoffShare;
+            double p90Target = settings.StandoffP90Target * settings.PieceStandoffShare;
+            (double Target, int MaxKind)[] phases = walkingFirst
+                ? new[] { (maxTarget, PrismLayer.Walking), (p90Target, PrismLayer.Walking), (maxTarget, PrismLayer.Reach), (p90Target, PrismLayer.Reach) }
+                : new[] { (maxTarget, PrismLayer.Reach), (p90Target, PrismLayer.Reach) };
+            string ranOut = string.Empty;
+            foreach ((double target, int maxKind) in phases) {
+                region.SetPhase(target, maxKind);
+                string phaseRanOut = RefineTo(region, budget);
+                if (ranOut.Length == 0) ranOut = phaseRanOut;
+            }
+            string repairRanOut = RepairLedges(corners, settings, region, coarse, budget);
+            return ranOut.Length > 0 ? ranOut : repairRanOut;
         }
 
         private static string RefineTo(PrismRegion region, int budget) {
@@ -224,8 +256,8 @@ namespace AlpineLib.Procedural.Meshing {
 
         // Cuts where the final metric finds the worst reachable ledge, else the worst side standoff, while a gate is
         // missed and budget remains.
-        // Returns true once the gates pass.
-        private static bool RepairLedges(IReadOnlyList<Vector3> corners, PrismEnvelopeSettings settings, PrismRegion region, List<PrismPiece> coarse, int budget) {
+        // Returns where the budget ran out, or an empty string.
+        private static string RepairLedges(IReadOnlyList<Vector3> corners, PrismEnvelopeSettings settings, PrismRegion region, List<PrismPiece> coarse, int budget) {
             for (int round = 0; round < RepairRounds; round++) {
                 var prisms = new List<EnvelopePrism>();
                 foreach (PrismPiece piece in region.Pieces) prisms.Add(piece.ToPrism());
@@ -234,16 +266,18 @@ namespace AlpineLib.Procedural.Meshing {
                 List<double> air = metrics.LedgeAir(settings.Ground, settings.LookHeight(settings.StepOffset), settings.LookHeight(settings.ReachableTop));
                 if (EnvelopeMetrics.Quantile(air, 1.0) > settings.LedgeAirMax) {
                     Vector3 spot = metrics.WorstLedgePoint;
-                    if (region.Pieces.Count >= budget || !region.ForceCapCut(new Vector3(spot.X, spot.Y - 0.02f, spot.Z))) return false;
+                    if (region.Pieces.Count >= budget) return "budget ran out repairing a ledge at " + spot;
+                    if (!region.ForceCapCut(new Vector3(spot.X, spot.Y - 0.02f, spot.Z))) return string.Empty;
 
                     continue;
                 }
 
                 List<double> standoff = metrics.Standoff(settings.LookHeight(settings.WalkingLow), settings.LookHeight(settings.GateTop), StandoffCap);
-                if (!(EnvelopeMetrics.Quantile(standoff, 1.0) > settings.StandoffMaxTarget) && !(EnvelopeMetrics.Quantile(standoff, 0.9) > settings.StandoffP90Target)) return true;
-                if (region.Pieces.Count >= budget || !region.ForceSideCut(metrics.WorstStandoffPoint)) return false;
+                if (!(EnvelopeMetrics.Quantile(standoff, 1.0) > settings.StandoffMaxTarget) && !(EnvelopeMetrics.Quantile(standoff, 0.9) > settings.StandoffP90Target)) return string.Empty;
+                if (region.Pieces.Count >= budget) return "budget ran out repairing a side at " + metrics.WorstStandoffPoint;
+                if (!region.ForceSideCut(metrics.WorstStandoffPoint)) return string.Empty;
             }
-            return false;
+            return string.Empty;
         }
 
         private static string SplitWhileOver(PrismRegion region, int budget) {
@@ -282,9 +316,7 @@ namespace AlpineLib.Procedural.Meshing {
             int fallbacks = 0;
             foreach (PrismPiece piece in pieces) fallbacks += piece.FellBack ? 1 : 0;
             string report = Report(pieces, region == null ? 0 : region.Pieces.Count, standoffP90, standoffMax, ledgeAirMax, worstOutside, fallbacks, settings);
-            if (settings.Strict && missed.Length > 0) throw new InvalidOperationException("Prism fit misses its targets: " + missed + ".\n" + report);
-
-            return new PrismEnvelopeFit(prisms, edges, metrics, standoffP90, standoffMax, ledgeAirMax, worstOutside, fallbacks, missed.Length == 0, report);
+            return new PrismEnvelopeFit(prisms, edges, metrics, standoffP90, standoffMax, ledgeAirMax, worstOutside, fallbacks, missed, report);
         }
 
         // Comma-separated targets the fit misses; empty when it meets them all.
@@ -298,7 +330,7 @@ namespace AlpineLib.Procedural.Meshing {
         }
 
         private static EnvelopeMetrics Metrics(IReadOnlyList<Vector3> corners, List<EnvelopePrism> prisms, PrismEnvelopeSettings settings) {
-            return new EnvelopeMetrics(corners, null, null, prisms, settings.SampleSpacing) { LedgeLip = settings.LedgeLip };
+            return new EnvelopeMetrics(corners, null, null, prisms, settings.SampleSpacing) { LedgeLip = settings.LedgeLip, LipRise = settings.LipRise };
         }
 
         /// <summary>The furthest any look vertex or triangle sample (every <paramref name="spacing"/>) lies outside every prism.</summary>

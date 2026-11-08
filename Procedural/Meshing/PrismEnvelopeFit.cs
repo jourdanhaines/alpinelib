@@ -3,7 +3,7 @@ using System.Collections.Generic;
 namespace AlpineLib.Procedural.Meshing {
     /// <summary>The prisms of a <see cref="PrismEnvelopeFitter"/> run, bottom band first, and how they sit around the look.</summary>
     public sealed class PrismEnvelopeFit {
-        internal PrismEnvelopeFit(List<EnvelopePrism> prisms, List<double> bandEdges, EnvelopeMetrics metrics, double standoffP90, double standoffMax, double ledgeAirMax, double worstOutside, int fallbackCount, bool meetsTargets, string report) {
+        internal PrismEnvelopeFit(List<EnvelopePrism> prisms, List<double> bandEdges, EnvelopeMetrics metrics, double standoffP90, double standoffMax, double ledgeAirMax, double worstOutside, int fallbackCount, string missed, string report) {
             Prisms = prisms.AsReadOnly();
             BandEdges = bandEdges.AsReadOnly();
             Metrics = metrics;
@@ -12,7 +12,8 @@ namespace AlpineLib.Procedural.Meshing {
             LedgeAirMax = ledgeAirMax;
             WorstOutside = worstOutside;
             FallbackCount = fallbackCount;
-            MeetsTargets = meetsTargets;
+            MeetsTargets = missed.Length == 0;
+            Missed = missed;
             Report = report;
         }
 
@@ -45,6 +46,9 @@ namespace AlpineLib.Procedural.Meshing {
         /// reachable ledge air within <see cref="PrismEnvelopeSettings.LedgeAirMax"/>. Consumers gate on it.
         /// </summary>
         public bool MeetsTargets { get; }
+
+        /// <summary>The targets the fit misses and where the budget ran out; empty when it meets them all.</summary>
+        public string Missed { get; }
 
         /// <summary>One line per band: its heights, prisms and gate numbers.</summary>
         public string Report { get; }

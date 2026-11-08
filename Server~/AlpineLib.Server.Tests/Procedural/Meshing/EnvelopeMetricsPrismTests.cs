@@ -63,6 +63,25 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
         }
 
         [Fact]
+        public void ALipNeedsItsNeighbourToRiseEnough() {
+            var thin = new EnvelopePrism(0.0, 1.0, Rectangle(1.0, 1.05, -1.0, 1.0));
+            var step = new EnvelopePrism(0.0, 1.1, Rectangle(-1.0, 1.0, -1.0, 1.0));
+            var wall = new EnvelopePrism(0.0, 1.2, Rectangle(-1.0, 1.0, -1.0, 1.0));
+            var hovering = new EnvelopePrism(1.1, 2.0, Rectangle(-1.0, 1.0, -1.0, 1.0));
+            var farAbove = new EnvelopePrism(1.5, 2.5, Rectangle(-1.0, 1.0, -1.0, 1.0));
+
+            var besideStep = new EnvelopeMetrics(Block, null, null, new[] { step, thin }, 0.05) { LedgeLip = 0.1, LipRise = 0.15 };
+            var besideWall = new EnvelopeMetrics(Block, null, null, new[] { wall, thin }, 0.05) { LedgeLip = 0.1, LipRise = 0.15 };
+            var underHovering = new EnvelopeMetrics(Block, null, null, new[] { step, hovering, thin }, 0.05) { LedgeLip = 0.1, LipRise = 0.15 };
+            var underFar = new EnvelopeMetrics(Block, null, null, new[] { step, farAbove, thin }, 0.05) { LedgeLip = 0.1, LipRise = 0.15 };
+
+            Assert.Contains(besideStep.LedgeAir(0.0, 0.3, 1.05), StripAir);
+            Assert.DoesNotContain(besideWall.LedgeAir(0.0, 0.3, 1.05), StripAir);
+            Assert.DoesNotContain(underHovering.LedgeAir(0.0, 0.3, 1.05), StripAir);
+            Assert.Contains(underFar.LedgeAir(0.0, 0.3, 1.05), StripAir);
+        }
+
+        [Fact]
         public void SidesBuriedInTheLookAreNoStandoff() {
             var buried = Metrics(new EnvelopePrism(0.0, 2.0, Rectangle(-0.5, 0.5, -0.5, 0.5)));
 
@@ -77,6 +96,11 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
             Assert.Equal(0.5, prism.DistanceOutside(new Vector3(1.5f, 1f, 0f)), 6);
             Assert.Equal(0.5, prism.DistanceOutside(new Vector3(0f, -0.5f, 0f)), 6);
             Assert.Equal(8.0, prism.Volume, 9);
+        }
+
+        // The thin strip's cap at 1.0 over open ground.
+        private static bool StripAir(double air) {
+            return air > 0.999 && air < 1.001;
         }
 
         private static EnvelopeMetrics Metrics(params EnvelopePrism[] prisms) {
