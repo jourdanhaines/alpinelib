@@ -24,7 +24,18 @@ namespace AlpineLib.Server.Tests {
             prism.Plan.GetVertex(0, out float x, out float z);
             Assert.Equal(-2f, x);
             Assert.Equal(-1.5f, z);
-            Assert.Equal(MathF.Sqrt(2f * 2f + 1.5f * 1.5f), prism.Radius);
+            Assert.Equal((float)2.5001, prism.Radius);
+        }
+
+        [Fact]
+        public void RadiusAndCentreArePinnedBits() {
+            Vector2[] plan = { new Vector2(-1.3f, -0.7f), new Vector2(1.1f, -0.9f), new Vector2(0.9f, 1.2f), new Vector2(-1.2f, 0.8f) };
+
+            CollisionShape prism = CollisionShape.MakePrism(new Vector3(0.3f, 1f, -0.7f), 1f, plan);
+
+            Assert.Equal(0x3FCC1F21u, BitConverter.SingleToUInt32Bits(prism.Radius));
+            Assert.Equal(0x3E4CCCD0u, BitConverter.SingleToUInt32Bits(prism.Center.X));
+            Assert.Equal(0xBF0CCCCCu, BitConverter.SingleToUInt32Bits(prism.Center.Z));
         }
 
         [Fact]

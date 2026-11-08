@@ -128,7 +128,8 @@ namespace AlpineLib.Netcode.Collision {
         /// The plan is recentred on its bounding box, moving <see cref="Center"/> by the same amount, so
         /// <see cref="HalfExtents"/> X and Z are the box's half sizes and identity axes let the box path answer
         /// <see cref="Translated"/>, <see cref="GetBoundsXZ"/> and the resolver's vertical reach.
-        /// <see cref="Radius"/> is the farthest vertex from the centre, an early-reject bound.
+        /// <see cref="Radius"/> bounds the farthest vertex from the centre (rounded up to 1e-4, plus 1e-4), an early-reject
+        /// bound. Centre, offsets and radius are computed in double and cast once so every runtime gets the same bits.
         /// </para>
         /// <para>
         /// A mirrored placement (negative scale on one plan axis) flips the winding: reverse the vertex order before
@@ -145,27 +146,28 @@ namespace AlpineLib.Netcode.Collision {
             }
 
             GetPlanBounds(offsets, out float minX, out float maxX, out float minZ, out float maxZ);
-            float middleX = (minX + maxX) * 0.5f;
-            float middleZ = (minZ + maxZ) * 0.5f;
+            // Double maths cast once: Mono may widen float intermediates where CoreCLR does not.
+            double middleX = ((double)minX + maxX) * 0.5;
+            double middleZ = ((double)minZ + maxZ) * 0.5;
             var plan = default(PrismPlan);
             plan.Count = (byte)offsets.Length;
-            float radiusSquared = 0f;
+            double radiusSquared = 0.0;
             for (int index = 0; index < offsets.Length; index++) {
-                float x = offsets[index].X - middleX;
-                float z = offsets[index].Y - middleZ;
+                float x = (float)(offsets[index].X - middleX);
+                float z = (float)(offsets[index].Y - middleZ);
                 plan.SetVertex(index, x, z);
-                radiusSquared = MathF.Max(radiusSquared, x * x + z * z);
+                radiusSquared = Math.Max(radiusSquared, (double)x * x + (double)z * z);
             }
 
             ValidatePrismPlan(in plan);
             var shape = default(CollisionShape);
             shape.Type = CollisionShapeType.Prism;
-            shape.Center = new Vector3(center.X + middleX, center.Y, center.Z + middleZ);
+            shape.Center = new Vector3((float)(center.X + middleX), center.Y, (float)(center.Z + middleZ));
             shape.AxisRight = Vector3.UnitX;
             shape.AxisUp = Vector3.UnitY;
             shape.AxisForward = Vector3.UnitZ;
             shape.HalfExtents = new Vector3((maxX - minX) * 0.5f, halfHeight, (maxZ - minZ) * 0.5f);
-            shape.Radius = MathF.Sqrt(radiusSquared);
+            shape.Radius = PrismRadius(radiusSquared);
             shape.Plan = plan;
             return shape;
         }
@@ -235,6 +237,11 @@ namespace AlpineLib.Netcode.Collision {
             extentZ = MathF.Abs(AxisRight.Z) * HalfExtents.X
                 + MathF.Abs(AxisUp.Z) * HalfExtents.Y
                 + MathF.Abs(AxisForward.Z) * HalfExtents.Z;
+        }
+
+        // The early-reject radius rounded up to the 1e-4 grid plus one step, so the float cast never undercuts it.
+        private static float PrismRadius(double radiusSquared) {
+            return (float)(Math.Ceiling(Math.Sqrt(radiusSquared) * 10000.0) / 10000.0 + 0.0001);
         }
 
         // The offsets' bounding box; throws on a non-finite offset.
