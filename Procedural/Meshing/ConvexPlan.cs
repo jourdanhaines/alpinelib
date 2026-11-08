@@ -51,21 +51,34 @@ namespace AlpineLib.Procedural.Meshing {
 
         /// <summary>
         /// A convex polygon of at most <paramref name="maxVertices"/> (≥ 3) vertices holding <paramref name="hull"/> up to
-        /// grid rounding (meets round to nearest, so a hull point may sit about 1e-4 outside):
-        /// repeatedly the edge whose collapse stands least far off the polygon (least area on a tie) is collapsed, its
-        /// two neighbouring edges extended until they meet, so no thin spike grows where a cheap-area one would.
-        /// Collapses whose neighbours do not meet in front of the polygon are skipped.
+        /// grid rounding (meets round to nearest, so a hull point may sit about 1e-4 outside): repeatedly the edge
+        /// whose removal adds least area is collapsed, its two neighbouring edges extended until they meet. Collapses
+        /// whose neighbours do not meet in front of the polygon are skipped.
         /// </summary>
         public static List<PlanPoint> EncloseMaxVertices(IReadOnlyList<PlanPoint> hull, int maxVertices) {
+            return Enclose(hull, maxVertices, false);
+        }
+
+        /// <summary>
+        /// As <see cref="EncloseMaxVertices"/>, but each collapse is the one whose new corner protrudes least from the
+        /// removed edge (least area on a tie), so no thin spike grows where a cheap-area one would. The prism fitter
+        /// uses this to keep standoff low.
+        /// </summary>
+        public static List<PlanPoint> EncloseMaxVerticesByProtrusion(IReadOnlyList<PlanPoint> hull, int maxVertices) {
+            return Enclose(hull, maxVertices, true);
+        }
+
+        private static List<PlanPoint> Enclose(IReadOnlyList<PlanPoint> hull, int maxVertices, bool byProtrusion) {
             if (hull == null) throw new ArgumentNullException(nameof(hull));
             if (maxVertices < 3) throw new ArgumentOutOfRangeException(nameof(maxVertices), "At least three vertices.");
 
             var polygon = Rounded(hull);
             int passes = polygon.Count;
             for (int pass = 0; pass < passes && polygon.Count > maxVertices; pass++) {
-                if (!TryLowestCollapse(polygon, out int edge, out PlanPoint meet)) {
-                    throw new InvalidOperationException("No edge of the polygon can be collapsed outward.");
-                }
+                int edge;
+                PlanPoint meet;
+                bool found = byProtrusion ? TryLowestCollapse(polygon, out edge, out meet) : TryCheapestCollapse(polygon, -1, double.PositiveInfinity, out edge, out meet);
+                if (!found) throw new InvalidOperationException("No edge of the polygon can be collapsed outward.");
 
                 Collapse(polygon, edge, meet);
             }

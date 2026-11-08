@@ -73,7 +73,7 @@ namespace AlpineLib.Procedural.Meshing {
             List<PlanPoint> hull = ConvexPlan.Hull(points);
             if (hull.Count < 3 || !(ConvexPlan.Area(hull) > settings.MinEdge * settings.MinEdge)) return ThinRectangle(hull, settings.MinEdge);
 
-            List<PlanPoint> enclosed = ConvexPlan.EncloseMaxVertices(hull, settings.MaxVertices);
+            List<PlanPoint> enclosed = ConvexPlan.EncloseMaxVerticesByProtrusion(hull, settings.MaxVertices);
             List<PlanPoint> cleaned = ConvexPlan.Clean(enclosed, settings.MinTurn, settings.MinEdge, settings.MinEdge * 2.0);
             if (IsRobust(cleaned, settings)) return cleaned;
 

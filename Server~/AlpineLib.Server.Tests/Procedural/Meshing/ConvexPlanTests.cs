@@ -35,6 +35,41 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
         }
 
         [Fact]
+        public void TheAreaRuleKeepsItsOutlinesAndTheProtrusionRuleSpikesLess() {
+            var random = new Random(11);
+            var area = new System.Text.StringBuilder();
+            double areaSpike = 0.0, protrusionSpike = 0.0;
+            for (int trial = 0; trial < 60; trial++) {
+                var points = new List<PlanPoint>();
+                int count = 12 + random.Next(30);
+                for (int index = 0; index < count; index++) {
+                    double angle = random.NextDouble() * 6.283, radius = 20 + random.NextDouble() * 15;
+                    points.Add(new PlanPoint(radius * Math.Cos(angle), radius * Math.Sin(angle)));
+                }
+                List<PlanPoint> hull = ConvexPlan.Hull(points);
+                int budget = 8 + (trial % 3) * 2;
+                List<PlanPoint> byArea = ConvexPlan.EncloseMaxVertices(hull, budget);
+                List<PlanPoint> byProtrusion = ConvexPlan.EncloseMaxVerticesByProtrusion(hull, budget);
+                if (trial == 0) {
+                    foreach (PlanPoint point in byArea) area.Append(point.X.ToString("R")).Append(',').Append(point.Z.ToString("R")).Append(';');
+                }
+                Assert.InRange(byProtrusion.Count, 3, budget);
+                Assert.All(points, (point) => Assert.True(ConvexPlan.Contains(byProtrusion, point.X, point.Z, Tolerance)));
+                areaSpike += FarthestFrom(byArea, hull);
+                protrusionSpike += FarthestFrom(byProtrusion, hull);
+            }
+
+            Assert.Equal("-13.7385,-27.029600000000002;13.814,-31.7493;22.4509,-22.337200000000003;25.8639,7.3314;15.3512,28.668400000000002;9.908800000000001,32.782000000000004;-18.232300000000002,24.8338;-32.4882,-8.3627;", area.ToString());
+            Assert.True(protrusionSpike <= areaSpike);
+        }
+
+        private static double FarthestFrom(List<PlanPoint> polygon, List<PlanPoint> hull) {
+            double farthest = 0.0;
+            foreach (PlanPoint point in polygon) farthest = Math.Max(farthest, ConvexPlan.Distance(hull, point.X, point.Z));
+            return farthest;
+        }
+
+        [Fact]
         public void CleaningRemovesNearStraightVerticesAndShortEdgesOutward() {
             var polygon = new List<PlanPoint> {
                 new PlanPoint(0.0, 0.0), new PlanPoint(1.0, -0.001), new PlanPoint(2.0, 0.0), new PlanPoint(2.0, 1.0),
