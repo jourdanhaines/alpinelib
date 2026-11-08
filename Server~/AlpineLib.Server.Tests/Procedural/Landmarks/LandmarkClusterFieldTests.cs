@@ -59,15 +59,37 @@ namespace AlpineLib.Server.Tests.Procedural.Landmarks {
         }
 
         [Fact]
+        public void KindsFollowTheSharesWithoutRoutePromotion() {
+            var rules = LandmarkClusterSettings.Clusters;
+            var plain = new LandmarkClusterSettings(rules.LonelyShare, rules.GroupShare, rules.LonelyMin, rules.LonelyMax, rules.LonelySkew, rules.LargeMin, rules.LargeMax,
+                                                    rules.LargeSkew, rules.SmallMin, rules.SmallMax, rules.SmallSkew, rules.SmallCountMin, rules.SmallCountMax);
+            var tier = new LandmarkTierSettings("landmark/cluster", 20, 7, 0.9, 7, 12, 48.0, 0.0, plain);
+            List<LandmarkCluster> clusters = Clusters(new LandmarkField(Seed, new[] { tier, LandmarkTierSettings.Lonely }, new Everywhere()), ClusterTier);
+            Assert.InRange(clusters.Count((cluster) => cluster.Kind == LandmarkClusterKind.Lonely) / (double)clusters.Count, 0.32, 0.38);
+            Assert.InRange(clusters.Count((cluster) => cluster.Kind == LandmarkClusterKind.Group) / (double)clusters.Count, 0.37, 0.43);
+            Assert.InRange(clusters.Count((cluster) => cluster.Kind == LandmarkClusterKind.Multi) / (double)clusters.Count, 0.22, 0.28);
+        }
+
+        [Fact]
+        public void RouteWindowsPromoteSixtyPercentToMulti() {
+            List<LandmarkCluster> promoted = Clusters(CreateField(new Everywhere()), ClusterTier);
+            List<LandmarkCluster> plain = Clusters(CreateField(new Nowhere()), ClusterTier);
+            double multi = promoted.Count((cluster) => cluster.Kind == LandmarkClusterKind.Multi) / (double)promoted.Count;
+            Assert.InRange(multi, 0.66, 0.74);
+            Assert.DoesNotContain(plain, (cluster) => cluster.Kind == LandmarkClusterKind.Multi);
+            Assert.InRange(plain.Count((cluster) => cluster.Kind == LandmarkClusterKind.Lonely) / (double)plain.Count, 0.32, 0.38);
+        }
+
+        [Fact]
         public void KindsFollowTheSharesWhenTheBiasAlwaysFindsAnAnchor() {
             List<LandmarkCluster> clusters = Clusters(CreateField(new Everywhere()), ClusterTier);
             double lonely = clusters.Count((cluster) => cluster.Kind == LandmarkClusterKind.Lonely) / (double)clusters.Count;
             double group = clusters.Count((cluster) => cluster.Kind == LandmarkClusterKind.Group) / (double)clusters.Count;
             double multi = clusters.Count((cluster) => cluster.Kind == LandmarkClusterKind.Multi) / (double)clusters.Count;
             Assert.True(clusters.Count > 3000, $"{clusters.Count} clusters");
-            Assert.InRange(lonely, 0.32, 0.38);
-            Assert.InRange(group, 0.37, 0.43);
-            Assert.InRange(multi, 0.22, 0.28);
+            Assert.InRange(lonely, 0.35 * 0.4 - 0.03, 0.35 * 0.4 + 0.03);
+            Assert.InRange(group, 0.40 * 0.4 - 0.03, 0.40 * 0.4 + 0.03);
+            Assert.InRange(multi, 0.70 - 0.04, 0.70 + 0.04);
             Assert.All(clusters.Where((cluster) => cluster.Kind == LandmarkClusterKind.Multi), (cluster) => Assert.True(cluster.IsAttracted || IsBest(cluster)));
         }
 
@@ -78,7 +100,7 @@ namespace AlpineLib.Server.Tests.Procedural.Landmarks {
             Assert.Equal(found.Count, lost.Count);
             Assert.DoesNotContain(lost, (cluster) => cluster.Kind == LandmarkClusterKind.Multi);
             for (int index = 0; index < found.Count; index++) {
-                if (found[index].Kind != LandmarkClusterKind.Multi) {
+                if (found[index].Kind != LandmarkClusterKind.Multi || lost[index].Kind == LandmarkClusterKind.Lonely) {
                     continue;
                 }
                 LandmarkCluster degraded = lost[index];

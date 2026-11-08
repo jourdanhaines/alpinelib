@@ -13,15 +13,30 @@ namespace AlpineLib.Procedural.Landmarks {
         /// <summary>First small slot.</summary>
         public const int FirstSmallSlot = 2;
 
-        /// <summary>Lonely 35 % (180–600 m, skewed small), group 40 %, multi 25 % (large 400–600 m, 3–5 small of 180–300 m).</summary>
-        public static readonly LandmarkClusterSettings Clusters = new LandmarkClusterSettings(0.35, 0.40, 180.0, 600.0, 2.0, 400.0, 600.0, 1.0, 180.0, 300.0, 1.5, 3, 5);
+        /// <summary>
+        /// Lonely 35 % (180–600 m, skewed small), group 40 %, multi 25 % (large 400–600 m, 3–5 small of 180–300 m); 60 % of the
+        /// blocks whose anchor window the bias finds a candidate in (the route crosses it) become multi.
+        /// </summary>
+        public static readonly LandmarkClusterSettings Clusters = new LandmarkClusterSettings(0.35, 0.40, 180.0, 600.0, 2.0, 400.0, 600.0, 1.0, 180.0, 300.0, 1.5, 3, 5, 0.6);
 
         /// <summary>Always lonely, 180–450 m skewed small.</summary>
         public static readonly LandmarkClusterSettings Lonely = new LandmarkClusterSettings(1.0, 0.0, 180.0, 450.0, 2.0, 400.0, 600.0, 1.0, 180.0, 300.0, 1.5, 3, 5);
 
-        /// <summary>Validates and stores the settings.</summary>
+        /// <summary>Validates and stores the settings (no route promotion).</summary>
         public LandmarkClusterSettings(double lonelyShare, double groupShare, double lonelyMin, double lonelyMax, double lonelySkew, double largeMin, double largeMax,
-                                       double largeSkew, double smallMin, double smallMax, double smallSkew, int smallCountMin, int smallCountMax) {
+                                       double largeSkew, double smallMin, double smallMax, double smallSkew, int smallCountMin, int smallCountMax)
+            : this(lonelyShare, groupShare, lonelyMin, lonelyMax, lonelySkew, largeMin, largeMax, largeSkew, smallMin, smallMax, smallSkew, smallCountMin, smallCountMax, 0.0) { }
+
+        /// <summary>
+        /// Validates and stores the settings; <paramref name="routeMultiShare"/> of the blocks whose anchor window holds a
+        /// bias candidate are promoted to multi (a draw taken after every other, so other blocks keep every value).
+        /// </summary>
+        public LandmarkClusterSettings(double lonelyShare, double groupShare, double lonelyMin, double lonelyMax, double lonelySkew, double largeMin, double largeMax,
+                                       double largeSkew, double smallMin, double smallMax, double smallSkew, int smallCountMin, int smallCountMax, double routeMultiShare) {
+            if (!(routeMultiShare >= 0.0 && routeMultiShare <= 1.0)) {
+                throw new ArgumentOutOfRangeException(nameof(routeMultiShare), routeMultiShare, "Must be in [0, 1].");
+            }
+            RouteMultiShare = routeMultiShare;
             if (!(lonelyShare >= 0.0 && groupShare >= 0.0 && lonelyShare + groupShare <= 1.0)) {
                 throw new ArgumentOutOfRangeException(nameof(groupShare), groupShare, "Shares must be non-negative and sum to at most 1.");
             }
@@ -45,6 +60,9 @@ namespace AlpineLib.Procedural.Landmarks {
             SmallCountMin = smallCountMin;
             SmallCountMax = smallCountMax;
         }
+
+        /// <summary>Share of blocks with a bias candidate in their anchor window promoted to multi.</summary>
+        public double RouteMultiShare { get; }
 
         /// <summary>Share of lonely blocks.</summary>
         public double LonelyShare { get; }

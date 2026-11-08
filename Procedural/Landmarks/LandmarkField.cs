@@ -14,8 +14,9 @@ namespace AlpineLib.Procedural.Landmarks {
     /// maths and <see cref="SitesTouching"/> are unchanged.
     /// A tier with <see cref="LandmarkTierSettings.Cluster"/> settings expands each block into a <see cref="LandmarkCluster"/>:
     /// after the anchor and offset it draws the kind, the small count, a base bearing and seven fixed member slots (size,
-    /// bearing, ring, shape seed, four draws each) whatever the kind, then the attract roll and preference. A multi always
-    /// asks the bias and degrades to a group when the window has no candidate. Every member is its own site.
+    /// bearing, ring, shape seed, four draws each) whatever the kind, then the attract roll, the preference and the route
+    /// promotion draw. A block whose window holds a bias candidate becomes multi with the promotion share; a multi always
+    /// takes the best anchor and degrades to a group when the window has no candidate. Every member is its own site.
     /// Tiers do not avoid each other: a mesa may sit inside or next to a giant footprint, and the
     /// consumer resolves overlaps. Cell and block coordinates must stay well inside int range (no overflow checks).
     /// </remarks>
@@ -125,14 +126,21 @@ namespace AlpineLib.Procedural.Landmarks {
             }
             double roll = random.NextDouble();
             double preference = Quantise(random.NextDouble());
+            double promotion = random.NextDouble();
             var anchor = new CellCoord(block.X * settings.BlockCells + anchorX, block.Y * settings.BlockCells + anchorZ);
-            bool isMulti = kind == LandmarkClusterKind.Multi;
+            bool asks = kind == LandmarkClusterKind.Multi || roll < settings.AttractChance || rules.RouteMultiShare > 0.0;
+            CellCoord best = anchor;
+            bool hasCandidate = asks && TryBestAnchor(tier, settings, block, preference, ref best, out bool _);
+            if (hasCandidate && promotion < rules.RouteMultiShare) {
+                kind = LandmarkClusterKind.Multi;
+            }
+            if (kind == LandmarkClusterKind.Multi && !hasCandidate) {
+                kind = LandmarkClusterKind.Group;
+            }
             bool isAttracted = false;
-            if (isMulti || roll < settings.AttractChance) {
-                bool hasCandidate = TryBestAnchor(tier, settings, block, preference, ref anchor, out isAttracted);
-                if (isMulti && !hasCandidate) {
-                    kind = LandmarkClusterKind.Group;
-                }
+            if (hasCandidate && (kind == LandmarkClusterKind.Multi || roll < settings.AttractChance)) {
+                isAttracted = !best.Equals(anchor);
+                anchor = best;
             }
             LandmarkSite[] members = Members(tier, block, anchor, offsetX, offsetZ, id, isAttracted, kind, smallCount, baseBearing, slots, rules);
             cluster = new LandmarkCluster(tier, block, anchor, offsetX, offsetZ, kind, id, isAttracted, members);
