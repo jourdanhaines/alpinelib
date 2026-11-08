@@ -68,7 +68,7 @@ namespace AlpineLib.Procedural.Sky {
         private void SweepShape(IReadOnlyList<LandmarkSkyShape> shapes, LandmarkSkyShape shape, CloudClass cloudClass, double time, WindVector heading, WindVector displacement, CloudClearance result) {
             CloudFieldSettings settings = _scatter.Settings;
             CloudClassSettings classSettings = settings.ClassOf(cloudClass);
-            double cap = settings.BoostCap(classSettings);
+            double cap = _scatter.LargestBoost(cloudClass);
             double reach = shape.BoundRadius + settings.MaxReach(classSettings) * cap + classSettings.MotionReach;
             CloudFieldFrame frame = CloudFieldFrame.Locate(shape.BoundX, shape.BoundZ, _scatter.DriftOf(cloudClass, displacement), settings.CellSize);
             int cells = (int)Math.Ceiling(reach / settings.CellSize) + 1;
@@ -78,14 +78,14 @@ namespace AlpineLib.Procedural.Sky {
         }
 
         private void SweepCell(IReadOnlyList<LandmarkSkyShape> shapes, LandmarkSkyShape shape, CloudClass cloudClass, CloudFieldFrame frame, long cellX, long cellZ, double time, WindVector heading, CloudClearance result) {
-            double cap = _scatter.Settings.BoostCap(_scatter.Settings.ClassOf(cloudClass));
+            double cap = _scatter.LargestBoost(cloudClass);
             foreach (CloudInstance cloud in CellOf(cloudClass, cellX, cellZ)) {
                 Place(cloud, frame, cellX, cellZ, shape.BoundX, shape.BoundZ, time, out double x, out double z);
                 double bias = _influence.GiantBias(shapes, x, z, heading);
                 double envelope = _scatter.Envelope(cloud, bias);
                 if (envelope <= 0.0) continue;
 
-                double drawn = cloud.Reach * _scatter.SizeBoost(cloudClass, bias) * envelope;
+                double drawn = cloud.Reach * _scatter.SizeBoost(cloud, bias) * envelope;
                 if (shape.DistanceTo(x, z) >= drawn) continue;
 
                 double lift = _influence.Lift(shapes, x, z, cloud.Reach * cap, cloud.Altitude);
@@ -111,7 +111,7 @@ namespace AlpineLib.Procedural.Sky {
 
                 double bias = _influence.GiantBias(shapes, x, z, heading);
                 double envelope = _scatter.Envelope(cloud, bias);
-                double drawn = cloud.Reach * _scatter.SizeBoost(cloudClass, bias) * envelope;
+                double drawn = cloud.Reach * _scatter.SizeBoost(cloud, bias) * envelope;
                 double cover = Math.PI * drawn * drawn;
                 if (IsFullZone(bias)) {
                     result.ZoneClouds += envelope;

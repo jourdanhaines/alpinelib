@@ -5,8 +5,8 @@ namespace AlpineLib.Procedural.Sky {
     /// <summary>
     /// The landmarks near a camera binned on a coarse grid, so a cloud only tests the few whose lift or giant zone can
     /// reach it: a landmark is listed for lift only where its top can reach any cloud's base, and for bias only if a giant.
-    /// Built once per landmark query; results are the same as testing every landmark. Remembers the last bin of each
-    /// lookup (clouds come cell by cell, so neighbours share it): one index per thread.
+    /// Built once per landmark query; results are the same as testing every landmark. Not thread safe: lookups remember
+    /// the last bin (clouds come cell by cell, so neighbours share it), so use one index per thread.
     /// </summary>
     public sealed class CloudLandmarkIndex {
         /// <summary>Edge of one bin, metres.</summary>
@@ -21,6 +21,7 @@ namespace AlpineLib.Procedural.Sky {
         private (long X, long Z) _biasBin = (long.MinValue, long.MinValue);
         private IReadOnlyList<LandmarkSkyShape> _liftShapes = None;
         private IReadOnlyList<LandmarkSkyShape> _biasShapes = None;
+        private double _maxReach;
 
         /// <summary>Landmarks indexed (after the altitude cut and giant filter: any listed once or more).</summary>
         public int Count { get; private set; }
@@ -35,6 +36,7 @@ namespace AlpineLib.Procedural.Sky {
             _lift.Clear();
             _bias.Clear();
             Count = 0;
+            _maxReach = maxReach;
             _liftBin = (long.MinValue, long.MinValue);
             _biasBin = (long.MinValue, long.MinValue);
             _liftShapes = None;
@@ -69,6 +71,41 @@ namespace AlpineLib.Procedural.Sky {
             _biasBin = bin;
             _biasShapes = _bias.TryGetValue(bin, out List<LandmarkSkyShape> shapes) ? shapes : None;
             return _biasShapes;
+        }
+
+        /// <summary>
+        /// Appends (once each) the landmarks whose lift or giant zone may reach a cloud centred anywhere in the box
+        /// [<paramref name="minX"/>, <paramref name="maxX"/>] × [<paramref name="minZ"/>, <paramref name="maxZ"/>]; lifting
+        /// ones only when their top plus the clearance clears <paramref name="lowestAltitude"/>.
+        /// </summary>
+        public void CollectNear(double minX, double minZ, double maxX, double maxZ, CloudLandmarkSettings settings, double lowestAltitude, List<LandmarkSkyShape> lift, List<LandmarkSkyShape> bias) {
+            (long lowX, long lowZ) = BinOf(minX, minZ);
+            (long highX, long highZ) = BinOf(maxX, maxZ);
+            for (long binZ = lowZ; binZ <= highZ; binZ++) {
+                for (long binX = lowX; binX <= highX; binX++) {
+                    if (_lift.TryGetValue((binX, binZ), out List<LandmarkSkyShape> lifting)) AppendLifting(lifting, lift, minX, minZ, maxX, maxZ, settings, lowestAltitude);
+                    if (_bias.TryGetValue((binX, binZ), out List<LandmarkSkyShape> giants)) AppendNew(giants, bias, double.PositiveInfinity, lowestAltitude);
+                }
+            }
+        }
+
+        // Lifting shapes not yet listed whose top clears the altitude and whose reach (hull circle + cloud reach + falloff) meets the box.
+        private void AppendLifting(List<LandmarkSkyShape> from, List<LandmarkSkyShape> into, double minX, double minZ, double maxX, double maxZ, CloudLandmarkSettings settings, double lowestAltitude) {
+            foreach (LandmarkSkyShape shape in from) {
+                if (shape.PlateauY + settings.LiftClearance <= lowestAltitude || into.Contains(shape)) continue;
+
+                double deltaX = shape.BoundX - Math.Max(minX, Math.Min(maxX, shape.BoundX));
+                double deltaZ = shape.BoundZ - Math.Max(minZ, Math.Min(maxZ, shape.BoundZ));
+                double reach = shape.BoundRadius + _maxReach + settings.LiftFalloff;
+                if (deltaX * deltaX + deltaZ * deltaZ <= reach * reach) into.Add(shape);
+            }
+        }
+
+        // Shapes not already in the list, and for lift only those whose top clears the altitude.
+        private static void AppendNew(List<LandmarkSkyShape> from, List<LandmarkSkyShape> into, double clearance, double lowestAltitude) {
+            foreach (LandmarkSkyShape shape in from) {
+                if (shape.PlateauY + clearance > lowestAltitude && !into.Contains(shape)) into.Add(shape);
+            }
         }
 
         private static (long X, long Z) BinOf(double x, double z) {

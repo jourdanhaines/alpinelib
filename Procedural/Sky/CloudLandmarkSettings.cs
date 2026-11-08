@@ -4,7 +4,7 @@ namespace AlpineLib.Procedural.Sky {
     /// <summary>
     /// How a cloud field reacts to landmarks (<see cref="ILandmarkSkyProvider"/>): clouds lift clear of every
     /// landmark's top, and giants gather clouds (orographic clustering) in a zone about them stretched downwind, where
-    /// extra latent clouds condense and every cloud grows a little.
+    /// extra latent clouds condense (packed tighter and grown a little). Regular clouds are never changed but lifted.
     /// </summary>
     /// <remarks>
     /// A cloud's density is its coverage plus the giant bias at its current position (times its class weight); a
@@ -42,6 +42,12 @@ namespace AlpineLib.Procedural.Sky {
         /// <summary>Latent candidates each field cell draws per <see cref="CloudClass"/>.</summary>
         public int[] LatentPerCell { get; set; } = { 10, 6, 3 };
 
+        /// <summary>Share of the exclusion latent clouds keep from any other cloud: they may pack tighter inside a giant's zone.</summary>
+        public double LatentSpacing { get; set; } = 0.7;
+
+        /// <summary>Size share of latent clouds per <see cref="CloudClass"/>, on top of the boost.</summary>
+        public double[] LatentScales { get; set; } = { 0.8, 1.0, 1.0 };
+
         public static CloudLandmarkSettings Default => new CloudLandmarkSettings();
 
         /// <summary>Farthest a landmark's hull can be from a cloud and still change it, metres (past the cloud's own reach).</summary>
@@ -49,6 +55,10 @@ namespace AlpineLib.Procedural.Sky {
 
         public double WeightOf(CloudClass cloudClass) {
             return ClassWeights[(int)cloudClass];
+        }
+
+        public double LatentScaleOf(CloudClass cloudClass) {
+            return LatentScales[(int)cloudClass];
         }
 
         public int LatentOf(CloudClass cloudClass) {
@@ -65,9 +75,12 @@ namespace AlpineLib.Procedural.Sky {
             if (!(EnvelopeWidth > 0.0 && EnvelopeWidth < GiantBias)) throw new ArgumentOutOfRangeException(nameof(EnvelopeWidth), EnvelopeWidth, "Must be in (0, giant bias).");
             if (ClassWeights == null || ClassWeights.Length != CloudFieldSettings.ClassCount) throw new ArgumentException("Need one weight per class.", nameof(ClassWeights));
             if (LatentPerCell == null || LatentPerCell.Length != CloudFieldSettings.ClassCount) throw new ArgumentException("Need one latent count per class.", nameof(LatentPerCell));
+            if (LatentScales == null || LatentScales.Length != CloudFieldSettings.ClassCount) throw new ArgumentException("Need one latent scale per class.", nameof(LatentScales));
+            if (!(LatentSpacing > 0.0 && LatentSpacing <= 1.0)) throw new ArgumentOutOfRangeException(nameof(LatentSpacing), LatentSpacing, "Must be in (0, 1].");
 
             for (int index = 0; index < CloudFieldSettings.ClassCount; index++) {
                 if (!(ClassWeights[index] >= 0.0)) throw new ArgumentOutOfRangeException(nameof(ClassWeights), ClassWeights[index], "Must not be negative.");
+                if (!(LatentScales[index] > 0.0 && LatentScales[index] <= 1.0)) throw new ArgumentOutOfRangeException(nameof(LatentScales), LatentScales[index], "Must be in (0, 1].");
                 if (LatentPerCell[index] < 0) throw new ArgumentOutOfRangeException(nameof(LatentPerCell), LatentPerCell[index], "Must not be negative.");
             }
         }

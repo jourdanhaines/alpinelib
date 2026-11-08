@@ -8,7 +8,7 @@ namespace AlpineLib.Procedural.Sky {
         private NoLandmarkSkyProvider() {
         }
 
-        public bool TryGetNearby(double x, double z, double radius, List<LandmarkSkyShape> shapes) {
+        public bool TryGetNearby(double x, double z, double radius, double liftRadius, List<LandmarkSkyShape> shapes) {
             return true;
         }
     }

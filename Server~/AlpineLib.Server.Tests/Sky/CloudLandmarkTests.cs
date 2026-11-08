@@ -41,10 +41,10 @@ namespace AlpineLib.Server.Tests.Sky {
             CloudLandmarkSettings landmarks = scatter.Settings.Landmarks;
             int rising = 0;
             foreach (CloudClass cloudClass in Classes) {
-                Assert.Equal(1.0, scatter.SizeBoost(cloudClass, 0.0));
                 double slope = 1.5 / landmarks.EnvelopeWidth * landmarks.WeightOf(cloudClass);
                 foreach (CloudInstance cloud in scatter.Cell(cloudClass, 0, 0)) {
                     Assert.Equal(cloud.IsLatent ? 0.0 : 1.0, scatter.Envelope(cloud, 0.0));
+                    if (!cloud.IsLatent) Assert.Equal(1.0, scatter.SizeBoost(cloud, 0.6));
                     Assert.InRange(cloud.BaseDensity, scatter.Settings.MinCoverage, 1.0);
                     rising += CheckEnvelope(scatter, cloud, slope);
                 }
@@ -52,24 +52,48 @@ namespace AlpineLib.Server.Tests.Sky {
             Assert.True(rising > 0, "no latent cloud condensed at full bias");
         }
 
-        // Every pair of one class's clouds, latent ones too, keeps the gap at the largest boost, at any time and heading.
+        // The regular clouds are the approved plain sky bit for bit (golden from the scatter before landmarks), with landmarks on or off.
         [Fact]
-        public void BoostedCloudsNeverTouch() {
+        public void OpenSkyIsThePlainScatter() {
+            ulong[] seeds = { 1UL, 7UL, 42UL };
+            ulong[] goldens = { 0xF3C2B67A25A75F09UL, 0xD1FE1B393DF0E523UL, 0xA8CFB5F479A7C669UL };
+            for (int index = 0; index < seeds.Length; index++) {
+                Assert.Equal(goldens[index], CloudFieldFingerprint.Of(new CloudFieldScatter(seeds[index], CloudFieldSettings.Default), 6));
+                Assert.Equal(goldens[index], CloudFieldFingerprint.Of(new CloudFieldScatter(seeds[index], LandmarkSettings()), 6));
+            }
+        }
+
+        // Regular pairs keep the full gap at any time and heading; a latent cloud keeps the latent share of the exclusion
+        // (at its largest drawn size) from every cloud of its class.
+        [Fact]
+        public void LatentCloudsKeepTheirSpacing() {
             var scatter = new CloudFieldScatter(13UL, LandmarkSettings());
             CloudFieldSettings settings = scatter.Settings;
             double[] times = { 0.0, 37.5, 911.0, 86_400.25 };
             var headings = new[] { new WindVector(1.0, 0.0), new WindVector(-0.6, 0.8) };
             foreach (CloudClass cloudClass in Classes) {
-                double cap = settings.BoostCap(settings.ClassOf(cloudClass));
-                Assert.InRange(cap, 1.0, 1.0 + settings.Landmarks.SizeBoost * settings.Landmarks.GiantBias);
+                Assert.InRange(scatter.LargestBoost(cloudClass), 1.0, 1.0 + settings.Landmarks.SizeBoost * settings.Landmarks.GiantBias);
                 List<(double X, double Z, CloudInstance Cloud)> anchors = Anchors(scatter, cloudClass, 4);
                 for (int first = 0; first < anchors.Count; first++) {
-                    for (int second = first + 1; second < anchors.Count; second++) {
-                        foreach (double time in times) {
-                            foreach (WindVector heading in headings) CheckGap(scatter, anchors[first], anchors[second], cap, time, heading);
-                        }
-                    }
+                    for (int second = first + 1; second < anchors.Count; second++) CheckPair(scatter, anchors[first], anchors[second], times, headings);
                 }
+            }
+        }
+
+        private static void CheckPair(CloudFieldScatter scatter, (double X, double Z, CloudInstance Cloud) first, (double X, double Z, CloudInstance Cloud) second, double[] times, WindVector[] headings) {
+            if (first.Cloud.IsLatent || second.Cloud.IsLatent) {
+                CloudClassSettings classSettings = scatter.Settings.ClassOf(first.Cloud.Class);
+                double boost = scatter.LatentReachScale(first.Cloud.Class);
+                double firstReach = first.Cloud.Reach * (first.Cloud.IsLatent ? boost : 1.0);
+                double secondReach = second.Cloud.Reach * (second.Cloud.IsLatent ? boost : 1.0);
+                double exclusion = scatter.Settings.Exclusion(classSettings, firstReach, secondReach) * scatter.Settings.Landmarks.LatentSpacing;
+                double deltaX = first.X - second.X;
+                double deltaZ = first.Z - second.Z;
+                Assert.True(Math.Sqrt(deltaX * deltaX + deltaZ * deltaZ) >= exclusion - 1e-9, "latent clouds packed past their share");
+                return;
+            }
+            foreach (double time in times) {
+                foreach (WindVector heading in headings) CheckGap(scatter, first, second, 1.0, time, heading);
             }
         }
 
@@ -132,7 +156,7 @@ namespace AlpineLib.Server.Tests.Sky {
             Assert.True(total.MostLift > 20.0, "nothing was lifted");
         }
 
-        // Giants' zones are 1.5–1.8 times as covered as open sky; the count gains less (open sky is already packed to its spacing).
+        // Giants' zones hold 1.4–1.8 times the clouds per km² of open sky (cover reported alongside).
         [Fact]
         public void GiantZonesAreDenser() {
             var total = new CloudDensity();
@@ -146,8 +170,7 @@ namespace AlpineLib.Server.Tests.Sky {
                 total.Merge(sweep.Density(shapes, 0.0, 0.0, 3200.0, 300.0 * seed, 25.0));
             }
             _output.WriteLine($"zone {total.ZoneClouds:0} clouds / {total.ZoneArea:0.00} km², open {total.OpenClouds:0} / {total.OpenArea:0.00} km², ratio {total.Ratio:0.000}, cover ratio {total.CoverRatio:0.000}");
-            Assert.InRange(total.CoverRatio, 1.5, 1.8);
-            Assert.True(total.Ratio > 1.1, $"count ratio {total.Ratio:0.000}");
+            Assert.InRange(total.Ratio, 1.4, 1.8);
         }
 
         // The binned lookups give exactly the lift and bias of testing every landmark.
@@ -166,6 +189,24 @@ namespace AlpineLib.Server.Tests.Sky {
                 double altitude = 140.0 + random.NextDouble() * 60.0;
                 Assert.Equal(influence.Lift(shapes, x, z, 60.0, altitude), influence.Lift(index.LiftShapesAt(x, z), x, z, 60.0, altitude));
                 Assert.Equal(influence.GiantBias(shapes, x, z, heading), influence.GiantBias(index.BiasShapesAt(x, z), x, z, heading));
+            }
+            CheckBoxes(influence, shapes, index, random, heading);
+        }
+
+        // A box's collected landmarks give every point inside it the full list's lift and bias.
+        private static void CheckBoxes(CloudLandmarkInfluence influence, List<LandmarkSkyShape> shapes, CloudLandmarkIndex index, Random random, WindVector heading) {
+            for (int box = 0; box < 200; box++) {
+                double minX = random.NextDouble() * 6000.0 - 3000.0;
+                double minZ = random.NextDouble() * 6000.0 - 3000.0;
+                var lift = new List<LandmarkSkyShape>();
+                var bias = new List<LandmarkSkyShape>();
+                index.CollectNear(minX, minZ, minX + 300.0, minZ + 300.0, influence.Settings, 140.0, lift, bias);
+                for (int sample = 0; sample < 50; sample++) {
+                    double x = minX + random.NextDouble() * 300.0;
+                    double z = minZ + random.NextDouble() * 300.0;
+                    Assert.Equal(influence.Lift(shapes, x, z, 60.0, 150.0), influence.Lift(lift, x, z, 60.0, 150.0));
+                    Assert.Equal(influence.GiantBias(shapes, x, z, heading), influence.GiantBias(bias, x, z, heading));
+                }
             }
         }
 

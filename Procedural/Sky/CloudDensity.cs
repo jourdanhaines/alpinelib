@@ -1,8 +1,11 @@
 namespace AlpineLib.Procedural.Sky {
     /// <summary>What a <see cref="CloudLandmarkSweep.Density"/> counted: clouds (by envelope) and area in full giant zones and in open sky.</summary>
     public sealed class CloudDensity {
+        /// <summary>Clouds counted (each by its envelope) where the giant bias is at full strength, and that area, km².</summary>
         public double ZoneClouds { get; set; }
         public double ZoneArea { get; set; }
+
+        /// <summary>Clouds counted where there is no giant bias, and that area, km².</summary>
         public double OpenClouds { get; set; }
         public double OpenArea { get; set; }
 
