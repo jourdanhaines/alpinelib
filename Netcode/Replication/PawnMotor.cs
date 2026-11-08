@@ -152,16 +152,16 @@ namespace AlpineLib.Netcode.Replication {
 
             Vector3 ride = ResolveRideDelta(in state, world, simTick);
             var position = new Vector3(
-                state.Position.X + ride.X,
-                state.Position.Y + ride.Y,
-                state.Position.Z + ride.Z);
+                (float)(state.Position.X + ride.X),
+                (float)(state.Position.Y + ride.Y),
+                (float)(state.Position.Z + ride.Z));
 
             float velocityX;
             float velocityZ;
 
             if (startedGrounded) {
-                velocityX = moveDirection.X * gaitSpeed;
-                velocityZ = moveDirection.Y * gaitSpeed;
+                velocityX = (float)(moveDirection.X * gaitSpeed);
+                velocityZ = (float)(moveDirection.Y * gaitSpeed);
             } else {
                 velocityX = state.Velocity.X;
                 velocityZ = state.Velocity.Z;
@@ -217,8 +217,8 @@ namespace AlpineLib.Netcode.Replication {
                 return Vector3.Zero;
             }
 
-            float probeTop = state.Position.Y + GroundTolerance;
-            float probeBottom = state.Position.Y - GroundTolerance;
+            float probeTop = (float)(state.Position.Y + GroundTolerance);
+            float probeBottom = (float)(state.Position.Y - GroundTolerance);
             bool supported = world.TryGetSupport(
                 state.Position.X,
                 state.Position.Z,
@@ -247,17 +247,17 @@ namespace AlpineLib.Netcode.Replication {
             uint simTick,
             float deltaSeconds) {
             var displacement = new Vector3(
-                velocity.X * deltaSeconds,
-                velocity.Y * deltaSeconds,
-                velocity.Z * deltaSeconds);
-            int substepCount = ResolveSubstepCount(in displacement, profile.CapsuleRadius * 0.5f);
-            float substepSeconds = deltaSeconds / substepCount;
+                (float)(velocity.X * deltaSeconds),
+                (float)(velocity.Y * deltaSeconds),
+                (float)(velocity.Z * deltaSeconds));
+            int substepCount = ResolveSubstepCount(in displacement, (float)(profile.CapsuleRadius * 0.5f));
+            float substepSeconds = (float)(deltaSeconds / substepCount);
 
             for (int substep = 0; substep < substepCount; substep++) {
                 position = new Vector3(
-                    position.X + velocity.X * substepSeconds,
-                    position.Y + velocity.Y * substepSeconds,
-                    position.Z + velocity.Z * substepSeconds);
+                    (float)(position.X + (float)(velocity.X * substepSeconds)),
+                    (float)(position.Y + (float)(velocity.Y * substepSeconds)),
+                    (float)(position.Z + (float)(velocity.Z * substepSeconds)));
                 Depenetrate(ref position, ref velocity, startedGrounded, profile, world, simTick);
             }
         }
@@ -277,14 +277,14 @@ namespace AlpineLib.Netcode.Replication {
                 return MaxSubsteps;
             }
 
-            float lengthSquared = displacement.X * displacement.X
-                + displacement.Y * displacement.Y
-                + displacement.Z * displacement.Z;
+            float lengthSquared = (float)((float)((float)(displacement.X * displacement.X)
+                + (float)(displacement.Y * displacement.Y))
+                + (float)(displacement.Z * displacement.Z));
             int substepCount = 1;
 
             while (substepCount < MaxSubsteps) {
-                float reach = substepLimit * substepCount;
-                if (lengthSquared <= reach * reach) {
+                float reach = (float)(substepLimit * substepCount);
+                if (lengthSquared <= (float)(reach * reach)) {
                     break;
                 }
 
@@ -342,8 +342,8 @@ namespace AlpineLib.Netcode.Replication {
             }
 
             float lift = MathF.Max(profile.StepOffset, 0f);
-            float shortened = MathF.Max(profile.CapsuleHeight - lift, profile.CapsuleRadius * 2f);
-            var raised = new Vector3(position.X, position.Y + lift, position.Z);
+            float shortened = MathF.Max((float)(profile.CapsuleHeight - lift), (float)(profile.CapsuleRadius * 2f));
+            var raised = new Vector3(position.X, (float)(position.Y + lift), position.Z);
             return new CapsulePose(raised, profile.CapsuleRadius, shortened);
         }
 
@@ -380,24 +380,24 @@ namespace AlpineLib.Netcode.Replication {
         /// happen in the horizontal plane and a walking pawn is never lifted or dropped by one.
         /// </summary>
         private static void ApplyWallResponse(ref Vector3 position, ref Vector3 velocity, in CollisionContact contact) {
-            float horizontalSquared = contact.Normal.X * contact.Normal.X + contact.Normal.Z * contact.Normal.Z;
+            float horizontalSquared = (float)((float)(contact.Normal.X * contact.Normal.X) + (float)(contact.Normal.Z * contact.Normal.Z));
             if (horizontalSquared <= WallNormalEpsilon) {
                 ApplyFreeResponse(ref position, ref velocity, in contact);
                 return;
             }
 
-            float horizontalLength = MathF.Sqrt(horizontalSquared);
-            float pushX = contact.Normal.X / horizontalLength;
-            float pushZ = contact.Normal.Z / horizontalLength;
-            float distance = contact.Depth / MathF.Max(horizontalLength, MinimumWallSlant);
-            position = new Vector3(position.X + pushX * distance, position.Y, position.Z + pushZ * distance);
+            float horizontalLength = (float)MathF.Sqrt(horizontalSquared);
+            float pushX = (float)(contact.Normal.X / horizontalLength);
+            float pushZ = (float)(contact.Normal.Z / horizontalLength);
+            float distance = (float)(contact.Depth / MathF.Max(horizontalLength, MinimumWallSlant));
+            position = new Vector3((float)(position.X + (float)(pushX * distance)), position.Y, (float)(position.Z + (float)(pushZ * distance)));
 
-            float into = velocity.X * pushX + velocity.Z * pushZ;
+            float into = (float)((float)(velocity.X * pushX) + (float)(velocity.Z * pushZ));
             if (into >= 0f) {
                 return;
             }
 
-            velocity = new Vector3(velocity.X - pushX * into, velocity.Y, velocity.Z - pushZ * into);
+            velocity = new Vector3((float)(velocity.X - (float)(pushX * into)), velocity.Y, (float)(velocity.Z - (float)(pushZ * into)));
         }
 
         /// <summary>
@@ -411,17 +411,18 @@ namespace AlpineLib.Netcode.Replication {
         /// </remarks>
         private static void ApplyFreeResponse(ref Vector3 position, ref Vector3 velocity, in CollisionContact contact) {
             position = new Vector3(
-                position.X + contact.Normal.X * contact.Depth,
-                position.Y + contact.Normal.Y * contact.Depth,
-                position.Z + contact.Normal.Z * contact.Depth);
+                (float)(position.X + (float)(contact.Normal.X * contact.Depth)),
+                (float)(position.Y + (float)(contact.Normal.Y * contact.Depth)),
+                (float)(position.Z + (float)(contact.Normal.Z * contact.Depth)));
 
             float incomingY = velocity.Y;
-            float into = velocity.X * contact.Normal.X + velocity.Y * contact.Normal.Y + velocity.Z * contact.Normal.Z;
+            float intoXY = (float)((float)(velocity.X * contact.Normal.X) + (float)(velocity.Y * contact.Normal.Y));
+            float into = (float)(intoXY + (float)(velocity.Z * contact.Normal.Z));
             if (into < 0f) {
                 velocity = new Vector3(
-                    velocity.X - contact.Normal.X * into,
-                    velocity.Y - contact.Normal.Y * into,
-                    velocity.Z - contact.Normal.Z * into);
+                    (float)(velocity.X - (float)(contact.Normal.X * into)),
+                    (float)(velocity.Y - (float)(contact.Normal.Y * into)),
+                    (float)(velocity.Z - (float)(contact.Normal.Z * into)));
             }
 
             if (incomingY <= 0f && velocity.Y > 0f) {
@@ -462,18 +463,18 @@ namespace AlpineLib.Netcode.Replication {
                 return false;
             }
 
-            float probeTop = position.Y + profile.StepOffset;
-            float probeBottom = position.Y - profile.StepOffset;
+            float probeTop = (float)(position.Y + profile.StepOffset);
+            float probeBottom = (float)(position.Y - profile.StepOffset);
             if (!world.TryGetSupport(position.X, position.Z, probeTop, probeBottom, simTick, out SupportHit hit)) {
                 return false;
             }
 
-            float walkableThreshold = MathF.Cos(profile.SlopeLimitDegrees * DegreesToRadians);
+            float walkableThreshold = (float)MathF.Cos((float)(profile.SlopeLimitDegrees * DegreesToRadians));
             if (hit.Normal.Y <= 0f || hit.Normal.Y < walkableThreshold) {
                 return false;
             }
 
-            float rise = hit.Height - position.Y;
+            float rise = (float)(hit.Height - position.Y);
             if (rise > ReachAbove(profile, startedGrounded) || rise < -ReachBelow(profile, startedGrounded, hit.Normal.Y)) {
                 return false;
             }
@@ -502,8 +503,8 @@ namespace AlpineLib.Netcode.Replication {
                 return profile.StepOffset;
             }
 
-            float sag = profile.CapsuleRadius / normalY - profile.CapsuleRadius;
-            return GroundTolerance + MathF.Min(sag, profile.StepOffset);
+            float sag = (float)((float)(profile.CapsuleRadius / normalY) - profile.CapsuleRadius);
+            return (float)(GroundTolerance + MathF.Min(sag, profile.StepOffset));
         }
 
         /// <summary>
@@ -519,34 +520,34 @@ namespace AlpineLib.Netcode.Replication {
             float gaitSpeed,
             MovementProfile profile,
             float deltaSeconds) {
-            bool hasIntent = moveDirection.LengthSquared() >= MoveDeadZone * MoveDeadZone;
+            bool hasIntent = LengthSquared(moveDirection) >= (float)(MoveDeadZone * MoveDeadZone);
 
             if (!hasIntent) {
                 if (profile.AirDrag > 0f) {
-                    float decay = MathF.Exp(-profile.AirDrag * deltaSeconds);
-                    velocityX *= decay;
-                    velocityZ *= decay;
+                    float decay = (float)MathF.Exp((float)(-profile.AirDrag * deltaSeconds));
+                    velocityX = (float)(velocityX * decay);
+                    velocityZ = (float)(velocityZ * decay);
                 }
 
                 return;
             }
 
-            float targetX = moveDirection.X * gaitSpeed;
-            float targetZ = moveDirection.Y * gaitSpeed;
-            float deltaX = targetX - velocityX;
-            float deltaZ = targetZ - velocityZ;
-            float maxStep = profile.AirAcceleration * deltaSeconds;
-            float distanceSquared = deltaX * deltaX + deltaZ * deltaZ;
+            float targetX = (float)(moveDirection.X * gaitSpeed);
+            float targetZ = (float)(moveDirection.Y * gaitSpeed);
+            float deltaX = (float)(targetX - velocityX);
+            float deltaZ = (float)(targetZ - velocityZ);
+            float maxStep = (float)(profile.AirAcceleration * deltaSeconds);
+            float distanceSquared = (float)((float)(deltaX * deltaX) + (float)(deltaZ * deltaZ));
 
-            if (distanceSquared <= maxStep * maxStep) {
+            if (distanceSquared <= (float)(maxStep * maxStep)) {
                 velocityX = targetX;
                 velocityZ = targetZ;
                 return;
             }
 
-            float distance = MathF.Sqrt(distanceSquared);
-            velocityX += deltaX / distance * maxStep;
-            velocityZ += deltaZ / distance * maxStep;
+            float distance = (float)MathF.Sqrt(distanceSquared);
+            velocityX = (float)(velocityX + (float)((float)(deltaX / distance) * maxStep));
+            velocityZ = (float)(velocityZ + (float)((float)(deltaZ / distance) * maxStep));
         }
 
         /// <summary>
@@ -564,7 +565,7 @@ namespace AlpineLib.Netcode.Replication {
                 velocityY = profile.JumpVelocity;
             }
 
-            return velocityY + profile.Gravity * deltaSeconds;
+            return (float)(velocityY + (float)(profile.Gravity * deltaSeconds));
         }
 
         /// <summary>
@@ -572,7 +573,7 @@ namespace AlpineLib.Netcode.Replication {
         /// measured clockwise from +Z, matching the engine's convention.
         /// </summary>
         private static float ResolveYaw(Vector2 moveDirection, float previousYawDegrees) {
-            if (moveDirection.LengthSquared() < MoveDeadZone * MoveDeadZone) {
+            if (LengthSquared(moveDirection) < (float)(MoveDeadZone * MoveDeadZone)) {
                 return previousYawDegrees;
             }
 
@@ -585,14 +586,21 @@ namespace AlpineLib.Netcode.Replication {
         /// fine control while a client that sends an over-long vector gains nothing by it.
         /// </summary>
         private static Vector2 ClampToUnit(Vector2 moveDirection) {
-            float lengthSquared = moveDirection.LengthSquared();
+            float lengthSquared = LengthSquared(moveDirection);
 
             if (lengthSquared <= 1f) {
                 return moveDirection;
             }
 
-            float length = MathF.Sqrt(lengthSquared);
-            return new Vector2(moveDirection.X / length, moveDirection.Y / length);
+            float length = (float)MathF.Sqrt(lengthSquared);
+            return new Vector2((float)(moveDirection.X / length), (float)(moveDirection.Y / length));
+        }
+
+        // x² + y² with each step narrowed, instead of Vector2.LengthSquared, whose accumulation is the runtime's.
+        private static float LengthSquared(Vector2 value) {
+            float xx = (float)(value.X * value.X);
+            float yy = (float)(value.Y * value.Y);
+            return (float)(xx + yy);
         }
     }
 }
