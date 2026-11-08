@@ -163,9 +163,9 @@ dotnet "$CSC" -nostdlib -noconfig -unsafe -t:exe -out:parity.exe \
 $EDITOR/bin/mono -O=-float32 parity.exe   # the editor's behaviour; plain `mono` matches CoreCLR
 ```
 
-`Main.cs` only prints the six hashes; each must equal its `MonoParityGoldens` constant. `MathF.Atan2`, `Cos` and `Exp` come from each runtime's libm: yaw (`Atan2`) is
-left out of the motor hash, while the slope threshold (`Cos`) and air drag (`Exp`) do feed position and
-match only while both runtimes share a libm, so check the gate on each editor platform.
+`Main.cs` only prints the six hashes; each must equal its `MonoParityGoldens` constant. Yaw comes from `MathF.Atan2` and is left out of the motor hash.
+The slope threshold and air drag decay are computed once in double by `MovementProfile`
+(`WalkableNormalY`, `GetAirDragDecay`), so no float libm call runs on the position path.
 
 ## Animator contract
 
