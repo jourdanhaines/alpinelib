@@ -19,7 +19,7 @@ namespace AlpineLib.Server.Tests {
         /// FNV-1a 64 of every contact and support output over <see cref="GoldenInputs"/>. The game project
         /// re-runs the same inputs under Mono and must reach the same value.
         /// </summary>
-        private const ulong GoldenContactHash = 0x6EF21546946D1D82UL;
+        private const ulong GoldenContactHash = 0xE7F2B71C41C1F340UL;
 
         [Fact]
         public void RandomPosesMatchADoublePrecisionReference() {
@@ -155,13 +155,19 @@ namespace AlpineLib.Server.Tests {
 
         /// <summary>
         /// Hashes contacts and supports over integer-derived inputs (exact floats on every runtime) against
-        /// three literal prisms, so another runtime can rebuild the same set without a random source.
+        /// four literal prisms (one with sixteen vertices), so another runtime can rebuild the same set without a random source.
         /// </summary>
         internal static ulong GoldenInputs() {
             CollisionShape[] prisms = {
                 CollisionShape.MakePrism(new Vector3(0.25f, 0.5f, -0.5f), 0.5f, new[] { new Vector2(-1f, -1f), new Vector2(1.5f, -0.75f), new Vector2(1f, 1f), new Vector2(-0.5f, 1.25f) }),
                 CollisionShape.MakePrism(new Vector3(-1f, 1.25f, 0.75f), 1.25f, new[] { new Vector2(0f, -1f), new Vector2(0.875f, -0.5f), new Vector2(0.875f, 0.5f), new Vector2(0f, 1f), new Vector2(-0.875f, 0.5f), new Vector2(-0.875f, -0.5f) }),
                 CollisionShape.MakePrism(new Vector3(0.5f, 2f, 0.5f), 0.25f, new[] { new Vector2(-0.75f, -0.5f), new Vector2(0.75f, -0.5f), new Vector2(0f, 0.75f) }),
+                CollisionShape.MakePrism(new Vector3(-0.5f, 0.75f, -1f), 0.75f, new[] {
+                    new Vector2(1.5f, 0.109375f), new Vector2(1.328125f, 0.515625f), new Vector2(0.953125f, 0.859375f), new Vector2(0.4375f, 1.046875f),
+                    new Vector2(-0.15625f, 1.09375f), new Vector2(-0.703125f, 0.96875f), new Vector2(-1.15625f, 0.703125f), new Vector2(-1.4375f, 0.3125f),
+                    new Vector2(-1.5f, -0.109375f), new Vector2(-1.328125f, -0.515625f), new Vector2(-0.953125f, -0.859375f), new Vector2(-0.4375f, -1.046875f),
+                    new Vector2(0.15625f, -1.09375f), new Vector2(0.703125f, -0.96875f), new Vector2(1.15625f, -0.703125f), new Vector2(1.4375f, -0.3125f),
+                }),
             };
             ulong hash = 14695981039346656037UL;
             for (int index = 0; index < 4096; index++) {
@@ -310,7 +316,7 @@ namespace AlpineLib.Server.Tests {
 
         // A convex prism: 3–8 points on a turned ellipse at jittered, ordered angles.
         private static CollisionShape RandomPrism(Random random) {
-            int count = 3 + random.Next(6);
+            int count = 3 + random.Next(14);
             double radiusA = 0.3 + random.NextDouble() * 2.7, radiusB = 0.3 + random.NextDouble() * 2.7, turn = random.NextDouble() * Math.PI * 2.0;
             var offsets = new Vector2[count];
             for (int index = 0; index < count; index++) {

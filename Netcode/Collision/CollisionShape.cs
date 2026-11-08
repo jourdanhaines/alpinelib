@@ -137,7 +137,7 @@ namespace AlpineLib.Netcode.Collision {
         /// </remarks>
         public static CollisionShape MakePrism(Vector3 center, float halfHeight, ReadOnlySpan<Vector2> offsets) {
             if (offsets.Length < PrismPlan.MinVertices || offsets.Length > PrismPlan.MaxVertices) {
-                throw new ArgumentException("A prism needs 3 to 8 plan vertices.", nameof(offsets));
+                throw new ArgumentException("A prism needs 3 to 16 plan vertices.", nameof(offsets));
             }
 
             if (!IsFinite(center.X) || !IsFinite(center.Y) || !IsFinite(center.Z) || !IsFinite(halfHeight) || !(halfHeight > 0f)) {
@@ -342,7 +342,7 @@ namespace AlpineLib.Netcode.Collision {
             // Range-checked before any float is read: these bytes may come off the network.
             byte count = reader.ReadByte();
             if (count < PrismPlan.MinVertices || count > PrismPlan.MaxVertices) {
-                throw new NetProtocolException("Prism plan declares " + count + " vertices; 3 to 8 are allowed.");
+                throw new NetProtocolException("Prism plan declares " + count + " vertices; 3 to 16 are allowed.");
             }
 
             Plan.Count = count;

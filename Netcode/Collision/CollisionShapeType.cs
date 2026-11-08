@@ -25,7 +25,7 @@ namespace AlpineLib.Netcode.Collision {
         Capsule = 3,
 
         /// <summary>
-        /// A vertical convex prism: a 3–8 vertex convex plan (<c>Plan</c>, offsets from <c>Center</c> in world
+        /// A vertical convex prism: a 3–16 vertex convex plan (<c>Plan</c>, offsets from <c>Center</c> in world
         /// XZ) extruded <c>HalfExtents.Y</c> either side of <c>Center.Y</c>.
         /// </summary>
         Prism = 4

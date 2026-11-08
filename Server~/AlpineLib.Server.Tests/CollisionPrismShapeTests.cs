@@ -54,8 +54,8 @@ namespace AlpineLib.Server.Tests {
             Vector2[] collinear = { new Vector2(-1f, -1f), new Vector2(0f, -1f), new Vector2(1f, -1f), new Vector2(1f, 1f), new Vector2(-1f, 1f) };
             Vector2[] repeated = { square[0], square[1], square[1], square[2], square[3] };
             Vector2[] two = { square[0], square[1] };
-            Vector2[] nine = new Vector2[9];
-            for (int index = 0; index < nine.Length; index++) nine[index] = new Vector2(index, index * index);
+            Vector2[] seventeen = new Vector2[17];
+            for (int index = 0; index < seventeen.Length; index++) seventeen[index] = new Vector2(index, index * index);
             Vector2[] notANumber = { square[0], new Vector2(float.NaN, -1f), square[2], square[3] };
             Vector2[] windsTwice = Star();
 
@@ -63,12 +63,30 @@ namespace AlpineLib.Server.Tests {
             Assert.Throws<ArgumentException>(() => CollisionShape.MakePrism(Vector3.Zero, 1f, collinear));
             Assert.Throws<ArgumentException>(() => CollisionShape.MakePrism(Vector3.Zero, 1f, repeated));
             Assert.Throws<ArgumentException>(() => CollisionShape.MakePrism(Vector3.Zero, 1f, two));
-            Assert.Throws<ArgumentException>(() => CollisionShape.MakePrism(Vector3.Zero, 1f, nine));
+            Assert.Throws<ArgumentException>(() => CollisionShape.MakePrism(Vector3.Zero, 1f, seventeen));
             Assert.Throws<ArgumentException>(() => CollisionShape.MakePrism(Vector3.Zero, 1f, notANumber));
             Assert.Throws<ArgumentException>(() => CollisionShape.MakePrism(Vector3.Zero, 1f, windsTwice));
             Assert.Throws<ArgumentException>(() => CollisionShape.MakePrism(Vector3.Zero, 0f, square));
             Assert.Throws<ArgumentException>(() => CollisionShape.MakePrism(new Vector3(float.PositiveInfinity, 0f, 0f), 1f, square));
             Assert.Equal(4, CollisionShape.MakePrism(Vector3.Zero, 1f, square).Plan.Count);
+        }
+
+        [Fact]
+        public void SixteenVerticesFitAndRoundTrip() {
+            var sixteen = new Vector2[16];
+            for (int index = 0; index < sixteen.Length; index++) {
+                double angle = 2.0 * Math.PI * index / 16.0;
+                sixteen[index] = new Vector2((float)(2.0 * Math.Cos(angle)), (float)(1.5 * Math.Sin(angle)));
+            }
+
+            CollisionShape prism = CollisionShape.MakePrism(new Vector3(1f, 2f, 3f), 1f, sixteen);
+            byte[] bytes = Serialize(prism);
+
+            Assert.Equal(16, prism.Plan.Count);
+            Assert.Equal(PlainShapeByteCount + 1 + 16 * 8, bytes.Length);
+            Assert.Equal(prism, Deserialize(bytes));
+            prism.Plan.GetVertex(15, out float x, out float z);
+            Assert.True(x > 1.8f && z < -0.5f);
         }
 
         [Fact]
@@ -113,7 +131,7 @@ namespace AlpineLib.Server.Tests {
         [Theory]
         [InlineData(0)]
         [InlineData(2)]
-        [InlineData(9)]
+        [InlineData(17)]
         [InlineData(255)]
         public void ABadVertexCountIsRefusedBeforeAnyFloatIsRead(byte count) {
             byte[] bytes = Serialize(CollisionShape.MakePrism(Vector3.Zero, 1f, Pentagon(Vector2.Zero)));

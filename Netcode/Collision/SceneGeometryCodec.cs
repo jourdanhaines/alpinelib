@@ -63,7 +63,7 @@ namespace AlpineLib.Netcode.Collision {
         /// <summary>A serialized <see cref="CollisionShape"/>: a type byte, five vectors, two floats.</summary>
         private const int ShapeByteCount = 1 + (5 * 12) + (2 * 4);
 
-        /// <summary>The widest serialized shape: a prism's count byte and eight (x, z) pairs on top.</summary>
+        /// <summary>The widest serialized shape: a prism's count byte and sixteen (x, z) pairs on top.</summary>
         private const int MaxShapeByteCount = ShapeByteCount + 1 + (PrismPlan.MaxVertices * 2 * 4);
 
         /// <summary>A mover's two ids plus its local shape, before the path.</summary>
