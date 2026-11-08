@@ -14,7 +14,9 @@ namespace AlpineLib.Sky {
     /// <see cref="Radius"/>, so they already stand before (and after) the full cell is built. Every cell in the square
     /// is prepared on worker threads through an <see cref="IFarPropSource"/>; a cell draws while it is in range and
     /// its built twin has not taken over (<see cref="Suppress"/> / <see cref="Unsuppress"/>, same frame, so the two
-    /// never double up or leave a gap). Newly drawn cells fade in with the stylized screen-door.
+    /// never double up or leave a gap). Newly drawn cells fade in with the stylized screen-door. A cell's
+    /// <see cref="FarPropCell.MeshPayloads"/> upload on the main thread, at most <see cref="MaxUploadsPerFrame"/> a
+    /// frame, and the cell draws only once every one is up; each draws as a one-copy batch at the cell centre.
     /// </summary>
     /// <remarks>
     /// Cells are placed through the streamer's own cell space at every draw (its transform times the cell centre,
@@ -28,6 +30,9 @@ namespace AlpineLib.Sky {
         /// <summary>Cells past the radius kept prepared before they are dropped.</summary>
         public const int KeepMargin = 1;
 
+        /// <summary>Payload meshes uploaded per <see cref="Tick"/> unless set otherwise.</summary>
+        public const int DefaultUploadsPerFrame = 2;
+
         private const ulong FocusObserver = 1UL;
 
         /// <summary>A failed prepare is retried 1 s later, doubling to at most 30 s while it keeps failing.</summary>
@@ -37,6 +42,8 @@ namespace AlpineLib.Sky {
         private readonly List<CellCoord> _added = new List<CellCoord>();
         private readonly List<CellCoord> _removed = new List<CellCoord>();
         private readonly List<FarPropLayerCell> _scratch = new List<FarPropLayerCell>();
+        private readonly List<FarPropLayerCell> _uploads = new List<FarPropLayerCell>();
+        private static readonly Matrix4x4[] PayloadPlacement = { Matrix4x4.identity };
         private CellStreamer _streamer;
         private IFarPropSource _source;
         private CellInterestSet _interest;
@@ -47,6 +54,7 @@ namespace AlpineLib.Sky {
         private float _maxOffsetSeconds;
         private int _layer;
         private int _maxConcurrentPrepares = 2;
+        private int _maxUploadsPerFrame = DefaultUploadsPerFrame;
 
         /// <summary>Chebyshev radius around the focus cell that draws.</summary>
         public int Radius => _visibility != null ? _visibility.Radius : 0;
@@ -66,6 +74,21 @@ namespace AlpineLib.Sky {
         public int MaxConcurrentPrepares {
             get => _maxConcurrentPrepares;
             set => _maxConcurrentPrepares = Mathf.Max(1, value);
+        }
+
+        /// <summary>Payload meshes uploaded per <see cref="Tick"/> (<see cref="PrepareAllNow"/> uploads every one).</summary>
+        public int MaxUploadsPerFrame {
+            get => _maxUploadsPerFrame;
+            set => _maxUploadsPerFrame = Mathf.Max(1, value);
+        }
+
+        /// <summary>Payload meshes prepared but not uploaded yet, over every cell.</summary>
+        public int PendingUploads {
+            get {
+                int pending = 0;
+                foreach (FarPropLayerCell cell in _uploads) pending += cell.Pending.MeshPayloads.Count - cell.PayloadMeshes.Count;
+                return pending;
+            }
         }
 
         /// <summary>
@@ -132,6 +155,11 @@ namespace AlpineLib.Sky {
             return _cells.TryGetValue(cell, out FarPropLayerCell tracked) && tracked.IsReady ? tracked.InstanceCount : 0;
         }
 
+        /// <summary>Payload meshes the cell would draw (0 until prepared and uploaded).</summary>
+        public int PayloadMeshCountOf(CellCoord cell) {
+            return _cells.TryGetValue(cell, out FarPropLayerCell tracked) && tracked.IsReady ? tracked.PayloadMeshes.Count : 0;
+        }
+
         /// <summary>Copies the cell draws right now (0 when hidden or suppressed).</summary>
         public int DrawnCountOf(CellCoord cell) {
             return _visibility != null && _visibility.IsDrawn(cell) ? InstanceCountOf(cell) : 0;
@@ -157,6 +185,7 @@ namespace AlpineLib.Sky {
 
             RefreshInterest();
             CollectPrepared();
+            UploadPayloads(_maxUploadsPerFrame);
             StartPrepares();
             RefreshVisibility();
         }
@@ -168,20 +197,25 @@ namespace AlpineLib.Sky {
             RefreshInterest();
             double now = _clock();
             foreach (FarPropLayerCell cell in _cells.Values) {
-                if (cell.IsReady || cell.RetryAt > now) continue;
+                if (cell.IsReady || cell.Pending != null || cell.RetryAt > now) continue;
 
                 WaitQuietly(cell.PrepareTask);
                 if (cell.PrepareTask == null || !cell.PrepareTask.IsCompleted) AdoptOrRetry(cell, PrepareNow(cell.Coord, out bool isFailed), isFailed);
             }
             CollectPrepared();
+            UploadPayloads(int.MaxValue);
             RefreshVisibility();
         }
 
-        /// <summary>Forgets every cell and suppression, cancelling prepares in flight.</summary>
+        /// <summary>Forgets every cell and suppression, cancelling prepares in flight and freeing payload meshes.</summary>
         public void Clear() {
-            foreach (FarPropLayerCell cell in _cells.Values) cell.Cancellation?.Cancel();
+            foreach (FarPropLayerCell cell in _cells.Values) {
+                cell.Cancellation?.Cancel();
+                DestroyPayloadMeshes(cell);
+            }
 
             _cells.Clear();
+            _uploads.Clear();
             _interest = _interest != null ? new CellInterestSet(_interest.Radius, KeepMargin) : null;
             _visibility?.Clear();
         }
@@ -194,8 +228,10 @@ namespace AlpineLib.Sky {
             RenderPipelineManager.beginCameraRendering += OnBeginCameraRendering;
         }
 
+        // Edit mode frees payload meshes here (domain reloads skip OnDestroy); those cells prepare again on enable.
         private void OnDisable() {
             RenderPipelineManager.beginCameraRendering -= OnBeginCameraRendering;
+            if (!Application.isPlaying) ResetPayloadCells();
         }
 
         private void OnDestroy() {
@@ -233,6 +269,8 @@ namespace AlpineLib.Sky {
             if (!_cells.TryGetValue(coord, out FarPropLayerCell cell)) return;
 
             cell.Cancellation?.Cancel();
+            DestroyPayloadMeshes(cell);
+            _uploads.Remove(cell);
             _cells.Remove(coord);
             _visibility.Forget(coord);
         }
@@ -268,10 +306,21 @@ namespace AlpineLib.Sky {
             FailedPrepares++;
         }
 
+        // A result with mesh payloads waits for its uploads; one without is ready at once.
         private void Adopt(FarPropLayerCell cell, FarPropCell result) {
             cell.PrepareTask = null;
             cell.Cancellation = null;
             cell.Failures = 0;
+            if (result != null && result.MeshPayloads.Count > 0) {
+                cell.Pending = result;
+                _uploads.Add(cell);
+                return;
+            }
+
+            MakeReady(cell, result);
+        }
+
+        private void MakeReady(FarPropLayerCell cell, FarPropCell result) {
             cell.Batches.Clear();
             cell.InstanceCount = 0;
             if (result != null) {
@@ -279,6 +328,7 @@ namespace AlpineLib.Sky {
                     cell.Batches.Add(new InstancedBatch(batch.Mesh, batch.Material, batch.Submesh, batch.Matrices, batch.Bounds));
                     cell.InstanceCount += batch.Matrices.Length;
                 }
+                AddPayloadBatches(cell, result);
             }
             cell.IsReady = true;
             cell.FadeSetFor = double.NaN;
@@ -317,7 +367,7 @@ namespace AlpineLib.Sky {
             long bestRank = long.MaxValue;
             double now = _clock();
             foreach (FarPropLayerCell cell in _cells.Values) {
-                if (cell.IsReady || cell.PrepareTask != null || cell.RetryAt > now) continue;
+                if (cell.IsReady || cell.PrepareTask != null || cell.Pending != null || cell.RetryAt > now) continue;
 
                 long rank = CellInterestSet.ChebyshevDistance(cell.Coord, _visibility.Focus) + (_visibility.IsSuppressed(cell.Coord) ? 1000L : 0L);
                 if (rank >= bestRank) continue;
@@ -357,6 +407,61 @@ namespace AlpineLib.Sky {
 
                 batch.HoldFade(twin, _fadeSeconds, _maxOffsetSeconds, _clock).StartAt(since);
             }
+        }
+
+        // Oldest result first, one mesh at a time; a cell turns ready with its last upload.
+        private void UploadPayloads(int budget) {
+            while (budget > 0 && _uploads.Count > 0) {
+                FarPropLayerCell cell = _uploads[0];
+                UploadNext(cell);
+                budget--;
+                if (cell.PayloadMeshes.Count < cell.Pending.MeshPayloads.Count) continue;
+
+                _uploads.RemoveAt(0);
+                FarPropCell result = cell.Pending;
+                cell.Pending = null;
+                MakeReady(cell, result);
+            }
+        }
+
+        private void UploadNext(FarPropLayerCell cell) {
+            int index = cell.PayloadMeshes.Count;
+            FarPropMeshPayload payload = cell.Pending.MeshPayloads[index];
+            cell.PayloadMeshes.Add(payload.CreateMesh($"Far Payload {cell.Coord} {index}"));
+        }
+
+        private static void AddPayloadBatches(FarPropLayerCell cell, FarPropCell result) {
+            for (int index = 0; index < cell.PayloadMeshes.Count; index++) {
+                FarPropMeshPayload payload = result.MeshPayloads[index];
+                Material material = result.PayloadMaterials[payload.MaterialSlot];
+                cell.Batches.Add(new InstancedBatch(cell.PayloadMeshes[index], material, 0, PayloadPlacement, payload.Bounds));
+            }
+        }
+
+        // Cells holding payload meshes go back to unprepared, their meshes freed.
+        private void ResetPayloadCells() {
+            foreach (FarPropLayerCell cell in _cells.Values) {
+                if (cell.PayloadMeshes.Count == 0 && cell.Pending == null) continue;
+
+                DestroyPayloadMeshes(cell);
+                cell.Pending = null;
+                cell.Batches.Clear();
+                cell.InstanceCount = 0;
+                cell.IsReady = false;
+                cell.FadeSetFor = double.NaN;
+                _visibility?.Forget(cell.Coord);
+            }
+            _uploads.Clear();
+        }
+
+        private static void DestroyPayloadMeshes(FarPropLayerCell cell) {
+            foreach (Mesh mesh in cell.PayloadMeshes) {
+                if (mesh == null) continue;
+
+                if (Application.isPlaying) Destroy(mesh);
+                else DestroyImmediate(mesh);
+            }
+            cell.PayloadMeshes.Clear();
         }
 
         private static void WaitQuietly(Task task) {
