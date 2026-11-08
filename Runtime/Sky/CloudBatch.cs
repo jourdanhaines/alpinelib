@@ -49,6 +49,13 @@ namespace AlpineLib.Sky {
         /// <summary><see cref="LandmarkShapes"/> binned for the per-cloud lookups.</summary>
         public CloudLandmarkIndex LandmarkIndex { get; } = new CloudLandmarkIndex();
 
+        /// <summary>Share latent clouds are drawn at: 0 until the camera's first landmark query is complete, then condensing in.</summary>
+        public float LatentFade { get; set; }
+        public double LatentFadeStep { get; set; }
+
+        /// <summary>Field-wide number of the last landmark query, so cells know when their cached landmarks are stale.</summary>
+        public int LandmarkRevision { get; set; } = -1;
+
         /// <summary>True once <see cref="LandmarkShapes"/> was queried; complete once the provider knew every landmark in reach.</summary>
         public bool HasShapes { get; set; }
         public bool AreShapesComplete { get; set; }

@@ -21,6 +21,9 @@ namespace AlpineLib.Sky {
         /// <summary>Puff footprint radius times this is the radius it shadows.</summary>
         public float FootprintScale { get; set; } = 1f;
 
+        /// <summary>Least radius a splatted disc is drawn at, in texels, so small shadows do not shimmer as they drift across texels.</summary>
+        public float MinSplatTexels { get; set; } = 2.5f;
+
         public static CloudShadowSettings Default => new CloudShadowSettings();
 
         /// <summary>Metres per texel.</summary>
@@ -33,6 +36,7 @@ namespace AlpineLib.Sky {
             if (!(ShadowLight >= 0f && ShadowLight <= 1f)) throw new ArgumentOutOfRangeException(nameof(ShadowLight), ShadowLight, "Must be in [0, 1].");
             if (!(EdgeShare > 0f && EdgeShare <= 1f)) throw new ArgumentOutOfRangeException(nameof(EdgeShare), EdgeShare, "Must be in (0, 1].");
             if (!(Softness > 0f && Softness <= 1f)) throw new ArgumentOutOfRangeException(nameof(Softness), Softness, "Must be in (0, 1].");
+            if (!(MinSplatTexels >= 0f)) throw new ArgumentOutOfRangeException(nameof(MinSplatTexels), MinSplatTexels, "Must not be negative.");
             if (!(FootprintScale > 0f)) throw new ArgumentOutOfRangeException(nameof(FootprintScale), FootprintScale, "Must be positive.");
         }
     }

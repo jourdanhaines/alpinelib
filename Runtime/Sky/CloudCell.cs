@@ -14,9 +14,46 @@ namespace AlpineLib.Sky {
         private double[] _offsets = new double[0];
         private long _tick = NoTick;
         private bool _hasAhead;
+        private long _latentTick = NoTick;
+        private bool _hasLatentAhead;
 
         /// <summary>The cell's clouds, in slot order.</summary>
         public List<CloudInstance> Clouds { get; } = new List<CloudInstance>();
+
+        /// <summary>Landmarks whose lift or giant zone may reach this cell's clouds (<see cref="CloudLandmarkIndex.CollectNear"/>), cached per landmark query and 32 m drift step.</summary>
+        public List<LandmarkSkyShape> LiftShapes { get; } = new List<LandmarkSkyShape>();
+        public List<LandmarkSkyShape> BiasShapes { get; } = new List<LandmarkSkyShape>();
+
+        /// <summary>The <see cref="BiasShapes"/> whose zone under the wind heading <see cref="ZoneHeading"/> (padded for a small turn) reaches the cell.</summary>
+        public List<LandmarkSkyShape> ZoneShapes { get; } = new List<LandmarkSkyShape>();
+        public WindVector ZoneHeading { get; set; }
+        public int ZoneRevision { get; set; } = -1;
+
+        /// <summary>Bumped each time the cell's landmarks are recollected (a new query or drift step).</summary>
+        public int CollectCount { get; set; }
+        public int LandmarkRevision { get; set; } = -1;
+        public long LandmarkStepX { get; set; }
+        public long LandmarkStepZ { get; set; }
+
+        /// <summary>Highest landmark top plus the lift clearance among <see cref="LiftShapes"/>: clouds based at or above it never lift here.</summary>
+        public double LiftCeiling { get; set; }
+
+        /// <summary>Centre and half-diagonal of the box this cell's clouds stay in at the cached drift step, absolute metres.</summary>
+        public double BoxX { get; set; }
+        public double BoxZ { get; set; }
+        public double BoxRadius { get; set; }
+
+        /// <summary>True when some landmark may change a cloud of this cell.</summary>
+        public bool HasInfluence => LiftShapes.Count > 0 || BiasShapes.Count > 0;
+
+        /// <summary>Clouds before the first latent one (the scatter lists regular clouds first).</summary>
+        public int RegularCount { get; private set; }
+
+        /// <summary>Counts the regular clouds once the cell is filled.</summary>
+        public void CountRegular() {
+            RegularCount = 0;
+            while (RegularCount < Clouds.Count && !Clouds[RegularCount].IsLatent) RegularCount++;
+        }
 
         /// <summary>True when the offsets of the tick after next are already sampled.</summary>
         public bool HasAhead => _hasAhead;
@@ -25,15 +62,22 @@ namespace AlpineLib.Sky {
         /// Samples the offsets of <paramref name="tick"/> and the next under their headings, reusing the previous tick's
         /// next (and the sampled-ahead tick) when the tick only advanced by one.
         /// </summary>
-        public void Prepare(CloudFieldScatter scatter, long tick, WindVector heading, WindVector nextHeading) {
-            if (_tick == tick) return;
-
+        /// Latent clouds are sampled only when <paramref name="withLatent"/> (a landmark may show them), and from scratch
+        /// the first tick they are.
+        public void Prepare(CloudFieldScatter scatter, long tick, WindVector heading, WindVector nextHeading, bool withLatent = true) {
             bool isGrown = EnsureOffsets();
-            bool isStep = !isGrown && _tick != NoTick && _tick + 1 == tick;
-            bool hasAhead = isStep && _hasAhead;
-            for (int index = 0; index < Clouds.Count; index++) PrepareCloud(scatter, index, tick, heading, nextHeading, isStep, hasAhead);
+            if (_tick != tick || isGrown) PrepareRange(scatter, 0, RegularCount, tick, heading, nextHeading, isGrown ? NoTick : _tick, _hasAhead);
+            if (withLatent && (_latentTick != tick || isGrown)) PrepareRange(scatter, RegularCount, Clouds.Count, tick, heading, nextHeading, isGrown ? NoTick : _latentTick, _hasLatentAhead);
+            if (_tick != tick) _hasAhead = false;
+            if (withLatent && _latentTick != tick) _hasLatentAhead = false;
             _tick = tick;
-            _hasAhead = false;
+            _latentTick = withLatent ? tick : NoTick;
+        }
+
+        private void PrepareRange(CloudFieldScatter scatter, int start, int end, long tick, WindVector heading, WindVector nextHeading, long previous, bool hadAhead) {
+            bool isStep = previous != NoTick && previous + 1 == tick;
+            bool hasAhead = isStep && hadAhead;
+            for (int index = start; index < end; index++) PrepareCloud(scatter, index, tick, heading, nextHeading, isStep, hasAhead);
         }
 
         /// <summary>
@@ -43,12 +87,15 @@ namespace AlpineLib.Sky {
         public int PrepareAhead(CloudFieldScatter scatter, long aheadTick, WindVector aheadHeading) {
             if (_hasAhead || _tick == NoTick || _tick + 2 != aheadTick || _offsets.Length < Clouds.Count * Stride) return 0;
 
-            for (int index = 0; index < Clouds.Count; index++) {
+            bool withLatent = _latentTick == _tick;
+            int end = withLatent ? Clouds.Count : RegularCount;
+            for (int index = 0; index < end; index++) {
                 int slot = index * Stride;
                 scatter.OffsetAtTick(Clouds[index], aheadTick, aheadHeading, out _offsets[slot + 4], out _offsets[slot + 5]);
             }
             _hasAhead = true;
-            return Clouds.Count;
+            _hasLatentAhead = withLatent;
+            return end;
         }
 
         /// <summary>Cloud <paramref name="index"/>'s offset from its anchor, blended <paramref name="share"/> of the way to the next tick.</summary>
@@ -61,6 +108,14 @@ namespace AlpineLib.Sky {
         /// <summary>Empties the cell for reuse.</summary>
         public void Clear() {
             Clouds.Clear();
+            LiftShapes.Clear();
+            BiasShapes.Clear();
+            ZoneShapes.Clear();
+            ZoneRevision = -1;
+            LandmarkRevision = -1;
+            RegularCount = 0;
+            _latentTick = NoTick;
+            _hasLatentAhead = false;
             _tick = NoTick;
             _hasAhead = false;
         }

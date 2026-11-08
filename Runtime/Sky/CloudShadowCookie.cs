@@ -294,7 +294,8 @@ namespace AlpineLib.Sky {
             float size = _settings.CookieSize;
             float clipX = 2f * (local.x - CookieOffset.x) / size;
             float clipY = 2f * (local.y - CookieOffset.y) / size;
-            float radius = 2f * footprintRadius * _settings.FootprintScale / size;
+            float metres = Mathf.Max(footprintRadius * _settings.FootprintScale, _settings.MinSplatTexels * _settings.TexelSize);
+            float radius = 2f * metres / size;
             matrix = Matrix4x4.identity;
             if (Mathf.Abs(clipX) > 1f + radius || Mathf.Abs(clipY) > 1f + radius) return false;
 
