@@ -22,20 +22,22 @@ float AlpineRockNoise(float x)
     return lerp(AlpineRockHash(cell), AlpineRockHash(cell + 1.0), blend);
 }
 
-// Darker runs from hashed tops in hashed columns, fading downward over 10-30 m.
+// Darker runs from hashed tops in hashed columns, soft-edged, narrowing and fading downward over 10-30 m.
 float AlpineRockVarnish(float across, float height, float footprint)
 {
     float width = 2.2 * _StreakScale;
     float column = floor(across / width);
     float inColumn = frac(across / width);
-    float edges = smoothstep(0.0, 0.3, inColumn) * smoothstep(1.0, 0.7, inColumn);
+    float edges = smoothstep(0.0, 0.5, inColumn) * smoothstep(1.0, 0.5, inColumn);
     edges = lerp(edges, 0.55, saturate(footprint / width * 1.5 - 0.5));
-    float isActive = step(0.55, AlpineRockHash(column + 5.7));
+    float isActive = step(0.4, AlpineRockHash(column + 5.7));
     float period = 36.0;
     float below = frac((AlpineRockHash(column + 1.3) * period - height) / period) * period;
     float runLength = lerp(10.0, 30.0, AlpineRockHash(column + 9.1));
-    float run = saturate(1.0 - below / runLength) * smoothstep(0.0, 1.5, below);
-    return run * edges * isActive;
+    float run = saturate(1.0 - below / runLength) * smoothstep(0.0, 4.0, below);
+    // The run narrows as it fades, so it ends in a soft drip rather than a block.
+    float drip = smoothstep(0.0, max(0.6 * run, 1e-3), edges);
+    return run * drip * isActive;
 }
 
 // Thin level lines every ~0.6-1.4 strata periods, lighter or (more often) darker; widened and dimmed when sub-pixel.
