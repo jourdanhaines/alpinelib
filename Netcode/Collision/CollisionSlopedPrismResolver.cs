@@ -23,6 +23,12 @@ namespace AlpineLib.Netcode.Collision {
         /// <summary>Squared separation too short to take a direction from; the interior rule takes over.</summary>
         private const float DegenerateSquaredEpsilon = 1e-12f;
 
+        /// <summary>
+        /// Squared plan distance (1 mm²) outside the rim at which support still holds. A float point on an edge two pieces
+        /// share can test outside both (each measures from its own centre); without this a foot on a fan seam falls through.
+        /// </summary>
+        private const float SupportRimToleranceSquared = 1e-6f;
+
         /// <summary>Capsule against sloped prism; the normal points out of the solid.</summary>
         public static bool TryGetSlopedPrismContact(in CapsulePose pose, in CollisionShape shape, out CollisionContact contact) {
             contact = default;
@@ -68,18 +74,39 @@ namespace AlpineLib.Netcode.Collision {
             return true;
         }
 
-        /// <summary>The top height and plane normal when the column passes through the plan, rim included.</summary>
+        /// <summary>The top height and plane normal when the column passes through the plan or within 1 mm of its rim.</summary>
         public static bool TryGetSlopedPrismSurfaceHeight(in CollisionShape shape, float x, float z, out float height, out Vector3 normal) {
             height = 0f;
             normal = new Vector3(0f, 1f, 0f);
             float planX = (float)(x - shape.Center.X);
             float planZ = (float)(z - shape.Center.Z);
-            if (!CollisionPrismResolver.PlanContains(in shape, planX, planZ)) {
+            if (!PlanHoldsForSupport(in shape, planX, planZ)) {
                 return false;
             }
 
             height = shape.SlopedTopAtPlan(planX, planZ);
             normal = TopNormal(in shape);
+            return true;
+        }
+
+        // Inside every edge, or outside one by at most the rim tolerance: cross² ≤ tolerance² · length², no root taken.
+        private static bool PlanHoldsForSupport(in CollisionShape shape, float planX, float planZ) {
+            int count = shape.Plan.Count;
+            for (int index = 0; index < count; index++) {
+                shape.Plan.GetVertex(index, out float startX, out float startZ);
+                shape.Plan.GetVertex(index + 1 < count ? index + 1 : 0, out float endX, out float endZ);
+                float edgeX = (float)(endX - startX);
+                float edgeZ = (float)(endZ - startZ);
+                float cross = (float)((float)(edgeX * (float)(planZ - startZ)) - (float)(edgeZ * (float)(planX - startX)));
+                if (cross >= 0f) {
+                    continue;
+                }
+
+                if ((float)(cross * cross) > (float)(SupportRimToleranceSquared * SumOfSquares(edgeX, edgeZ))) {
+                    return false;
+                }
+            }
+
             return true;
         }
 

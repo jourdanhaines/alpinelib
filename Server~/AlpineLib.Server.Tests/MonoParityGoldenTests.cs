@@ -34,9 +34,9 @@ namespace AlpineLib.Server.Tests {
 
         [Fact]
         public void TheSlopedGoldensHold() {
-            Assert.Equal(0xE31BF47AA4E52B4AUL, MonoParityGoldens.SlopedPrismGolden);
+            Assert.Equal(0x5F1E9E4644E21060UL, MonoParityGoldens.SlopedPrismGolden);
             Assert.Equal(0xA683802B1DAD9316UL, MonoParityGoldens.SlopedMotorGolden);
-            Assert.Equal(0x9CD5A79E4776C326UL, MonoParityGoldens.RoughSlopedPrismGolden);
+            Assert.Equal(0x61F7C0271E3ED34DUL, MonoParityGoldens.RoughSlopedPrismGolden);
             Assert.Equal(0x79D582EE7873843DUL, MonoParityGoldens.RoughSlopedMotorGolden);
             Assert.Equal(MonoParityGoldens.SlopedPrismGolden, MonoParityGoldens.SlopedPrismHash());
             Assert.Equal(MonoParityGoldens.SlopedMotorGolden, MonoParityGoldens.SlopedMotorHash());

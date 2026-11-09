@@ -25,13 +25,13 @@ namespace AlpineLib.Netcode.Diagnostics {
         public const ulong PrismGolden = 0xE7F2B71C41C1F340UL;
 
         /// <summary>Sloped prism contacts, support heights and normals over the exact poses.</summary>
-        public const ulong SlopedPrismGolden = 0xE31BF47AA4E52B4AUL;
+        public const ulong SlopedPrismGolden = 0x5F1E9E4644E21060UL;
 
         /// <summary>Pawn motor states over the exact script on the sloped prism world.</summary>
         public const ulong SlopedMotorGolden = 0xA683802B1DAD9316UL;
 
         /// <summary><see cref="SlopedPrismGolden"/> over the rough poses.</summary>
-        public const ulong RoughSlopedPrismGolden = 0x9CD5A79E4776C326UL;
+        public const ulong RoughSlopedPrismGolden = 0x61F7C0271E3ED34DUL;
 
         /// <summary><see cref="SlopedMotorGolden"/> over the rough script.</summary>
         public const ulong RoughSlopedMotorGolden = 0x79D582EE7873843DUL;
