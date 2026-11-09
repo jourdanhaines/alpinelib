@@ -72,6 +72,16 @@ namespace AlpineLib.Netcode.Collision {
             normal = new Vector3(0f, 1f, 0f);
             float planX = (float)(x - shape.Center.X);
             float planZ = (float)(z - shape.Center.Z);
+            if (!PlanContains(in shape, planX, planZ)) {
+                return false;
+            }
+
+            height = (float)(shape.Center.Y + shape.HalfExtents.Y);
+            return true;
+        }
+
+        /// <summary>True when the plan point (relative to the centre) is inside the plan or on its rim, by exact sign.</summary>
+        public static bool PlanContains(in CollisionShape shape, float planX, float planZ) {
             int count = shape.Plan.Count;
             for (int index = 0; index < count; index++) {
                 shape.Plan.GetVertex(index, out float startX, out float startZ);
@@ -82,7 +92,6 @@ namespace AlpineLib.Netcode.Collision {
                 }
             }
 
-            height = (float)(shape.Center.Y + shape.HalfExtents.Y);
             return true;
         }
 
@@ -200,7 +209,7 @@ namespace AlpineLib.Netcode.Collision {
         }
 
         /// <summary>The outward unit normal (dz, 0, −dx) / L of plan edge <paramref name="edge"/>.</summary>
-        private static Vector3 EdgeNormal(in CollisionShape shape, int edge) {
+        public static Vector3 EdgeNormal(in CollisionShape shape, int edge) {
             int count = shape.Plan.Count;
             shape.Plan.GetVertex(edge, out float startX, out float startZ);
             shape.Plan.GetVertex(NextIndex(edge, count), out float endX, out float endZ);

@@ -84,7 +84,7 @@ namespace AlpineLib.Netcode.Collision {
         public const float MinSlopedPrismHeight = 0.01f;
 
         /// <summary>True for the two primitives that carry a <see cref="Plan"/>.</summary>
-        public bool HasPlan => Type == CollisionShapeType.Prism || Type == CollisionShapeType.SlopedPrism;
+        public readonly bool HasPlan => Type == CollisionShapeType.Prism || Type == CollisionShapeType.SlopedPrism;
 
         /// <summary>An infinite horizontal floor at <paramref name="height"/>.</summary>
         public static CollisionShape MakePlane(float height) {
@@ -271,12 +271,12 @@ namespace AlpineLib.Netcode.Collision {
         /// A sloped prism's top height over world (<paramref name="x"/>, <paramref name="z"/>), in the resolver's
         /// float operation order; the plane extends past the plan.
         /// </summary>
-        public float SlopedTopHeight(float x, float z) {
+        public readonly float SlopedTopHeight(float x, float z) {
             return SlopedTopAtPlan((float)(x - Center.X), (float)(z - Center.Z));
         }
 
         /// <summary>A sloped prism's top height over the plan offset (<paramref name="planX"/>, <paramref name="planZ"/>) from the centre.</summary>
-        public float SlopedTopAtPlan(float planX, float planZ) {
+        public readonly float SlopedTopAtPlan(float planX, float planZ) {
             float alongX = (float)(TopSlopeX * planX);
             float alongZ = (float)(TopSlopeZ * planZ);
             return (float)((float)(TopY0 + alongX) + alongZ);
