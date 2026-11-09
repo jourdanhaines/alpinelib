@@ -17,6 +17,33 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
         }
 
         [Fact]
+        public void ASlopedTopCountsItsAirAndCapsItsSides() {
+            var sloped = Metrics(EnvelopePrism.Sloped(0.0, Rectangle(-1.0, 1.0, -1.0, 1.0), 2.25, 0.25, 0.0));
+
+            Assert.InRange(EnvelopeMetrics.Quantile(sloped.LedgeAir(0.0, 0.3, 3.0), 1.0), 0.499, 0.501);
+            Assert.InRange(EnvelopeMetrics.Quantile(sloped.LedgeAir(0.0, 0.3, 3.0), 0.0), 0.0, 0.02);
+            Assert.InRange(EnvelopeMetrics.Quantile(sloped.Standoff(0.35, 1.4, 3.0), 1.0), 0.0, 0.001);
+            Assert.InRange(EnvelopeMetrics.Quantile(sloped.Standoff(0.35, 3.0, 3.0), 1.0), 0.499, 0.501);
+        }
+
+        [Fact]
+        public void ASlopedPrismMeasuresToItsPlaneAndCopiesTheShape() {
+            EnvelopePrism sloped = EnvelopePrism.Sloped(0.0, Rectangle(-1.0, 1.0, -1.0, 1.0), 2.0, 0.75, 0.0);
+
+            Assert.True(sloped.IsSloped);
+            Assert.Equal(2.75, sloped.Top);
+            Assert.Equal(1.25, sloped.TopAt(-1.0, 0.0));
+            Assert.Equal(0.0, sloped.DistanceOutside(0.5, 2.3, 0.0));
+            Assert.Equal(0.8, sloped.DistanceOutside(0.0, 3.0, 0.0), 9);
+            Assert.True(sloped.Holds(0.0, 2.0, 0.0, 0.0));
+            Assert.False(sloped.Holds(-0.9, 2.0, 0.0, 0.1));
+            Assert.Equal(8.0, sloped.Volume, 9);
+            Assert.Equal(sloped, EnvelopePrism.Sloped(0.0, Rectangle(-1.0, 1.0, -1.0, 1.0), 2.0, 0.75, 0.0));
+            Assert.NotEqual(sloped, EnvelopePrism.Sloped(0.0, Rectangle(-1.0, 1.0, -1.0, 1.0), 2.0, 0.5, 0.0));
+            Assert.Throws<System.ArgumentException>(() => EnvelopePrism.Sloped(1.3, Rectangle(-1.0, 1.0, -1.0, 1.0), 2.0, 0.75, 0.0));
+        }
+
+        [Fact]
         public void ASlantedSideMeasuresAlongItsNormal() {
             var plan = new List<PlanPoint> { new PlanPoint(-1.0, -1.0), new PlanPoint(1.0, -1.0), new PlanPoint(2.0, 1.0), new PlanPoint(-1.0, 1.0) };
 

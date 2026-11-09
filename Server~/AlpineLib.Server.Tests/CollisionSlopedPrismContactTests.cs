@@ -232,7 +232,7 @@ namespace AlpineLib.Server.Tests {
         }
 
         // A convex prism with a sloped top, as double faces.
-        private sealed class ReferenceSolid {
+        internal sealed class ReferenceSolid {
             private readonly CollisionShape _shape;
             private readonly List<Vector3Double[]> _faces = new List<Vector3Double[]>();
             private readonly List<Vector3Double> _normals = new List<Vector3Double>();
@@ -362,7 +362,7 @@ namespace AlpineLib.Server.Tests {
             }
         }
 
-        private readonly struct Vector3Double {
+        internal readonly struct Vector3Double {
             public Vector3Double(double x, double y, double z) {
                 X = x;
                 Y = y;

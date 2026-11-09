@@ -109,7 +109,10 @@ namespace AlpineLib.Procedural.Meshing {
             _worst = double.NegativeInfinity;
             for (int index = 0; index < _boxes.Count; index++) BoxTop(index, ground, low, high, air);
             for (int index = 0; index < _spheres.Count; index++) SphereCap(index, ground, low, high, air);
-            for (int index = 0; index < _prisms.Count; index++) PrismTop(index, ground, low, high, air);
+            for (int index = 0; index < _prisms.Count; index++) {
+                if (_prisms[index].IsSloped) SlopedTop(index, ground, low, high, air);
+                else PrismTop(index, ground, low, high, air);
+            }
             air.Sort();
             SupportedCapAir.Sort();
             FloatingCapAir.Sort();
@@ -204,14 +207,13 @@ namespace AlpineLib.Procedural.Meshing {
             }
         }
 
-        // Every side face of the prism, sampled on a grid of about the spacing along the edge and up the band.
+        // Every side face of the prism, sampled on a grid of about the spacing along the edge and up the band; a sloped
+        // top caps each column of samples at its own height.
         private void PrismSides(int index, double low, double high, double cap, List<double> distances) {
             EnvelopePrism prism = _prisms[index];
             double bottom = Math.Max(low, prism.Bottom);
-            double top = Math.Min(high, prism.Top);
-            if (bottom > top) return;
+            if (bottom > Math.Min(high, prism.Top)) return;
 
-            int rows = Math.Max(1, (int)Math.Ceiling((top - bottom) / Spacing));
             for (int edge = 0; edge < prism.Plan.Count; edge++) {
                 PlanPoint start = prism.Plan[edge];
                 PlanPoint end = prism.Plan[(edge + 1) % prism.Plan.Count];
@@ -223,18 +225,27 @@ namespace AlpineLib.Procedural.Meshing {
                 int columns = Math.Max(1, (int)Math.Ceiling(length / Spacing));
                 for (int column = 0; column <= columns; column++) {
                     double share = (double)column / columns;
-                    for (int row = 0; row <= rows; row++) {
-                        var point = new Vector3((float)(start.X + edgeX * share), (float)(bottom + (top - bottom) * row / rows), (float)(start.Z + edgeZ * share));
-                        if (IsCovered(point + normal * (float)CoveredTolerance, -1, -1, index)) continue;
+                    double x = start.X + edgeX * share, z = start.Z + edgeZ * share;
+                    double top = Math.Min(high, prism.TopAt(x, z));
+                    if (bottom > top) continue;
 
-                        // A side buried inside the look's own solid is no wall a capsule meets; within the covered
-                        // tolerance of the surface a sample counts either way, so the costly inside test is skipped.
-                        double distance = _look.Distance(point, cap);
-                        if (distance > CoveredTolerance && _look.IsInside(point.X, point.Y, point.Z)) continue;
-
-                        AddStandoff(point, distance, distances);
-                    }
+                    SideColumn(index, x, z, normal, bottom, top, cap, distances);
                 }
+            }
+        }
+
+        private void SideColumn(int index, double x, double z, Vector3 normal, double bottom, double top, double cap, List<double> distances) {
+            int rows = Math.Max(1, (int)Math.Ceiling((top - bottom) / Spacing));
+            for (int row = 0; row <= rows; row++) {
+                var point = new Vector3((float)x, (float)(bottom + (top - bottom) * row / rows), (float)z);
+                if (IsCovered(point + normal * (float)CoveredTolerance, -1, -1, index)) continue;
+
+                // A side buried inside the look's own solid is no wall a capsule meets; within the covered
+                // tolerance of the surface a sample counts either way, so the costly inside test is skipped.
+                double distance = _look.Distance(point, cap);
+                if (distance > CoveredTolerance && _look.IsInside(point.X, point.Y, point.Z)) continue;
+
+                AddStandoff(point, distance, distances);
             }
         }
 
@@ -254,9 +265,26 @@ namespace AlpineLib.Procedural.Meshing {
             }
         }
 
+        // The sloped top sampled like a cap, each sample at the plane's own height; at most 45° steep, so all walkable.
+        private void SlopedTop(int index, double ground, double low, double high, List<double> air) {
+            EnvelopePrism prism = _prisms[index];
+            foreach (PlanPoint sample in CapSamples(prism.Plan)) {
+                double top = prism.TopAt(sample.X, sample.Z);
+                if (top < low || top > high) continue;
+
+                var point = new Vector3((float)sample.X, (float)(top + TopLift), (float)sample.Z);
+                if (IsInsideAny(point) || IsNearOtherPrism(point, index)) continue;
+
+                double below = _look.HeightBelow(point.X, point.Z, top + OverTop, ground);
+                if (ColumnBottom(index, sample.X, sample.Z) > below + ColumnGap) FloatingCapAir.Add(top - below);
+                else if (IsWallTop(point, index, below)) SupportedCapAir.Add(top - below);
+                AddLedge(point, top - below, air);
+            }
+        }
+
         // On an unbroken column, the look within a lip of the cap: rock's own top swollen by the hull.
         private bool IsWallTop(Vector3 point, int index, double below) {
-            return _look.Distance(new Vector3(point.X, (float)_prisms[index].Top, point.Z), 2.0 * LedgeLip) <= LedgeLip;
+            return _look.Distance(new Vector3(point.X, (float)_prisms[index].TopAt(point.X, point.Z), point.Z), 2.0 * LedgeLip) <= LedgeLip;
         }
 
         // The bottom of the unbroken stack of prisms under this prism's cap at (x, z).
@@ -275,7 +303,7 @@ namespace AlpineLib.Procedural.Meshing {
         private double NextBottomBelow(double height, double x, double z) {
             double lowest = height;
             foreach (EnvelopePrism prism in _prisms) {
-                if (prism.Bottom < lowest && prism.Top >= height - ColumnGap && prism.PlanHolds(x, z, PrismRimTolerance)) lowest = prism.Bottom;
+                if (prism.Bottom < lowest && prism.TopAt(x, z) >= height - ColumnGap && prism.PlanHolds(x, z, PrismRimTolerance)) lowest = prism.Bottom;
             }
             return lowest;
         }
@@ -352,7 +380,7 @@ namespace AlpineLib.Procedural.Meshing {
             for (int index = 0; index < _prisms.Count; index++) {
                 EnvelopePrism other = _prisms[index];
                 double cap = point.Y - TopLift;
-                if (index == prismIndex || other.Bottom > cap + 2.0 * LedgeLip || other.Top < cap + LipRise) continue;
+                if (index == prismIndex || other.Bottom > cap + 2.0 * LedgeLip || other.TopAt(point.X, point.Z) < cap + LipRise) continue;
                 if (other.PlanHolds(point.X, point.Z, LedgeLip)) return true;
             }
             return false;

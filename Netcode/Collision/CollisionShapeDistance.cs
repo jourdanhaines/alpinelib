@@ -21,6 +21,8 @@ namespace AlpineLib.Netcode.Collision {
                     return BoxOutside(shape, point);
                 case CollisionShapeType.Prism:
                     return PrismOutside(shape, point);
+                case CollisionShapeType.SlopedPrism:
+                    return SlopedPrismOutside(shape, point);
                 default:
                     throw new ArgumentOutOfRangeException(nameof(shape), shape.Type, "Unknown shape type.");
             }
@@ -51,6 +53,64 @@ namespace AlpineLib.Netcode.Collision {
             double planDistance = PlanDistance(shape.Plan, (double)point.X - shape.Center.X, (double)point.Z - shape.Center.Z);
             double vertical = Math.Max(0.0, Math.Abs((double)point.Y - shape.Center.Y) - shape.HalfExtents.Y);
             return Math.Sqrt(planDistance * planDistance + vertical * vertical);
+        }
+
+        /// <summary>
+        /// The distance from <paramref name="point"/> to a sloped prism's solid, 0 inside: under the bottom, plan distance
+        /// and drop combined; above it, the distance to the solid's upper surface (the plane projection when it lands in
+        /// the plan, else the nearest rim point, found exactly per edge).
+        /// </summary>
+        public static double SlopedPrismOutside(in CollisionShape shape, Vector3 point) {
+            double x = (double)point.X - shape.Center.X;
+            double z = (double)point.Z - shape.Center.Z;
+            double y = point.Y;
+            if (y < shape.BottomY) {
+                double planDistance = PlanDistance(shape.Plan, x, z);
+                double drop = shape.BottomY - y;
+                return Math.Sqrt(planDistance * planDistance + drop * drop);
+            }
+
+            double rise = y - SlopedTop(shape, x, z);
+            bool inside = PlanDistance(shape.Plan, x, z) <= 0.0;
+            if (inside && rise <= 0.0) return 0.0;
+
+            if (rise > 0.0) {
+                double lengthSquared = 1.0 + (double)shape.TopSlopeX * shape.TopSlopeX + (double)shape.TopSlopeZ * shape.TopSlopeZ;
+                double pull = rise / lengthSquared;
+                if (PlanDistance(shape.Plan, x + pull * shape.TopSlopeX, z + pull * shape.TopSlopeZ) <= 0.0) return rise / Math.Sqrt(lengthSquared);
+            }
+
+            double best = double.PositiveInfinity;
+            for (int index = 0; index < shape.Plan.Count; index++) best = Math.Min(best, RimEdgeSquared(shape, index, x, y, z));
+            return Math.Sqrt(best);
+        }
+
+        private static double SlopedTop(in CollisionShape shape, double planX, double planZ) {
+            return shape.TopY0 + shape.TopSlopeX * planX + shape.TopSlopeZ * planZ;
+        }
+
+        // Least of plan distance² plus height² above the top along one rim edge: a convex two-piece quadratic whose
+        // minimum is at one of the two stationary points or the break between them.
+        private static double RimEdgeSquared(in CollisionShape shape, int index, double x, double y, double z) {
+            shape.Plan.GetVertex(index, out float startX, out float startZ);
+            shape.Plan.GetVertex((index + 1) % shape.Plan.Count, out float endX, out float endZ);
+            double edgeX = (double)endX - startX, edgeZ = (double)endZ - startZ;
+            double lengthSquared = edgeX * edgeX + edgeZ * edgeZ;
+            double projection = (x - startX) * edgeX + (z - startZ) * edgeZ;
+            double climb = shape.TopSlopeX * edgeX + shape.TopSlopeZ * edgeZ;
+            double startGap = y - SlopedTop(shape, startX, startZ);
+            double best = double.PositiveInfinity;
+            best = Math.Min(best, RimPointSquared(shape, startX, startZ, edgeX, edgeZ, (projection + climb * startGap) / (lengthSquared + climb * climb), x, y, z));
+            best = Math.Min(best, RimPointSquared(shape, startX, startZ, edgeX, edgeZ, projection / lengthSquared, x, y, z));
+            if (climb != 0.0) best = Math.Min(best, RimPointSquared(shape, startX, startZ, edgeX, edgeZ, startGap / climb, x, y, z));
+            return best;
+        }
+
+        private static double RimPointSquared(in CollisionShape shape, double startX, double startZ, double edgeX, double edgeZ, double along, double x, double y, double z) {
+            double clamped = Math.Max(0.0, Math.Min(1.0, along));
+            double pointX = startX + edgeX * clamped, pointZ = startZ + edgeZ * clamped;
+            double gapY = Math.Max(0.0, y - SlopedTop(shape, pointX, pointZ));
+            return (x - pointX) * (x - pointX) + (z - pointZ) * (z - pointZ) + gapY * gapY;
         }
 
         // Distance from (x, z) to a convex CCW plan, 0 on or inside it.
