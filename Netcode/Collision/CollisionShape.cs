@@ -24,8 +24,8 @@ namespace AlpineLib.Netcode.Collision {
     /// </para>
     /// <para>
     /// The wire form is every field in declaration order at full float precision; a prism appends its vertex
-    /// count and its (x, z) pairs, so every other primitive keeps its exact bytes. The inline plan makes every shape
-    /// about 204 bytes (140 before), copied by value. A reader built for fewer vertices rejects a longer plan, so
+    /// count and its (x, z) pairs and a sloped prism its plane after those, so every other primitive keeps its exact
+    /// bytes. The inline plan and plane make every shape about 220 bytes (140 before prisms), copied by value. A reader built for fewer vertices rejects a longer plan, so
     /// <c>.geo</c> files and wire peers move to sixteen-vertex plans together. Geometry is exported
     /// once and hashed, not streamed per tick, so there is nothing to gain from quantizing it and a great
     /// deal to lose: a rounded wall is a wall in a different place on each end.
@@ -56,14 +56,35 @@ namespace AlpineLib.Netcode.Collision {
         /// <summary>Half the capsule's segment length, measured from <see cref="Center"/>. Capsule only.</summary>
         public float HalfLength;
 
-        /// <summary>A prism's plan polygon, as offsets from <see cref="Center"/> in world XZ. Prism only.</summary>
+        /// <summary>A prism's plan polygon, as offsets from <see cref="Center"/> in world XZ. Prism and sloped prism.</summary>
         public PrismPlan Plan;
+
+        /// <summary>A sloped prism's flat bottom, world height. Sloped prism only.</summary>
+        public float BottomY;
+
+        /// <summary>A sloped prism's top height over <see cref="Center"/>'s XZ, world height. Sloped prism only.</summary>
+        public float TopY0;
+
+        /// <summary>A sloped prism's top rise per metre of world X. Sloped prism only.</summary>
+        public float TopSlopeX;
+
+        /// <summary>A sloped prism's top rise per metre of world Z. Sloped prism only.</summary>
+        public float TopSlopeZ;
 
         /// <summary>Shortest prism edge <see cref="MakePrism"/> accepts, metres.</summary>
         public const float MinPrismEdge = 1e-4f;
 
         /// <summary>Smallest turn cross product (<c>ex·fz − ez·fx</c>) at a prism vertex <see cref="MakePrism"/> accepts.</summary>
         public const float MinPrismTurn = 1e-7f;
+
+        /// <summary>Steepest top gradient (rise per metre) <see cref="MakeSlopedPrism"/> accepts: 45°.</summary>
+        public const float MaxTopSlope = 1f;
+
+        /// <summary>Least height of a sloped prism's top above its bottom at any plan vertex, metres.</summary>
+        public const float MinSlopedPrismHeight = 0.01f;
+
+        /// <summary>True for the two primitives that carry a <see cref="Plan"/>.</summary>
+        public bool HasPlan => Type == CollisionShapeType.Prism || Type == CollisionShapeType.SlopedPrism;
 
         /// <summary>An infinite horizontal floor at <paramref name="height"/>.</summary>
         public static CollisionShape MakePlane(float height) {
@@ -175,12 +196,104 @@ namespace AlpineLib.Netcode.Collision {
         }
 
         /// <summary>
+        /// A convex prism with a flat bottom at <paramref name="bottomY"/> and a planar top
+        /// <c>y = topY0 + slopeX·(x − center.X) + slopeZ·(z − center.Z)</c> over the plan <paramref name="offsets"/>
+        /// (x, z) around <paramref name="center"/>; <c>center.Y</c> is ignored. Heights are world heights.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The plan follows <see cref="MakePrism"/>'s rules and is recentred the same way; <see cref="TopY0"/> is
+        /// re-expressed at the moved centre (in double, cast once). The top gradient may be at most
+        /// <see cref="MaxTopSlope"/> (45°) and must clear the bottom by <see cref="MinSlopedPrismHeight"/> at every
+        /// vertex; anything else throws <see cref="ArgumentException"/>.
+        /// </para>
+        /// <para>
+        /// <c>Center.Y</c> and <c>HalfExtents.Y</c> bound [bottom, highest vertex top], so bounds and translation
+        /// behave like a prism's. Neighbours that share an edge and the same plane heights at its ends meet without
+        /// a step. No trigonometry: slopes are rises per metre.
+        /// </para>
+        /// </remarks>
+        public static CollisionShape MakeSlopedPrism(
+            Vector3 center,
+            float bottomY,
+            float topY0,
+            float slopeX,
+            float slopeZ,
+            ReadOnlySpan<Vector2> offsets) {
+            if (offsets.Length < PrismPlan.MinVertices || offsets.Length > PrismPlan.MaxVertices) {
+                throw new ArgumentException("A sloped prism needs 3 to 16 plan vertices.", nameof(offsets));
+            }
+
+            if (!IsFinite(center.X) || !IsFinite(center.Z) || !IsFinite(bottomY) || !IsFinite(topY0) || !IsFinite(slopeX) || !IsFinite(slopeZ)) {
+                throw new ArgumentException("A sloped prism needs a finite centre, bottom and plane.", nameof(topY0));
+            }
+
+            if (!IsGentleEnough(slopeX, slopeZ)) {
+                throw new ArgumentException("A sloped prism top may be at most 45° steep.", nameof(slopeX));
+            }
+
+            GetPlanBounds(offsets, out float minX, out float maxX, out float minZ, out float maxZ);
+            double middleX = ((double)minX + maxX) * 0.5;
+            double middleZ = ((double)minZ + maxZ) * 0.5;
+            var plan = default(PrismPlan);
+            plan.Count = (byte)offsets.Length;
+            double radiusSquared = 0.0;
+            for (int index = 0; index < offsets.Length; index++) {
+                float x = (float)(offsets[index].X - middleX);
+                float z = (float)(offsets[index].Y - middleZ);
+                plan.SetVertex(index, x, z);
+                radiusSquared = Math.Max(radiusSquared, (double)x * x + (double)z * z);
+            }
+
+            ValidatePrismPlan(in plan);
+            var shape = default(CollisionShape);
+            shape.Type = CollisionShapeType.SlopedPrism;
+            shape.AxisRight = Vector3.UnitX;
+            shape.AxisUp = Vector3.UnitY;
+            shape.AxisForward = Vector3.UnitZ;
+            shape.Plan = plan;
+            shape.BottomY = bottomY;
+            shape.TopY0 = (float)(topY0 + (double)slopeX * middleX + (double)slopeZ * middleZ);
+            shape.TopSlopeX = slopeX;
+            shape.TopSlopeZ = slopeZ;
+            float highest = HighestVertexTop(in shape);
+            if (!(LowestVertexClearance(in shape) >= MinSlopedPrismHeight)) {
+                throw new ArgumentException("A sloped prism top must clear its bottom by 0.01 at every vertex.", nameof(bottomY));
+            }
+
+            shape.Center = new Vector3((float)(center.X + middleX), (float)(((double)bottomY + highest) * 0.5), (float)(center.Z + middleZ));
+            shape.HalfExtents = new Vector3((maxX - minX) * 0.5f, (float)(((double)highest - bottomY) * 0.5), (maxZ - minZ) * 0.5f);
+            shape.Radius = PrismRadius(radiusSquared);
+            return shape;
+        }
+
+        /// <summary>
+        /// A sloped prism's top height over world (<paramref name="x"/>, <paramref name="z"/>), in the resolver's
+        /// float operation order; the plane extends past the plan.
+        /// </summary>
+        public float SlopedTopHeight(float x, float z) {
+            return SlopedTopAtPlan((float)(x - Center.X), (float)(z - Center.Z));
+        }
+
+        /// <summary>A sloped prism's top height over the plan offset (<paramref name="planX"/>, <paramref name="planZ"/>) from the centre.</summary>
+        public float SlopedTopAtPlan(float planX, float planZ) {
+            float alongX = (float)(TopSlopeX * planX);
+            float alongZ = (float)(TopSlopeZ * planZ);
+            return (float)((float)(TopY0 + alongX) + alongZ);
+        }
+
+        /// <summary>
         /// The same shape moved by an offset. This is how a mover's local shape becomes world geometry:
         /// its pose is a pure translation of the authored primitive, which is why v1 movers do not rotate.
         /// </summary>
         public CollisionShape Translated(Vector3 offset) {
             CollisionShape moved = this;
             moved.Center = new Vector3((float)(Center.X + offset.X), (float)(Center.Y + offset.Y), (float)(Center.Z + offset.Z));
+            if (Type == CollisionShapeType.SlopedPrism) {
+                moved.BottomY = (float)(BottomY + offset.Y);
+                moved.TopY0 = (float)(TopY0 + offset.Y);
+            }
+
             return moved;
         }
 
@@ -310,6 +423,33 @@ namespace AlpineLib.Netcode.Collision {
             }
         }
 
+        // The steepest gradient, |(slopeX, slopeZ)|, at most MaxTopSlope; squared so no root is taken.
+        private static bool IsGentleEnough(float slopeX, float slopeZ) {
+            float squared = (float)((float)(slopeX * slopeX) + (float)(slopeZ * slopeZ));
+            return squared <= (float)(MaxTopSlope * MaxTopSlope);
+        }
+
+        private static float HighestVertexTop(in CollisionShape shape) {
+            float highest = float.MinValue;
+            for (int index = 0; index < shape.Plan.Count; index++) {
+                shape.Plan.GetVertex(index, out float x, out float z);
+                highest = MathF.Max(highest, shape.SlopedTopAtPlan(x, z));
+            }
+
+            return highest;
+        }
+
+        // The least top-minus-bottom over the plan vertices; the plane is linear, so this bounds the whole plan.
+        private static float LowestVertexClearance(in CollisionShape shape) {
+            float lowest = float.MaxValue;
+            for (int index = 0; index < shape.Plan.Count; index++) {
+                shape.Plan.GetVertex(index, out float x, out float z);
+                lowest = MathF.Min(lowest, (float)(shape.SlopedTopAtPlan(x, z) - shape.BottomY));
+            }
+
+            return lowest;
+        }
+
         private static bool IsFinite(float value) {
             return !float.IsNaN(value) && !float.IsInfinity(value);
         }
@@ -324,7 +464,7 @@ namespace AlpineLib.Netcode.Collision {
             writer.WriteVector3(HalfExtents);
             writer.WriteFloat(Radius);
             writer.WriteFloat(HalfLength);
-            if (Type != CollisionShapeType.Prism) {
+            if (!HasPlan) {
                 return;
             }
 
@@ -334,6 +474,15 @@ namespace AlpineLib.Netcode.Collision {
                 writer.WriteFloat(x);
                 writer.WriteFloat(z);
             }
+
+            if (Type != CollisionShapeType.SlopedPrism) {
+                return;
+            }
+
+            writer.WriteFloat(BottomY);
+            writer.WriteFloat(TopY0);
+            writer.WriteFloat(TopSlopeX);
+            writer.WriteFloat(TopSlopeZ);
         }
 
         /// <inheritdoc />
@@ -347,7 +496,11 @@ namespace AlpineLib.Netcode.Collision {
             Radius = reader.ReadFloat();
             HalfLength = reader.ReadFloat();
             Plan = default;
-            if (Type != CollisionShapeType.Prism) {
+            BottomY = 0f;
+            TopY0 = 0f;
+            TopSlopeX = 0f;
+            TopSlopeZ = 0f;
+            if (!HasPlan) {
                 return;
             }
 
@@ -365,6 +518,30 @@ namespace AlpineLib.Netcode.Collision {
             }
 
             RejectShortEdges(in Plan);
+            if (Type != CollisionShapeType.SlopedPrism) {
+                return;
+            }
+
+            BottomY = reader.ReadFloat();
+            TopY0 = reader.ReadFloat();
+            TopSlopeX = reader.ReadFloat();
+            TopSlopeZ = reader.ReadFloat();
+            RejectBadPlane(in this);
+        }
+
+        // A non-finite, over-steep or inverted plane would hand the resolver NaNs or an inside-out solid.
+        private static void RejectBadPlane(in CollisionShape shape) {
+            if (!IsFinite(shape.BottomY) || !IsFinite(shape.TopY0) || !IsFinite(shape.TopSlopeX) || !IsFinite(shape.TopSlopeZ)) {
+                throw new NetProtocolException("Sloped prism plane is not finite.");
+            }
+
+            if (!IsGentleEnough(shape.TopSlopeX, shape.TopSlopeZ)) {
+                throw new NetProtocolException("Sloped prism top is steeper than 45°.");
+            }
+
+            if (!(LowestVertexClearance(in shape) >= MinSlopedPrismHeight)) {
+                throw new NetProtocolException("Sloped prism top does not clear its bottom by 0.01 at every vertex.");
+            }
         }
 
         // A zero-length edge would give the resolver a NaN signed distance; refuse it like a bad count.

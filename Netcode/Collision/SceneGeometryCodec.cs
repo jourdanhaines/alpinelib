@@ -43,16 +43,20 @@ namespace AlpineLib.Netcode.Collision {
 
         /// <summary>Layout version of the payload that follows the header. Bump on any field change.</summary>
         /// <remarks>
-        /// Version 2 adds the prism shape; version 1 files, which cannot hold one, still read. Encoding always writes
-        /// version 2, even for prism-free geometry, so builds that only read version 1 reject every new file.
+        /// Version 2 adds the prism shape and version 3 the sloped prism; older files, which cannot hold them, still
+        /// read. Encoding always writes the current version, even for geometry without either, so older builds reject
+        /// every new file rather than misread one.
         /// </remarks>
-        public const ushort FormatVersion = 2;
+        public const ushort FormatVersion = 3;
 
         /// <summary>The oldest format version this build still reads.</summary>
         public const ushort MinimumFormatVersion = 1;
 
         /// <summary>The first format version that may hold a prism.</summary>
         private const ushort PrismFormatVersion = 2;
+
+        /// <summary>The first format version that may hold a sloped prism.</summary>
+        private const ushort SlopedPrismFormatVersion = 3;
 
         private const uint Fnv1aOffsetBasis = 2166136261u;
         private const uint Fnv1aPrime = 16777619u;
@@ -63,8 +67,8 @@ namespace AlpineLib.Netcode.Collision {
         /// <summary>A serialized <see cref="CollisionShape"/>: a type byte, five vectors, two floats.</summary>
         private const int ShapeByteCount = 1 + (5 * 12) + (2 * 4);
 
-        /// <summary>The widest serialized shape: a prism's count byte and sixteen (x, z) pairs on top.</summary>
-        private const int MaxShapeByteCount = ShapeByteCount + 1 + (PrismPlan.MaxVertices * 2 * 4);
+        /// <summary>The widest serialized shape: a sloped prism's count byte, sixteen (x, z) pairs and four plane floats on top.</summary>
+        private const int MaxShapeByteCount = ShapeByteCount + 1 + (PrismPlan.MaxVertices * 2 * 4) + (4 * 4);
 
         /// <summary>A mover's two ids plus its local shape, before the path.</summary>
         private const int MoverHeaderByteCount = 2 + 2 + ShapeByteCount;
@@ -212,12 +216,17 @@ namespace AlpineLib.Netcode.Collision {
             return shapes;
         }
 
-        // A prism in a stream older than the prism format is corruption, not geometry.
+        // A shape in a stream older than its format is corruption, not geometry.
         private static CollisionShape ReadShape(ref NetReader reader, ushort formatVersion) {
             CollisionShape shape = reader.ReadMessage<CollisionShape>();
             if (shape.Type == CollisionShapeType.Prism && formatVersion < PrismFormatVersion) {
                 throw new NetProtocolException(
                     "Scene geometry format version " + formatVersion.ToString(CultureInfo.InvariantCulture) + " cannot hold a prism.");
+            }
+
+            if (shape.Type == CollisionShapeType.SlopedPrism && formatVersion < SlopedPrismFormatVersion) {
+                throw new NetProtocolException(
+                    "Scene geometry format version " + formatVersion.ToString(CultureInfo.InvariantCulture) + " cannot hold a sloped prism.");
             }
 
             return shape;

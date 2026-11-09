@@ -128,14 +128,14 @@ namespace AlpineLib.Server.Tests {
             CollisionShape box = CollisionShape.MakeBox(Vector3.One, Vector3.UnitX, Vector3.UnitY, Vector3.UnitZ, Vector3.One);
             byte[] plain = SceneGeometryCodec.Encode(new SceneGeometry("Old", 0u, new[] { box }, Array.Empty<MoverDefinition>()));
             byte[] withPrism = SceneGeometryCodec.Encode(new SceneGeometry("Old", 0u, new[] { CollisionShape.MakePrism(Vector3.Zero, 1f, Pentagon(Vector2.Zero)) }, Array.Empty<MoverDefinition>()));
-            Assert.Equal(2, BitConverter.ToUInt16(plain, VersionOffset));
+            Assert.Equal(SceneGeometryCodec.FormatVersion, BitConverter.ToUInt16(plain, VersionOffset));
 
             plain[VersionOffset] = 1;
             withPrism[VersionOffset] = 1;
 
             Assert.Equal(box, SceneGeometryCodec.Decode(plain).StaticShapes[0]);
             Assert.Throws<NetProtocolException>(() => SceneGeometryCodec.Decode(withPrism));
-            plain[VersionOffset] = 3;
+            plain[VersionOffset] = (byte)(SceneGeometryCodec.FormatVersion + 1);
             Assert.Throws<NetProtocolException>(() => SceneGeometryCodec.Decode(plain));
         }
 
