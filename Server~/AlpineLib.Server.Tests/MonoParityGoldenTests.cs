@@ -32,6 +32,51 @@ namespace AlpineLib.Server.Tests {
             Assert.Equal(MonoParityGoldens.RoughPrismGolden, MonoParityGoldens.RoughPrismHash());
         }
 
+        [Fact]
+        public void TheSlopedGoldensHold() {
+            Assert.Equal(0xE31BF47AA4E52B4AUL, MonoParityGoldens.SlopedPrismGolden);
+            Assert.Equal(0xA683802B1DAD9316UL, MonoParityGoldens.SlopedMotorGolden);
+            Assert.Equal(0x9CD5A79E4776C326UL, MonoParityGoldens.RoughSlopedPrismGolden);
+            Assert.Equal(0x79D582EE7873843DUL, MonoParityGoldens.RoughSlopedMotorGolden);
+            Assert.Equal(MonoParityGoldens.SlopedPrismGolden, MonoParityGoldens.SlopedPrismHash());
+            Assert.Equal(MonoParityGoldens.SlopedMotorGolden, MonoParityGoldens.SlopedMotorHash());
+            Assert.Equal(MonoParityGoldens.RoughSlopedPrismGolden, MonoParityGoldens.RoughSlopedPrismHash());
+            Assert.Equal(MonoParityGoldens.RoughSlopedMotorGolden, MonoParityGoldens.RoughSlopedMotorHash());
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void TheSlopedRunGroundsOnAndTouchesSlopedPrisms(bool rough) {
+            var coverage = new MotorParityCoverage();
+            MonoParityGoldens.SlopedMotorHash(rough, coverage);
+
+            Assert.True(coverage.SlopedPrismGrounded > 200, "Grounded " + coverage.SlopedPrismGrounded);
+            Assert.True(coverage.SlopedPrismTouches > 50, "Touches " + coverage.SlopedPrismTouches);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void TheSlopedPosesReachTheTopFaceRimAndInterior(bool rough) {
+            CollisionShape[] shapes = MonoParityGoldens.SlopedPrisms();
+            int slanted = 0, sideways = 0, supports = 0;
+            for (int index = 0; index < 4096; index++) {
+                CapsulePose pose = rough ? MonoParityGoldens.RoughPose(index) : MonoParityGoldens.Pose(index);
+                foreach (CollisionShape shape in shapes) {
+                    if (CollisionResolver.TryGetSupport(in shape, pose.FootPosition.X, pose.FootPosition.Z, 5f, -5f, out _, out _)) supports++;
+                    if (!CollisionResolver.TryGetContact(in pose, in shape, out CollisionContact contact)) continue;
+
+                    if (contact.Normal.Y > 0.05f && contact.Normal.Y < 0.999f) slanted++;
+                    if (contact.Normal.Y == 0f) sideways++;
+                }
+            }
+
+            Assert.True(slanted > 100, "Slanted " + slanted);
+            Assert.True(sideways > 100, "Sideways " + sideways);
+            Assert.True(supports > 1000, "Supports " + supports);
+        }
+
         [Theory]
         [InlineData(false)]
         [InlineData(true)]

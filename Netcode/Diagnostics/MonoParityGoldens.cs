@@ -24,6 +24,18 @@ namespace AlpineLib.Netcode.Diagnostics {
         /// <summary>Prism contacts and support heights over the exact poses.</summary>
         public const ulong PrismGolden = 0xE7F2B71C41C1F340UL;
 
+        /// <summary>Sloped prism contacts, support heights and normals over the exact poses.</summary>
+        public const ulong SlopedPrismGolden = 0xE31BF47AA4E52B4AUL;
+
+        /// <summary>Pawn motor states over the exact script on the sloped prism world.</summary>
+        public const ulong SlopedMotorGolden = 0xA683802B1DAD9316UL;
+
+        /// <summary><see cref="SlopedPrismGolden"/> over the rough poses.</summary>
+        public const ulong RoughSlopedPrismGolden = 0x9CD5A79E4776C326UL;
+
+        /// <summary><see cref="SlopedMotorGolden"/> over the rough script.</summary>
+        public const ulong RoughSlopedMotorGolden = 0x79D582EE7873843DUL;
+
         /// <summary><see cref="ShapeGolden"/> over the rough poses.</summary>
         public const ulong RoughShapeGolden = 0x03A44F2656D55DCEUL;
 
@@ -42,6 +54,8 @@ namespace AlpineLib.Netcode.Diagnostics {
         private const uint ShiftTick = 90u;
         private const int RampShapeIndex = 13;
         private const float Diagonal = 0.70710677f;
+        private const int SlopedPawnCount = 12;
+        private const int SlopedTickCount = 150;
 
         /// <summary>
         /// The narrow-phase golden's shapes: turned, plain and tilted boxes, a sphere, two capsules, a plane, a
@@ -67,12 +81,33 @@ namespace AlpineLib.Netcode.Diagnostics {
                 CollisionShape.MakePrism(new Vector3(0.25f, 0.5f, -0.5f), 0.5f, new[] { new Vector2(-1f, -1f), new Vector2(1.5f, -0.75f), new Vector2(1f, 1f), new Vector2(-0.5f, 1.25f) }),
                 CollisionShape.MakePrism(new Vector3(-1f, 1.25f, 0.75f), 1.25f, new[] { new Vector2(0f, -1f), new Vector2(0.875f, -0.5f), new Vector2(0.875f, 0.5f), new Vector2(0f, 1f), new Vector2(-0.875f, 0.5f), new Vector2(-0.875f, -0.5f) }),
                 CollisionShape.MakePrism(new Vector3(0.5f, 2f, 0.5f), 0.25f, new[] { new Vector2(-0.75f, -0.5f), new Vector2(0.75f, -0.5f), new Vector2(0f, 0.75f) }),
-                CollisionShape.MakePrism(new Vector3(-0.5f, 0.75f, -1f), 0.75f, new[] {
-                    new Vector2(1.5f, 0.109375f), new Vector2(1.328125f, 0.515625f), new Vector2(0.953125f, 0.859375f), new Vector2(0.4375f, 1.046875f),
-                    new Vector2(-0.15625f, 1.09375f), new Vector2(-0.703125f, 0.96875f), new Vector2(-1.15625f, 0.703125f), new Vector2(-1.4375f, 0.3125f),
-                    new Vector2(-1.5f, -0.109375f), new Vector2(-1.328125f, -0.515625f), new Vector2(-0.953125f, -0.859375f), new Vector2(-0.4375f, -1.046875f),
-                    new Vector2(0.15625f, -1.09375f), new Vector2(0.703125f, -0.96875f), new Vector2(1.15625f, -0.703125f), new Vector2(1.4375f, -0.3125f),
-                }),
+                CollisionShape.MakePrism(new Vector3(-0.5f, 0.75f, -1f), 0.75f, SixteenGon()),
+            };
+        }
+
+        // A sixteen-vertex plan in sixteenths and sixty-fourths.
+        private static Vector2[] SixteenGon() {
+            return new[] {
+                new Vector2(1.5f, 0.109375f), new Vector2(1.328125f, 0.515625f), new Vector2(0.953125f, 0.859375f), new Vector2(0.4375f, 1.046875f),
+                new Vector2(-0.15625f, 1.09375f), new Vector2(-0.703125f, 0.96875f), new Vector2(-1.15625f, 0.703125f), new Vector2(-1.4375f, 0.3125f),
+                new Vector2(-1.5f, -0.109375f), new Vector2(-1.328125f, -0.515625f), new Vector2(-0.953125f, -0.859375f), new Vector2(-0.4375f, -1.046875f),
+                new Vector2(0.15625f, -1.09375f), new Vector2(0.703125f, -0.96875f), new Vector2(1.15625f, -0.703125f), new Vector2(1.4375f, -0.3125f),
+            };
+        }
+
+        /// <summary>
+        /// The sloped prism golden's literal shapes: a 34.5° ramp, a diagonal slope, a 45° wedge, two pieces sharing an
+        /// edge under one plane, and a sixteen-vertex slope.
+        /// </summary>
+        public static CollisionShape[] SlopedPrisms() {
+            var seamPlan = new[] { new Vector2(-1.5f, -1.5f), new Vector2(1.5f, -1.5f), new Vector2(1.5f, 1.5f), new Vector2(-1.5f, 1.5f) };
+            return new[] {
+                CollisionShape.MakeSlopedPrism(new Vector3(0.25f, 0f, -0.5f), 0f, 1f, 0.6875f, 0f, new[] { new Vector2(-1f, -1f), new Vector2(1.5f, -0.75f), new Vector2(1f, 1f), new Vector2(-0.5f, 1.25f) }),
+                CollisionShape.MakeSlopedPrism(new Vector3(-1f, 0f, 0.75f), -0.25f, 1.25f, 0.5f, -0.375f, new[] { new Vector2(0f, -1f), new Vector2(0.875f, -0.5f), new Vector2(0.875f, 0.5f), new Vector2(0f, 1f), new Vector2(-0.875f, 0.5f), new Vector2(-0.875f, -0.5f) }),
+                CollisionShape.MakeSlopedPrism(new Vector3(0.5f, 0f, 0.5f), 1.5f, 2.5f, -1f, 0f, new[] { new Vector2(-0.75f, -0.5f), new Vector2(0.75f, -0.5f), new Vector2(0f, 0.75f) }),
+                CollisionShape.MakeSlopedPrism(new Vector3(0.5f, 0f, -1f), -1f, 0.75f, 0.25f, 0.5f, new[] { seamPlan[0], seamPlan[1], seamPlan[2] }),
+                CollisionShape.MakeSlopedPrism(new Vector3(0.5f, 0f, -1f), -1f, 0.75f, 0.25f, 0.5f, new[] { seamPlan[0], seamPlan[2], seamPlan[3] }),
+                CollisionShape.MakeSlopedPrism(new Vector3(-0.5f, 0f, -1f), -0.5f, 1f, -0.3125f, 0.625f, SixteenGon()),
             };
         }
 
@@ -104,6 +139,51 @@ namespace AlpineLib.Netcode.Diagnostics {
         /// <summary><see cref="PrismHash"/> over the rough poses.</summary>
         public static ulong RoughPrismHash() {
             return HashPoses(Prisms(), true, false);
+        }
+
+        /// <summary>Contacts, support heights and normals of every exact pose against every shape of <see cref="SlopedPrisms"/>.</summary>
+        public static ulong SlopedPrismHash() {
+            return HashPoses(SlopedPrisms(), false, true);
+        }
+
+        /// <summary><see cref="SlopedPrismHash"/> over the rough poses.</summary>
+        public static ulong RoughSlopedPrismHash() {
+            return HashPoses(SlopedPrisms(), true, true);
+        }
+
+        /// <summary>Pawn states over the exact script on the sloped world; see <see cref="SlopedMotorHash(bool, MotorParityCoverage)"/>.</summary>
+        public static ulong SlopedMotorHash() {
+            return SlopedMotorHash(false, null);
+        }
+
+        /// <summary>Pawn states over the rough script on the sloped world.</summary>
+        public static ulong RoughSlopedMotorHash() {
+            return SlopedMotorHash(true, null);
+        }
+
+        /// <summary>
+        /// Pawn states, tick by tick, over a floor, a 35° ramp ending at a wall and a ramp split into two pieces along a
+        /// seam, half the pawns on a 40° profile that cannot climb the 45° wedge. <paramref name="coverage"/>, when given,
+        /// counts steps grounded on and touching sloped prisms.
+        /// </summary>
+        public static ulong SlopedMotorHash(bool rough, MotorParityCoverage coverage) {
+            CollisionWorld world = SlopedWorld(rough);
+            MovementProfile shipped = SlopedProfile(45f);
+            MovementProfile steep = SlopedProfile(40f);
+            var states = new PawnState[SlopedPawnCount];
+            for (int pawn = 0; pawn < SlopedPawnCount; pawn++) states[pawn] = SlopedStartState(pawn, rough);
+
+            ulong hash = OffsetBasis;
+            for (uint tick = 1u; tick <= SlopedTickCount; tick++) {
+                for (int pawn = 0; pawn < SlopedPawnCount; pawn++) {
+                    PawnInput input = SlopedInput(pawn, (int)tick, rough);
+                    MovementProfile profile = pawn % 2 == 0 ? shipped : steep;
+                    states[pawn] = PawnMotor.Step(in input, in states[pawn], profile, world, tick, TickSeconds);
+                    if (coverage != null) ObserveSloped(coverage, world, profile, in states[pawn], tick);
+                    hash = HashState(hash, in states[pawn]);
+                }
+            }
+            return hash;
         }
 
         /// <summary>Pawn states over the exact script; see <see cref="MotorHash(bool, MotorParityCoverage)"/>.</summary>
@@ -187,6 +267,61 @@ namespace AlpineLib.Netcode.Diagnostics {
             CollisionShape platform = CollisionShape.MakeBox(Vector3.Zero, Vector3.UnitX, Vector3.UnitY, Vector3.UnitZ, new Vector3(0.75f, 0.125f, 0.75f));
             var movers = new[] { new MoverDefinition(1, 1, in platform, pingPong), new MoverDefinition(2, 1, in platform, loop) };
             return new CollisionWorld(new SceneGeometry("Parity", 1u, statics, movers), TickSeconds);
+        }
+
+        // A floor, a 34.5° ramp (rise 0.6875 per metre, 8 m) up to a wall, a seam ramp in two pieces and a 45° wedge.
+        private static CollisionWorld SlopedWorld(bool rough) {
+            float shift = rough ? 1f / 13f : 0.0625f;
+            var seam = new[] { new Vector2(-2f, -2f), new Vector2(2f, -2f), new Vector2(2f, 2f), new Vector2(-2f, 2f) };
+            var statics = new[] {
+                CollisionShape.MakePlane(0f),
+                CollisionShape.MakeSlopedPrism(new Vector3(shift, 0f, 3f), -1f, 0f, 0.6875f, 0f, new[] { new Vector2(0f, -1.5f), new Vector2(8f, -1.5f), new Vector2(8f, 1.5f), new Vector2(0f, 1.5f) }),
+                CollisionShape.MakePrism(new Vector3((float)(shift + 9f), 3.5f, 3f), 3.5f, new[] { new Vector2(-1f, -2f), new Vector2(1f, -2f), new Vector2(1f, 2f), new Vector2(-1f, 2f) }),
+                CollisionShape.MakeSlopedPrism(new Vector3(-3f, 0f, (float)(-3f + shift)), -1f, 1f, 0.25f, 0.375f, new[] { seam[0], seam[1], seam[2] }),
+                CollisionShape.MakeSlopedPrism(new Vector3(-3f, 0f, (float)(-3f + shift)), -1f, 1f, 0.25f, 0.375f, new[] { seam[0], seam[2], seam[3] }),
+                CollisionShape.MakeSlopedPrism(new Vector3(1f, 0f, -3f), -1f, 0f, 1f, 0f, new[] { new Vector2(0f, -1.5f), new Vector2(3f, -1.5f), new Vector2(3f, 1.5f), new Vector2(0f, 1.5f) }),
+            };
+            return new CollisionWorld(new SceneGeometry("SlopedParity", 1u, statics, Array.Empty<MoverDefinition>()), TickSeconds);
+        }
+
+        private static MovementProfile SlopedProfile(float slopeLimitDegrees) {
+            return new MovementProfile { CapsuleRadius = 0.35f, CapsuleHeight = 1.1f, StepOffset = 0.3f, SlopeLimitDegrees = slopeLimitDegrees };
+        }
+
+        // Pawns start on the floor in front of the 34.5° ramp, the seam ramp and the wedge.
+        private static PawnState SlopedStartState(int pawn, bool rough) {
+            float jitter = rough ? (pawn % 5) / 13f : (pawn % 5) / 16f;
+            Vector3 start = (pawn % 3) switch {
+                0 => new Vector3((float)(-1f - jitter), 0f, (float)(2f + jitter)),
+                1 => new Vector3(-5.5f, 0f, (float)(-4.5f + jitter)),
+                _ => new Vector3((float)(-0.5f + jitter), 0f, (float)(-3.5f + jitter * 2f)),
+            };
+            return new PawnState(start, 0f, Vector3.Zero, PawnState.PackFlags(WireLocomotion.Walk, false, true));
+        }
+
+        // Mostly uphill (+X), turning across the seam every 25 ticks, with a jump every 60 and gaits cycling.
+        private static PawnInput SlopedInput(int pawn, int tick, bool rough) {
+            int phase = (tick / 25 + pawn) % 4;
+            float across = phase == 1 ? 1f : phase == 3 ? -1f : 0f;
+            float forward = rough ? 0.9f : 1f;
+            var gait = (WireLocomotion)((tick / 30 + pawn) % 3);
+            bool jump = (tick + pawn * 11) % 60 == 0;
+            return new PawnInput((uint)tick, new Vector2(forward, (float)(across * 0.5f)), gait, jump, false);
+        }
+
+        // Counts only; nothing here feeds the hash.
+        private static void ObserveSloped(MotorParityCoverage coverage, CollisionWorld world, MovementProfile profile, in PawnState state, uint tick) {
+            if (state.IsGrounded && world.TryGetSupport(state.Position.X, state.Position.Z, (float)(state.Position.Y + 0.01f), (float)(state.Position.Y - 0.01f), tick, out SupportHit hit)
+                && world.GetStaticShape(hit.ShapeIndex).Type == CollisionShapeType.SlopedPrism) {
+                coverage.SlopedPrismGrounded++;
+            }
+
+            var reach = new CapsulePose(state.Position - new Vector3(0f, 0.05f, 0f), profile.CapsuleRadius + 0.05f, profile.CapsuleHeight + 0.1f);
+            Span<CollisionContact> contacts = stackalloc CollisionContact[16];
+            int count = world.CollectContacts(in reach, tick, contacts);
+            for (int index = 0; index < count; index++) {
+                if (world.GetStaticShape(contacts[index].ShapeIndex).Type == CollisionShapeType.SlopedPrism) coverage.SlopedPrismTouches++;
+            }
         }
 
         // Turning directions, gaits, jumps and crouches; a third of the pawns let go after each jump and a quarter

@@ -24,5 +24,11 @@ namespace AlpineLib.Netcode.Diagnostics {
 
         /// <summary>Times the looping mover jumped back to its first waypoint.</summary>
         public int LoopWraps { get; internal set; }
+
+        /// <summary>Sloped-world steps ending grounded on a sloped prism.</summary>
+        public int SlopedPrismGrounded { get; internal set; }
+
+        /// <summary>Sloped-world steps ending against or on a sloped prism.</summary>
+        public int SlopedPrismTouches { get; internal set; }
     }
 }
