@@ -55,7 +55,9 @@ float AlpineRockStrata(float height, float footprint)
 // Albedo multiplier for a fragment at object-space position and normal.
 half AlpineRockStreakShade(float3 positionOS, float3 normalOS)
 {
-    float3 normal = normalize(normalOS);
+    // The face's own plane (not the smoothed vertex normal), so stripes run straight across each facet.
+    float3 flatNormal = cross(ddy(positionOS), ddx(positionOS));
+    float3 normal = dot(flatNormal, flatNormal) > 1e-12 ? normalize(flatNormal) : normalize(normalOS);
     float wall = 1.0 - smoothstep(0.35, 0.5, abs(normal.y));
     float2 across = normal.xz / max(length(normal.xz), 1e-4);
     float u = dot(positionOS.xz, float2(-across.y, across.x));
