@@ -4,7 +4,7 @@ namespace AlpineLib.Procedural.Meshing {
     /// <summary>What <see cref="TalusApron.Lay"/> laid round one foot: its parts and bare stretches, or nothing when two pieces met at a step.</summary>
     public sealed class TalusApronResult {
         /// <summary>Builds a result.</summary>
-        public TalusApronResult(bool isLaid, IReadOnlyList<TalusApronPart> parts, IReadOnlyList<TalusBareStretch> bare) {
+        internal TalusApronResult(bool isLaid, IReadOnlyList<TalusApronPart> parts, IReadOnlyList<TalusBareStretch> bare) {
             IsLaid = isLaid;
             Parts = parts;
             Bare = bare;

@@ -8,7 +8,7 @@ namespace AlpineLib.Procedural.Meshing {
     /// </summary>
     public sealed class TalusApronPart {
         /// <summary>Builds a part.</summary>
-        public TalusApronPart(PlanPoint innerStart, PlanPoint innerEnd, PlanPoint outerStart, PlanPoint outerEnd, double rise, double width, bool isFan,
+        internal TalusApronPart(PlanPoint innerStart, PlanPoint innerEnd, PlanPoint outerStart, PlanPoint outerEnd, double rise, double width, bool isFan,
                               IReadOnlyList<SlopedPrismPiece> pieces, IReadOnlyList<PlanPoint> surface) {
             InnerStart = innerStart;
             InnerEnd = innerEnd;

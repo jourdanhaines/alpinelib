@@ -2,7 +2,7 @@ namespace AlpineLib.Procedural.Meshing {
     /// <summary>A stretch of a talus foot left bare (rock straight to the ground).</summary>
     public readonly struct TalusBareStretch {
         /// <summary>Builds a stretch.</summary>
-        public TalusBareStretch(PlanPoint start, PlanPoint end) {
+        internal TalusBareStretch(PlanPoint start, PlanPoint end) {
             Start = start;
             End = end;
         }

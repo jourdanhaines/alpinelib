@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using AlpineLib.Procedural.Meshing;
 using Xunit;
@@ -31,6 +32,22 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
             Assert.Equal(0.3333333, piece.SlopeX, 12);
             Assert.Equal(0.0, piece.SlopeZ);
             Assert.Equal(0.3333333, piece.Gradient, 12);
+        }
+
+        [Fact]
+        public void TheConstructorCopiesAndChecksItsPlan() {
+            var plan = new List<PlanPoint> { new PlanPoint(0, 0), new PlanPoint(2, 0), new PlanPoint(0, 2) };
+            var piece = new SlopedPrismPiece(plan, 0, 0, 1, 0.5, 0, false);
+
+            plan[0] = new PlanPoint(-5, -5);
+
+            Assert.Equal(new PlanPoint(0, 0), piece.Plan[0]);
+            Assert.False(piece.Plan is PlanPoint[]);
+            var clockwise = new List<PlanPoint> { new PlanPoint(0, 0), new PlanPoint(0, 2), new PlanPoint(2, 0) };
+            Assert.Throws<ArgumentException>(() => new SlopedPrismPiece(clockwise, 0, 0, 1, 0, 0, false));
+            Assert.Throws<ArgumentException>(() => new SlopedPrismPiece(new List<PlanPoint> { new PlanPoint(0, 0), new PlanPoint(1, 0) }, 0, 0, 1, 0, 0, false));
+            Assert.Throws<ArgumentNullException>(() => new SlopedPrismPiece(null, 0, 0, 1, 0, 0, false));
+            Assert.Throws<ArgumentException>(() => new SlopedPrismPiece(new List<PlanPoint> { new PlanPoint(0, 0), new PlanPoint(2, 0), new PlanPoint(0, 2) }, 0, 0, double.NaN, 0, 0, false));
         }
     }
 }

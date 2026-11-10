@@ -26,6 +26,7 @@ namespace AlpineLib.Procedural.Meshing {
             MinInterval = minInterval;
             KeepOffGap = keepOffGap;
             SeamStep = seamStep;
+            IsBuilt = true;
         }
 
         /// <summary>How far a strip reaches into the rock past the wall foot.</summary>
@@ -57,5 +58,8 @@ namespace AlpineLib.Procedural.Meshing {
 
         /// <summary>Two pieces sharing an edge must agree on its heights within this, else the apron is not laid.</summary>
         public double SeamStep { get; }
+
+        /// <summary>False for <c>default</c> settings, which <see cref="TalusApron.Lay"/> refuses.</summary>
+        public bool IsBuilt { get; }
     }
 }

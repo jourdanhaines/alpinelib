@@ -7,9 +7,15 @@ namespace AlpineLib.Procedural.Meshing {
     /// y = TopY0 + SlopeX·(x − CentreX) + SlopeZ·(z − CentreZ); its bottom is the consumer's to choose.
     /// </summary>
     public sealed class SlopedPrismPiece {
-        /// <summary>Builds a piece.</summary>
-        public SlopedPrismPiece(IReadOnlyList<PlanPoint> plan, double centreX, double centreZ, double topY0, double slopeX, double slopeZ, bool isFan) {
-            Plan = plan ?? throw new ArgumentNullException(nameof(plan));
+        /// <summary>Builds a piece over a copy of <paramref name="plan"/>, which must be strictly convex and counter-clockwise.</summary>
+        public SlopedPrismPiece(IReadOnlyList<PlanPoint> plan, double centreX, double centreZ, double topY0, double slopeX, double slopeZ, bool isFan)
+            : this(Copy(plan), centreX, centreZ, topY0, slopeX, slopeZ, isFan) {
+            if (!IsFinite(centreX) || !IsFinite(centreZ) || !IsFinite(topY0) || !IsFinite(slopeX) || !IsFinite(slopeZ)) throw new ArgumentException("Plane values must be finite.");
+        }
+
+        // Takes ownership of `plan` (a fresh copy or hull).
+        private SlopedPrismPiece(PlanPoint[] plan, double centreX, double centreZ, double topY0, double slopeX, double slopeZ, bool isFan) {
+            Plan = Array.AsReadOnly(plan);
             CentreX = centreX;
             CentreZ = centreZ;
             TopY0 = topY0;
@@ -58,7 +64,20 @@ namespace AlpineLib.Procedural.Meshing {
             double thirdX = third.X - first.X, thirdZ = third.Z - first.Z, thirdRise = thirdY - firstY;
             double determinant = secondX * thirdZ - secondZ * thirdX;
             double slopeX = Fine((secondRise * thirdZ - secondZ * thirdRise) / determinant), slopeZ = Fine((secondX * thirdRise - secondRise * thirdX) / determinant);
-            return new SlopedPrismPiece(ConvexPlan.Hull(plan), first.X, first.Z, ConvexPlan.Round(firstY), slopeX, slopeZ, isFan);
+            return new SlopedPrismPiece(ConvexPlan.Hull(plan).ToArray(), first.X, first.Z, ConvexPlan.Round(firstY), slopeX, slopeZ, isFan);
+        }
+
+        private static PlanPoint[] Copy(IReadOnlyList<PlanPoint> plan) {
+            if (plan == null) throw new ArgumentNullException(nameof(plan));
+            if (!ConvexPlan.IsStrictlyConvexCcw(plan, 0.0)) throw new ArgumentException("The plan must be strictly convex and counter-clockwise.", nameof(plan));
+
+            var copy = new PlanPoint[plan.Count];
+            for (int index = 0; index < copy.Length; index++) copy[index] = plan[index];
+            return copy;
+        }
+
+        private static bool IsFinite(double value) {
+            return !double.IsNaN(value) && !double.IsInfinity(value);
         }
 
         // Slopes rounded to 1e-7 so every runtime stores the same plane.

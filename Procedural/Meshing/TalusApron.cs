@@ -49,6 +49,8 @@ namespace AlpineLib.Procedural.Meshing {
             if (keepOffs == null) throw new ArgumentNullException(nameof(keepOffs));
             if (isClear == null) throw new ArgumentNullException(nameof(isClear));
             if (!(slope > 0.0)) throw new ArgumentOutOfRangeException(nameof(slope), slope, "Slope must be positive.");
+            if (!(rise >= 0.0)) throw new ArgumentOutOfRangeException(nameof(rise), rise, "Rise must be a number at least zero.");
+            if (!settings.IsBuilt) throw new ArgumentException("Settings were never constructed.", nameof(settings));
             if (foot.Count < 3) return new TalusApronResult(true, new List<TalusApronPart>(), new List<TalusBareStretch>());
 
             return new TalusApron(rise, slope, settings).Lay(foot, others, isBareEdge, keepOffs, isClear);
@@ -101,9 +103,14 @@ namespace AlpineLib.Procedural.Meshing {
         private static bool HasSeamStep(List<TalusDraft> drafts, double seamStep) {
             var edges = new Dictionary<(long, long, long, long), (double, double)>();
             foreach (TalusDraft draft in drafts) {
-                foreach (SlopedPrismPiece piece in draft.Part.Pieces) {
-                    if (HasSeamStep(piece, edges, seamStep)) return true;
-                }
+                if (HasSeamStep(draft.Part.Pieces, edges, seamStep)) return true;
+            }
+            return false;
+        }
+
+        private static bool HasSeamStep(IReadOnlyList<SlopedPrismPiece> pieces, Dictionary<(long, long, long, long), (double, double)> edges, double seamStep) {
+            foreach (SlopedPrismPiece piece in pieces) {
+                if (HasSeamStep(piece, edges, seamStep)) return true;
             }
             return false;
         }
@@ -134,16 +141,19 @@ namespace AlpineLib.Procedural.Meshing {
             int count = plan.Count;
             var drafts = new List<TalusDraft>();
             var done = new HashSet<(int, int)>();
-            for (int edge = 0; edge < count; edge++) {
-                for (int index = 0; index < runs[edge].Count; index++) {
-                    bool isJoinedStart = index == 0 && runs[edge][0].ReachesStart && joined[edge];
-                    if (!done.Contains((edge, index)) && !isJoinedStart) AddChain(plan, runs, joined, edge, index, done, drafts);
-                }
-            }
+            for (int edge = 0; edge < count; edge++) AddChainsFrom(plan, runs, joined, edge, done, drafts);
             for (int edge = 0; edge < count; edge++) {
                 if (runs[edge].Count > 0 && !done.Contains((edge, 0))) AddChain(plan, runs, joined, edge, 0, done, drafts);
             }
             return drafts;
+        }
+
+        // A chain from every run of `edge` not yet laid whose start is not joined to the edge before.
+        private void AddChainsFrom(IReadOnlyList<PlanPoint> plan, List<TalusRun>[] runs, bool[] joined, int edge, HashSet<(int, int)> done, List<TalusDraft> drafts) {
+            for (int index = 0; index < runs[edge].Count; index++) {
+                bool isJoinedStart = index == 0 && runs[edge][0].ReachesStart && joined[edge];
+                if (!done.Contains((edge, index)) && !isJoinedStart) AddChain(plan, runs, joined, edge, index, done, drafts);
+            }
         }
 
         // Runs on both sides of a convex vertex reach it.
@@ -305,8 +315,8 @@ namespace AlpineLib.Procedural.Meshing {
             double low = 0.0, high = 1.0;
             for (int step = 0; step < CrossingSteps; step++) {
                 double middle = (low + high) * 0.5;
-                double x = from.X + (to.X - from.X) * middle, z = from.Z + (to.Z - from.Z) * middle;
-                if ((x - at.X) * (x - at.X) + (z - at.Z) * (z - at.Z) < radius * radius) low = middle;
+                double pointX = from.X + (to.X - from.X) * middle, pointZ = from.Z + (to.Z - from.Z) * middle;
+                if ((pointX - at.X) * (pointX - at.X) + (pointZ - at.Z) * (pointZ - at.Z) < radius * radius) low = middle;
                 else high = middle;
             }
             return new PlanPoint(from.X + (to.X - from.X) * low, from.Z + (to.Z - from.Z) * low);
@@ -340,8 +350,8 @@ namespace AlpineLib.Procedural.Meshing {
                                                                  double lastHeight) {
             var corners = new List<(PlanPoint Point, double Height)>(steps + 1);
             for (int step = 0; step < steps; step++) {
-                Direction(fromX, fromZ, toX, toZ, step, steps, isReversed, out double x, out double z);
-                corners.Add((Out(at, x, z, _width), -_settings.ToeSink));
+                Direction(fromX, fromZ, toX, toZ, step, steps, isReversed, out double rayX, out double rayZ);
+                corners.Add((Out(at, rayX, rayZ, _width), -_settings.ToeSink));
             }
             if (corners.Count > 1 && PlanSegments.Length(corners[corners.Count - 1].Point, last) < MergeReach) corners.RemoveAt(corners.Count - 1);
             corners.Add((last, lastHeight));
@@ -359,7 +369,7 @@ namespace AlpineLib.Procedural.Meshing {
 
         // The unit direction `step` of `steps` turning from one direction to the other (counter-clockwise, or clockwise when
         // reversed): the turn is cut at quarter turns and each part is a normalised blend weighted by its chord; no angles.
-        private static void Direction(double fromX, double fromZ, double toX, double toZ, int step, int steps, bool isReversed, out double x, out double z) {
+        private static void Direction(double fromX, double fromZ, double toX, double toZ, int step, int steps, bool isReversed, out double directionX, out double directionZ) {
             var points = new List<(double X, double Z)> { (fromX, fromZ) };
             double currentX = fromX, currentZ = fromZ;
             for (int quarter = 0; quarter < 4 && IsBeyondQuarter(currentX, currentZ, toX, toZ, isReversed); quarter++) {
@@ -373,13 +383,13 @@ namespace AlpineLib.Procedural.Meshing {
             for (int index = 1; index < points.Count; index++) {
                 double chord = Chord(points[index - 1], points[index]);
                 if (wanted <= chord || index == points.Count - 1) {
-                    Blend(points[index - 1].X, points[index - 1].Z, points[index].X, points[index].Z, chord > 0.0 ? Math.Min(1.0, wanted / chord) : 1.0, out x, out z);
+                    Blend(points[index - 1].X, points[index - 1].Z, points[index].X, points[index].Z, chord > 0.0 ? Math.Min(1.0, wanted / chord) : 1.0, out directionX, out directionZ);
                     return;
                 }
                 wanted -= chord;
             }
-            x = toX;
-            z = toZ;
+            directionX = toX;
+            directionZ = toZ;
         }
 
         // True when turning from (fromX, fromZ) the given way to (toX, toZ) takes more than a quarter turn.
@@ -394,16 +404,16 @@ namespace AlpineLib.Procedural.Meshing {
             return Math.Sqrt(deltaX * deltaX + deltaZ * deltaZ);
         }
 
-        private static void Blend(double fromX, double fromZ, double toX, double toZ, double share, out double x, out double z) {
-            x = fromX * (1.0 - share) + toX * share;
-            z = fromZ * (1.0 - share) + toZ * share;
-            double length = Math.Sqrt(x * x + z * z);
-            x /= length;
-            z /= length;
+        private static void Blend(double fromX, double fromZ, double toX, double toZ, double share, out double blendX, out double blendZ) {
+            blendX = fromX * (1.0 - share) + toX * share;
+            blendZ = fromZ * (1.0 - share) + toZ * share;
+            double length = Math.Sqrt(blendX * blendX + blendZ * blendZ);
+            blendX /= length;
+            blendZ /= length;
         }
 
-        private static PlanPoint Out(PlanPoint at, double x, double z, double distance) {
-            return ConvexPlan.Round(new PlanPoint(at.X + x * distance, at.Z + z * distance));
+        private static PlanPoint Out(PlanPoint at, double directionX, double directionZ, double distance) {
+            return ConvexPlan.Round(new PlanPoint(at.X + directionX * distance, at.Z + directionZ * distance));
         }
 
         private static PlanPoint At(PlanPoint start, PlanPoint end, double along) {
@@ -412,11 +422,11 @@ namespace AlpineLib.Procedural.Meshing {
         }
 
         // Outward unit normal of a counter-clockwise edge.
-        private static void Normal(PlanPoint start, PlanPoint end, out double x, out double z) {
+        private static void Normal(PlanPoint start, PlanPoint end, out double normalX, out double normalZ) {
             double deltaX = end.X - start.X, deltaZ = end.Z - start.Z;
             double length = Math.Sqrt(deltaX * deltaX + deltaZ * deltaZ);
-            x = deltaZ / length;
-            z = -deltaX / length;
+            normalX = deltaZ / length;
+            normalZ = -deltaX / length;
         }
     }
 }

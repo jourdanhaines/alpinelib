@@ -145,6 +145,59 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
         }
 
         [Fact]
+        public void AnEndFanThatCannotReachBackToTheFootLeavesItsRunBare() {
+            // A 10 m triangle with its base bare: at rise 6 the apron is 10.6 m wide and the end fans never find the foot
+            // again a width away; at rise 4 (7.1 m) they do.
+            var triangle = new List<PlanPoint> { new PlanPoint(0, 0), new PlanPoint(10, 0), new PlanPoint(5, 8.6603) };
+
+            TalusApronResult wide = TalusApron.Lay(triangle, None, 6.0, Gentle, (edge) => edge == 0, None, (piece) => true, Settings);
+            TalusApronResult narrow = TalusApron.Lay(triangle, None, 4.0, Gentle, (edge) => edge == 0, None, (piece) => true, Settings);
+
+            Assert.True(wide.IsLaid);
+            Assert.Empty(wide.Parts);
+            Assert.Equal(3, wide.Bare.Count);
+            Assert.Equal(2, narrow.Parts.Count((part) => !part.IsFan));
+            Assert.Single(narrow.Bare);
+            AssertWellFormed(narrow, 4.0, Gentle);
+        }
+
+        [Theory]
+        [InlineData(0.006, 1)]
+        [InlineData(0.017, 2)]
+        public void AFanRayWithin10CentimetresOfTheLastPointMergesIntoIt(double rise, int piecesPerCornerFan) {
+            // Hexagon corners turn 60°, cut in two 30° steps: the last ray lands 0.518 × width from the last point,
+            // 0.095 m at rise 0.006 (merged) and 0.105 m at rise 0.017 (kept).
+            TalusApronResult result = TalusApron.Lay(Hexagon(30.0), None, rise, Gentle, (edge) => false, None, (piece) => true, Settings);
+
+            Assert.True(result.IsLaid);
+            List<TalusApronPart> fans = result.Parts.Where((part) => part.IsFan).ToList();
+            Assert.Equal(6, fans.Count);
+            foreach (TalusApronPart fan in fans) Assert.Equal(piecesPerCornerFan, fan.Pieces.Count);
+        }
+
+        [Theory]
+        [InlineData(1.4, 2)]
+        [InlineData(1.6, 1)]
+        [InlineData(3.0, 1)]
+        [InlineData(4.4, 1)]
+        public void OnlyKeepOffsWithinTheGapCutTheEdge(double distance, int southStrips) {
+            var keepOff = new List<PlanPoint> { new PlanPoint(18, -distance - 5), new PlanPoint(22, -distance - 5), new PlanPoint(22, -distance), new PlanPoint(18, -distance) };
+
+            TalusApronResult result = TalusApron.Lay(Square(40.0), None, 5.0, Gentle, (edge) => false, new List<IReadOnlyList<PlanPoint>> { keepOff }, (piece) => true, Settings);
+
+            Assert.True(result.IsLaid);
+            Assert.Equal(southStrips, result.Parts.Count((part) => !part.IsFan && part.InnerStart.Z == 0.0 && part.InnerEnd.Z == 0.0));
+        }
+
+        [Fact]
+        public void UnbuiltSettingsAndBadRisesThrow() {
+            Assert.Throws<ArgumentException>(() => TalusApron.Lay(Square(10), None, 5.0, Gentle, (edge) => false, None, (piece) => true, default));
+            Assert.Throws<ArgumentOutOfRangeException>(() => TalusApron.Lay(Square(10), None, -1.0, Gentle, (edge) => false, None, (piece) => true, Settings));
+            Assert.Throws<ArgumentOutOfRangeException>(() => TalusApron.Lay(Square(10), None, double.NaN, Gentle, (edge) => false, None, (piece) => true, Settings));
+            Assert.True(TalusApron.Lay(Square(10), None, 0.0, Gentle, (edge) => false, None, (piece) => true, Settings).IsLaid);
+        }
+
+        [Fact]
         public void TinyFeetAndBadArgumentsAreHandled() {
             var segment = new List<PlanPoint> { new PlanPoint(0, 0), new PlanPoint(1, 0) };
             TalusApronResult result = TalusApron.Lay(segment, None, 5.0, Gentle, (edge) => false, None, (piece) => true, Settings);
