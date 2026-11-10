@@ -14,6 +14,7 @@ namespace AlpineLib.Procedural.Kits {
         public static double Seated(in DegreeRotation rotation, double x, double centreY, double z, double halfX, double halfY, double halfZ, Func<double, double, double> surfaceAt,
                                     in LooseSeatSettings settings) {
             if (surfaceAt == null) throw new ArgumentNullException(nameof(surfaceAt));
+            if (!settings.IsBuilt) throw new ArgumentException("Settings were never constructed.", nameof(settings));
 
             int grid = settings.BottomGrid;
             double over = double.NegativeInfinity;
@@ -23,8 +24,10 @@ namespace AlpineLib.Procedural.Kits {
                     over = Math.Max(over, Over(rotation, x, centreY, z, shareX * halfX, -halfY, shareZ * halfZ, surfaceAt));
                 }
             }
-            foreach (double shareX in settings.LowLattice) {
-                foreach (double shareZ in settings.LowLattice) {
+            int lattice = settings.LatticeCount;
+            for (int row = 0; row < lattice; row++) {
+                for (int column = 0; column < lattice; column++) {
+                    double shareX = settings.LatticeAt(row), shareZ = settings.LatticeAt(column);
                     double lowY = -halfY * Math.Sqrt(1.0 - shareX * shareX - shareZ * shareZ);
                     over = Math.Max(over, Over(rotation, x, centreY, z, shareX * halfX, lowY, shareZ * halfZ, surfaceAt) - settings.LowPointSlack);
                 }

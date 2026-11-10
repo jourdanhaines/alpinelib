@@ -79,7 +79,23 @@ namespace AlpineLib.Server.Tests.Procedural.Kits {
             Assert.Throws<ArgumentOutOfRangeException>(() => new LooseSeatSettings(1, new[] { 0.0 }, 0.1));
             Assert.Throws<ArgumentOutOfRangeException>(() => new LooseSeatSettings(3, new[] { -0.8, 0.8 }, 0.1));
             Assert.Throws<ArgumentOutOfRangeException>(() => new LooseSeatSettings(3, new[] { 0.5 }, -0.1));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new LooseSeatSettings(3, new[] { double.NaN }, 0.1));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new LooseSeatSettings(3, new[] { 0.5 }, double.NaN));
             Assert.Throws<ArgumentNullException>(() => LooseSeat.Seated(new DegreeRotation(0, 0, 0), 0, 0, 0, 1, 1, 1, null, Settings));
+            Assert.Throws<ArgumentException>(() => LooseSeat.Seated(new DegreeRotation(0, 0, 0), 0, 0, 0, 1, 1, 1, (x, z) => 0.0, default));
+        }
+
+        [Fact]
+        public void SettingsKeepTheirOwnCopyOfTheLattice() {
+            var lattice = new[] { -0.6, 0.6 };
+            var settings = new LooseSeatSettings(3, lattice, 0.1);
+            double before = LooseSeat.Seated(new DegreeRotation(0, 0, 0), 0, 5, 0, 1, 1, 1, (x, z) => 0.0, settings);
+
+            lattice[0] = 0.0;
+
+            Assert.Equal(-0.6, settings.LowLattice[0]);
+            Assert.Equal(before, LooseSeat.Seated(new DegreeRotation(0, 0, 0), 0, 5, 0, 1, 1, 1, (x, z) => 0.0, settings));
+            Assert.False(settings.LowLattice is double[]);
         }
 
         // Seated: every bottom grid point at or under the surface, every low point within the slack over it, and at least one
