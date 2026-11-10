@@ -104,6 +104,19 @@ namespace AlpineLib.Server.Tests.Procedural.Angles {
             Assert.Equal((1.0, 2.0, 3.0), (outX, outY, outZ));
         }
 
+        [Fact]
+        public void DefaultIsTheIdentity() {
+            DegreeRotation rotation = default;
+
+            rotation.Apply(1.0, -2.0, 3.0, out double outX, out double outY, out double outZ);
+            rotation.Extents(1.5, 0.5, 2.0, out double extentX, out double extentY, out double extentZ);
+            new DegreeRotation(0, 0, 0).Extents(1.5, 0.5, 2.0, out double builtX, out double builtY, out double builtZ);
+
+            Assert.Equal((1.0, -2.0, 3.0), (outX, outY, outZ));
+            Assert.Equal((builtX, builtY, builtZ), (extentX, extentY, extentZ));
+            Assert.Equal(new DegreeRotation(0, 0, 0).RoundedExtentY(1.0, 0.8, 2.0), rotation.RoundedExtentY(1.0, 0.8, 2.0));
+        }
+
         private static void AssertTurns(DegreeRotation rotation, double x, double y, double z, double expectedX, double expectedY, double expectedZ) {
             rotation.Apply(x, y, z, out double outX, out double outY, out double outZ);
             Assert.Equal(expectedX, outX, Tolerance);
