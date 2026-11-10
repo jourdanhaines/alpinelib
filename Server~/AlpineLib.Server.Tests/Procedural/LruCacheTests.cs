@@ -92,20 +92,84 @@ namespace AlpineLib.Server.Tests.Procedural {
         public void RejectsBadArguments() {
             Assert.Throws<ArgumentOutOfRangeException>(() => new LruCache<int, int>(0));
             Assert.Throws<ArgumentNullException>(() => new LruCache<int, int>(1).GetOrAdd(1, null));
+            Assert.Throws<ArgumentNullException>(() => new LruCache<string, int>(1).GetOrAdd(null, () => 1));
+            Assert.Throws<ArgumentNullException>(() => new LruCache<string, int>(1).Contains(null));
         }
 
         [Fact]
-        public void AFailedBuildRethrowsUntilEvicted() {
-            var cache = new LruCache<int, int>(1);
-            int builds = 0;
-            Func<int> failing = () => throw new InvalidOperationException("build " + ++builds);
+        public void AFailedBuildIsForgottenAndRetriedOnTheNextAsk() {
+            var cache = new LruCache<int, int>(2);
+            var builds = new int[1];
 
-            Assert.Throws<InvalidOperationException>(() => cache.GetOrAdd(1, failing));
-            Assert.Throws<InvalidOperationException>(() => cache.GetOrAdd(1, () => 1));
-            Assert.Equal(1, builds);
+            Assert.Throws<InvalidOperationException>(() => cache.GetOrAdd(1, () => Fail(builds)));
+            Assert.Equal(0, cache.Count);
+            Assert.Equal(7, cache.GetOrAdd(1, () => Counted(builds, 7)));
+            Assert.Equal(2, builds[0]);
+            Assert.Equal(7, cache.GetOrAdd(1, () => Counted(builds, 8)));
+        }
+
+        [Fact]
+        public async Task AFailedBuildDoesNotForgetTheKeysNewerBuild() {
+            var cache = new LruCache<int, int>(1);
+            using var started = new ManualResetEventSlim(false);
+            using var release = new ManualResetEventSlim(false);
+            Task<int> first = Task.Run(() => cache.GetOrAdd(1, () => FailAfter(started, release)));
+            started.Wait();
 
             cache.GetOrAdd(2, () => 2);
-            Assert.Equal(1, cache.GetOrAdd(1, () => 1));
+            Assert.Equal(10, cache.GetOrAdd(1, () => 10));
+            release.Set();
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() => first);
+            Assert.True(cache.Contains(1));
+            Assert.Equal(10, cache.GetOrAdd(1, () => 11));
+        }
+
+        [Fact]
+        public async Task AnEntryEvictedDuringItsBuildIsBuiltAgain() {
+            var cache = new LruCache<int, int>(1);
+            var builds = new int[1];
+            using var started = new ManualResetEventSlim(false);
+            using var release = new ManualResetEventSlim(false);
+            Task<int> first = Task.Run(() => cache.GetOrAdd(1, () => Blocked(builds, started, release, 5)));
+            started.Wait();
+
+            cache.GetOrAdd(2, () => 2);
+            Assert.Equal(6, cache.GetOrAdd(1, () => Counted(builds, 6)));
+            release.Set();
+
+            Assert.Equal(5, await first);
+            Assert.Equal(2, builds[0]);
+            Assert.Equal(6, cache.GetOrAdd(1, () => 7));
+        }
+
+        [Fact]
+        public async Task ClearDuringABuildLetsItFinishAndForgetsIt() {
+            var cache = new LruCache<int, int>(4);
+            var builds = new int[1];
+            using var started = new ManualResetEventSlim(false);
+            using var release = new ManualResetEventSlim(false);
+            Task<int> first = Task.Run(() => cache.GetOrAdd(1, () => Blocked(builds, started, release, 5)));
+            started.Wait();
+
+            cache.Clear();
+            release.Set();
+
+            Assert.Equal(5, await first);
+            Assert.False(cache.Contains(1));
+            Assert.Equal(9, cache.GetOrAdd(1, () => Counted(builds, 9)));
+            Assert.Equal(2, builds[0]);
+        }
+
+        [Fact]
+        public void ABuildMayAskForOtherKeys() {
+            var cache = new LruCache<int, int>(4);
+
+            int outer = cache.GetOrAdd(1, () => cache.GetOrAdd(2, () => 20) + 1);
+
+            Assert.Equal(21, outer);
+            Assert.Equal(20, cache.GetOrAdd(2, () => 0));
+            Assert.Equal(2, cache.Count);
         }
 
         [Fact]
@@ -144,6 +208,29 @@ namespace AlpineLib.Server.Tests.Procedural {
                 int value = cache.GetOrAdd(key, () => Build(builds, key));
                 Assert.Equal(key * 10, value);
             }
+        }
+
+        private static int Counted(int[] builds, int value) {
+            builds[0]++;
+            return value;
+        }
+
+        private static int Fail(int[] builds) {
+            builds[0]++;
+            throw new InvalidOperationException("build failed");
+        }
+
+        private static int FailAfter(ManualResetEventSlim started, ManualResetEventSlim release) {
+            started.Set();
+            release.Wait();
+            throw new InvalidOperationException("build failed");
+        }
+
+        private static int Blocked(int[] builds, ManualResetEventSlim started, ManualResetEventSlim release, int value) {
+            Interlocked.Increment(ref builds[0]);
+            started.Set();
+            release.Wait();
+            return value;
         }
 
         private static string Counted(int[] builds, string value) {

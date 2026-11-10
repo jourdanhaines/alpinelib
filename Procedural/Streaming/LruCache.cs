@@ -4,10 +4,11 @@ using System.Threading;
 
 namespace AlpineLib.Procedural.Streaming {
     /// <summary>
-    /// A bounded least-recently-used cache, thread safe: a value is built once per key even when several threads ask at
-    /// the same time (the others wait on the same build, which runs outside the cache lock), and the least recently asked
-    /// entry goes when the cache is full. A build that throws is cached like a value and rethrows on every ask until the
-    /// entry is evicted or cleared. Evicted values are dropped, not disposed.
+    /// A bounded least-recently-used cache, thread safe: threads asking for the same key at the same time share one build,
+    /// which runs outside the cache lock, and the least recently asked entry goes when the cache is full. An entry evicted
+    /// or cleared while its build runs is built again on a later ask. A build that throws is forgotten and the exception
+    /// reaches every thread waiting on it; the next ask builds again. Evicted values are dropped, not disposed. A build may
+    /// ask the cache for other keys but never for its own key.
     /// </summary>
     public sealed class LruCache<TKey, TValue> {
         private readonly int _capacity;
@@ -33,17 +34,28 @@ namespace AlpineLib.Procedural.Streaming {
             }
         }
 
-        /// <summary>The value for <paramref name="key"/>, built by <paramref name="build"/> on the first ask; marks the key most recently used.</summary>
+        /// <summary>
+        /// The value for <paramref name="key"/>, built by <paramref name="build"/> when the cache holds none; marks the key
+        /// most recently used. A throwing build is forgotten and its exception rethrown.
+        /// </summary>
         public TValue GetOrAdd(TKey key, Func<TValue> build) {
+            if (key is null) throw new ArgumentNullException(nameof(key));
             if (build == null) throw new ArgumentNullException(nameof(build));
 
             Lazy<TValue> value;
             lock (_gate) value = TouchOrInsert(key, build);
-            return value.Value;
+            try {
+                return value.Value;
+            } catch {
+                lock (_gate) Forget(key, value);
+                throw;
+            }
         }
 
         /// <summary>Whether <paramref name="key"/> is held now, without marking it used or waiting on its build.</summary>
         public bool Contains(TKey key) {
+            if (key is null) throw new ArgumentNullException(nameof(key));
+
             lock (_gate) return _entries.ContainsKey(key);
         }
 
@@ -66,6 +78,14 @@ namespace AlpineLib.Procedural.Streaming {
             _entries[key] = _order.AddFirst(new KeyValuePair<TKey, Lazy<TValue>>(key, value));
             Trim();
             return value;
+        }
+
+        // Drops the failed build only while the key still holds it (it may have been evicted and built again since).
+        private void Forget(TKey key, Lazy<TValue> failed) {
+            if (!_entries.TryGetValue(key, out LinkedListNode<KeyValuePair<TKey, Lazy<TValue>>> node) || !ReferenceEquals(node.Value.Value, failed)) return;
+
+            _order.Remove(node);
+            _entries.Remove(key);
         }
 
         private void Trim() {
