@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Records the Procedural goldens (fillet, talus apron, loose seat) from the consuming game's own landmark generator:
+    the game's WorldGen sources compile here with LandmarkTalus, LandmarkFillets, LandmarkLooseSeat and PropRotation
+    swapped for facades that run the game's code (renamed copies made by record.sh) and the lib behind its adapter,
+    compare them bit for bit and sample cases. Not part of the solution; run through record.sh.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>9</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <NoWarn>$(NoWarn);1701;1702;1705;1591</NoWarn>
+  </PropertyGroup>
+
+  <Target Name="RequireGameRoot" BeforeTargets="BeforeBuild">
+    <Error Condition="'$(GameRoot)' == '' Or !Exists('$(GameRoot)/Assets/Scripts/WorldGen')" Text="Pass -p:GameRoot=(the game project root)." />
+  </Target>
+
+  <ItemGroup>
+    <Compile Include="$(GameRoot)/Assets/Scripts/WorldGen/**/*.cs" LinkBase="WorldGen"
+             Exclude="$(GameRoot)/Assets/Scripts/WorldGen/Landmarks/LandmarkTalus.cs;$(GameRoot)/Assets/Scripts/WorldGen/Landmarks/LandmarkFillets.cs;$(GameRoot)/Assets/Scripts/WorldGen/Landmarks/LandmarkLooseSeat.cs;$(GameRoot)/Assets/Scripts/WorldGen/Props/PropRotation.cs" />
+    <Compile Include="$(GameRoot)/Assets/Scripts/World/Station/Layout/**/*.cs" LinkBase="Layout" />
+    <Compile Include="$(GameRoot)/Server/AllAboard.Server/Configuration/WorldTableLoader.cs" LinkBase="Server" />
+    <Compile Include="obj/game/*.cs" />
+    <Compile Include="*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../AlpineLib.Procedural/AlpineLib.Procedural.csproj" />
+    <ProjectReference Include="../../AlpineLib.Netcode/AlpineLib.Netcode.csproj" />
+  </ItemGroup>
+
+</Project>
