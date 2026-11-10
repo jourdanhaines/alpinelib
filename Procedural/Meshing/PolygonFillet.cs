@@ -15,6 +15,7 @@ namespace AlpineLib.Procedural.Meshing {
         public static List<PlanPoint> Round(IReadOnlyList<PlanPoint> polygon, IReadOnlyList<FilletCorner> corners, in PolygonFilletSettings settings) {
             if (polygon == null) throw new ArgumentNullException(nameof(polygon));
             if (corners == null) throw new ArgumentNullException(nameof(corners));
+            if (!settings.IsBuilt) throw new ArgumentException("Settings were never constructed.", nameof(settings));
 
             int count = polygon.Count;
             if (count < 3) return new List<PlanPoint>(polygon);
@@ -34,6 +35,9 @@ namespace AlpineLib.Procedural.Meshing {
         /// </summary>
         public static double MaxRadius(IReadOnlyList<PlanPoint> polygon, int index, double edgeShare) {
             if (polygon == null) throw new ArgumentNullException(nameof(polygon));
+            if (polygon.Count < 3) throw new ArgumentException("A corner needs a polygon of at least three vertices.", nameof(polygon));
+            if (index < 0 || index >= polygon.Count) throw new ArgumentOutOfRangeException(nameof(index), index, "Index must name a vertex.");
+            if (!(edgeShare > 0.0)) throw new ArgumentOutOfRangeException(nameof(edgeShare), edgeShare, "Edge share must be positive.");
 
             int count = polygon.Count;
             PlanPoint before = polygon[(index + count - 1) % count], at = polygon[index], after = polygon[(index + 1) % count];

@@ -13,6 +13,7 @@ namespace AlpineLib.Procedural.Meshing {
 
             SharpTurnCosine = sharpTurnCosine;
             EdgeShare = edgeShare;
+            IsBuilt = true;
         }
 
         /// <summary>Cosine of the turn (between incoming and outgoing edge directions) a corner must fall under to be rounded.</summary>
@@ -20,5 +21,8 @@ namespace AlpineLib.Procedural.Meshing {
 
         /// <summary>Most of either neighbouring edge a fillet's tangent length may take.</summary>
         public double EdgeShare { get; }
+
+        /// <summary>False for <c>default</c> settings, which <see cref="PolygonFillet.Round"/> refuses.</summary>
+        public bool IsBuilt { get; }
     }
 }

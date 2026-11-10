@@ -92,6 +92,18 @@ namespace AlpineLib.Server.Tests.Procedural.Meshing {
         }
 
         [Fact]
+        public void UnbuiltSettingsBadCornersAndBadMaxRadiusArgumentsThrow() {
+            Assert.Throws<ArgumentException>(() => PolygonFillet.Round(Square(1.0), Corners(4, 1.0, true), default));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new FilletCorner(-1.0, true));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new FilletCorner(double.NaN, true));
+            var segment = new List<PlanPoint> { new PlanPoint(0, 0), new PlanPoint(1, 0) };
+            Assert.Throws<ArgumentException>(() => PolygonFillet.MaxRadius(segment, 0, 0.5));
+            Assert.Throws<ArgumentOutOfRangeException>(() => PolygonFillet.MaxRadius(Square(1.0), 4, 0.5));
+            Assert.Throws<ArgumentOutOfRangeException>(() => PolygonFillet.MaxRadius(Square(1.0), -1, 0.5));
+            Assert.Throws<ArgumentOutOfRangeException>(() => PolygonFillet.MaxRadius(Square(1.0), 0, 0.0));
+        }
+
+        [Fact]
         public void MaxRadiusKeepsTheTangentWithinTheShare() {
             // A right angle has tan(45°) = 1: the radius equals the tangent length, half the shorter edge.
             Assert.Equal(2.5, PolygonFillet.MaxRadius(Rectangle(5.0, 8.0), 0, 0.5), 9);
