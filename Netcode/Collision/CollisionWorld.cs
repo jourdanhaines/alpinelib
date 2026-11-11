@@ -292,6 +292,36 @@ namespace AlpineLib.Netcode.Collision {
         }
 
         /// <summary>
+        /// The depth of the deepest overlap <see cref="CollectContacts"/> would report for the capsule into a
+        /// <see cref="MaxContacts"/>-long span, or zero when it is clear: the same contacts, in the same order, with
+        /// nothing written out.
+        /// </summary>
+        internal float DeepestContactDepth(in CapsulePose pose, uint tick) {
+            EnsureBuilt();
+            Span<int> candidates = stackalloc int[MaxCandidates];
+            float minX = (float)(pose.FootPosition.X - pose.Radius);
+            float maxX = (float)(pose.FootPosition.X + pose.Radius);
+            float minZ = (float)(pose.FootPosition.Z - pose.Radius);
+            float maxZ = (float)(pose.FootPosition.Z + pose.Radius);
+            int candidateCount = grid.Collect(minX, maxX, minZ, maxZ, candidates);
+            var deepest = new DeepestOverlap(MaxContacts);
+            for (int index = 0; index < candidateCount && !deepest.IsFull; index++) {
+                if (CollisionResolver.TryGetContact(in pose, in statics[candidates[index]], out CollisionContact contact)) {
+                    deepest.Add(contact.Depth);
+                }
+            }
+
+            for (int moverIndex = 0; moverIndex < Movers.Count && !deepest.IsFull; moverIndex++) {
+                CollisionShape worldShape = MoverWorldShape(moverIndex, tick);
+                if (CollisionResolver.TryGetContact(in pose, in worldShape, out CollisionContact contact)) {
+                    deepest.Add(contact.Depth);
+                }
+            }
+
+            return deepest.Depth;
+        }
+
+        /// <summary>
         /// Finds the highest surface under a horizontal position within a vertical span, including mover
         /// surfaces at this tick.
         /// </summary>
