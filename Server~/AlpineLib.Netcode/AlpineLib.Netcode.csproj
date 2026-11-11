@@ -17,6 +17,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="AlpineLib.Server.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Compile Include="$(AlpineLibRoot)/Netcode/**/*.cs" LinkBase="Netcode" />
   </ItemGroup>
 

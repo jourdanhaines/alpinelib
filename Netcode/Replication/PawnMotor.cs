@@ -52,7 +52,10 @@ namespace AlpineLib.Netcode.Replication {
     /// <see cref="MaxSubsteps"/> substeps, each no longer than half the capsule's radius so nothing is
     /// tunnelled through, and each substep is followed by up to
     /// <see cref="MaxDepenetrationIterations"/> passes that push the capsule out of whatever it ended up
-    /// inside and slide the velocity along the surface. (5) A single vertical support query decides
+    /// inside and slide the velocity along the surface. When those passes still leave the capsule more than
+    /// <see cref="CornerTolerance"/> deep — an acute concave corner between two shapes, where pushing out of
+    /// one face pushes into the other — the substep is resolved again jointly against every contact at once
+    /// (see <see cref="ResolveCorner"/>). (5) A single vertical support query decides
     /// grounding, clamps the feet to the surface and zeroes vertical velocity. (6) Yaw and the flags byte
     /// are packed.
     /// </para>
@@ -99,8 +102,6 @@ namespace AlpineLib.Netcode.Replication {
         /// </summary>
         public const int MaxDepenetrationIterations = 4;
 
-        /// <summary>Degrees to radians, for the one slope-limit cosine each step takes.</summary>
-
         /// <summary>
         /// Shortest horizontal part of a contact normal a wall push will divide by. A normal barely off
         /// vertical would otherwise demand an enormous horizontal push to resolve a millimetre of overlap;
@@ -114,6 +115,18 @@ namespace AlpineLib.Netcode.Replication {
         /// push along, so the contact is resolved along its full normal like an airborne one.
         /// </summary>
         private const float WallNormalEpsilon = 1e-4f;
+
+        /// <summary>
+        /// Deepest overlap the one-contact-at-a-time passes may leave before the joint resolution takes over, and
+        /// the deepest it may leave in turn. Below it a substep keeps the original passes' result bit for bit.
+        /// </summary>
+        private const float CornerTolerance = 0.002f;
+
+        /// <summary>Overlap at which the joint resolution stops early.</summary>
+        private const float CornerSettledDepth = 0.0001f;
+
+        /// <summary>Most joint passes one substep gets, each re-collecting the contacts where the last one left it.</summary>
+        private const int CornerPasses = 4;
 
         /// <summary>
         /// Advances a pawn by one fixed step.
@@ -132,6 +145,21 @@ namespace AlpineLib.Netcode.Replication {
             CollisionWorld world,
             uint simTick,
             float deltaSeconds) {
+            return Step(in input, in state, profile, world, simTick, deltaSeconds, true);
+        }
+
+        /// <summary>
+        /// <see cref="Step(in PawnInput, in PawnState, MovementProfile, CollisionWorld, uint, float)"/>, with the
+        /// joint corner resolution switchable so tests can replay the one-contact-at-a-time motor alone.
+        /// </summary>
+        internal static PawnState Step(
+            in PawnInput input,
+            in PawnState state,
+            MovementProfile profile,
+            CollisionWorld world,
+            uint simTick,
+            float deltaSeconds,
+            bool resolveCorners) {
             if (profile == null) {
                 throw new ArgumentNullException(nameof(profile));
             }
@@ -168,7 +196,7 @@ namespace AlpineLib.Netcode.Replication {
 
             var velocity = new Vector3(velocityX, StepVerticalVelocity(in input, in state, profile, deltaSeconds), velocityZ);
 
-            Integrate(ref position, ref velocity, startedGrounded, profile, world, simTick, deltaSeconds);
+            Integrate(ref position, ref velocity, startedGrounded, profile, world, simTick, deltaSeconds, resolveCorners);
             bool isGrounded = ResolveGrounding(ref position, ref velocity, startedGrounded, profile, world, simTick);
 
             float yawDegrees = ResolveYaw(moveDirection, state.YawDegrees);
@@ -243,7 +271,8 @@ namespace AlpineLib.Netcode.Replication {
             MovementProfile profile,
             CollisionWorld world,
             uint simTick,
-            float deltaSeconds) {
+            float deltaSeconds,
+            bool resolveCorners) {
             var displacement = new Vector3(
                 (float)(velocity.X * deltaSeconds),
                 (float)(velocity.Y * deltaSeconds),
@@ -252,11 +281,19 @@ namespace AlpineLib.Netcode.Replication {
             float substepSeconds = (float)(deltaSeconds / substepCount);
 
             for (int substep = 0; substep < substepCount; substep++) {
+                Vector3 substepStart = position;
                 position = new Vector3(
                     (float)(position.X + (float)(velocity.X * substepSeconds)),
                     (float)(position.Y + (float)(velocity.Y * substepSeconds)),
                     (float)(position.Z + (float)(velocity.Z * substepSeconds)));
-                Depenetrate(ref position, ref velocity, startedGrounded, profile, world, simTick);
+                Vector3 moved = position;
+                Vector3 movedVelocity = velocity;
+                bool exhausted = Depenetrate(ref position, ref velocity, startedGrounded, profile, world, simTick);
+                if (!exhausted || !resolveCorners) {
+                    continue;
+                }
+
+                ResolveCorner(ref position, ref velocity, new PawnSubstep(substepStart, moved, movedVelocity), startedGrounded, profile, world, simTick);
             }
         }
 
@@ -296,13 +333,14 @@ namespace AlpineLib.Netcode.Replication {
         /// Pushes the capsule out of whatever it overlaps, deepest contact first, up to
         /// <see cref="MaxDepenetrationIterations"/> times.
         /// </summary>
+        /// <returns>True when every pass was spent, so the capsule may still overlap something.</returns>
         /// <remarks>
         /// One contact per pass, re-collected each time, rather than every contact in one sweep: two
         /// shapes reporting overlaps against the same pre-push position would each ask for their full
         /// depth and together push a pawn resting in a seam twice as far as either needed. Resolving the
         /// deepest and looking again costs an extra query and never overshoots.
         /// </remarks>
-        private static void Depenetrate(
+        private static bool Depenetrate(
             ref Vector3 position,
             ref Vector3 velocity,
             bool startedGrounded,
@@ -312,7 +350,7 @@ namespace AlpineLib.Netcode.Replication {
             for (int iteration = 0; iteration < MaxDepenetrationIterations; iteration++) {
                 CapsulePose pose = BuildPose(in position, profile, startedGrounded);
                 if (!TryFindDeepestContact(in pose, world, simTick, out CollisionContact contact)) {
-                    return;
+                    return false;
                 }
 
                 if (startedGrounded) {
@@ -322,6 +360,8 @@ namespace AlpineLib.Netcode.Replication {
 
                 ApplyFreeResponse(ref position, ref velocity, in contact);
             }
+
+            return true;
         }
 
         /// <summary>
@@ -370,6 +410,152 @@ namespace AlpineLib.Netcode.Replication {
             }
 
             return found;
+        }
+
+        /// <summary>
+        /// Re-resolves a substep the deepest-first passes left more than <see cref="CornerTolerance"/> deep, jointly
+        /// against every contact, from where the substep's move put the pawn.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// In an acute concave corner each face's push drives the capsule into the other, so one contact at a time
+        /// ping-pongs and the overlap grows as the pawn keeps walking in. Here every contact is a half-space on the
+        /// push instead, horizontal for a grounded pawn exactly as <see cref="ApplyWallResponse"/> shapes it, and
+        /// <see cref="PawnContactSolver"/> finds the shortest push satisfying all of them. Contacts found on later
+        /// passes join the set, and earlier ones stay in it, so a face the push has just cleared to tangency still
+        /// holds the pawn while it is pushed off a third.
+        /// </para>
+        /// <para>
+        /// The push is the projection of the moved position onto the free region, so it is never longer than the
+        /// move and the pawn leaves no faster than it came in. The velocity is clipped against the same set. When
+        /// no push of at most a capsule radius satisfies the set within <see cref="CornerPasses"/> passes — a gap
+        /// narrower than the capsule — the substep is undone and the pawn stops, provided it started the substep
+        /// clear; a pawn that was already inside keeps the deepest-first passes' result, as it always has.
+        /// </para>
+        /// </remarks>
+        private static void ResolveCorner(
+            ref Vector3 position,
+            ref Vector3 velocity,
+            in PawnSubstep substep,
+            bool startedGrounded,
+            MovementProfile profile,
+            CollisionWorld world,
+            uint simTick) {
+            float residual = DeepestDepthAt(in position, startedGrounded, profile, world, simTick);
+            if (residual <= CornerTolerance) {
+                return;
+            }
+
+            Span<Vector3> rows = stackalloc Vector3[CollisionWorld.MaxContacts];
+            Span<float> bounds = stackalloc float[CollisionWorld.MaxContacts];
+            Span<int> keys = stackalloc int[CollisionWorld.MaxContacts];
+            Span<CollisionContact> contacts = stackalloc CollisionContact[CollisionWorld.MaxContacts];
+            var constraints = new PawnCornerConstraints(rows, bounds, keys);
+            if (TryPushJointly(in substep.Moved, startedGrounded, profile, world, simTick, contacts, ref constraints, out Vector3 resolved)) {
+                position = resolved;
+                velocity = ClipVelocity(in substep.MovedVelocity, rows.Slice(0, constraints.Count), bounds);
+                return;
+            }
+
+            if (DeepestDepthAt(in substep.Start, startedGrounded, profile, world, simTick) > CornerTolerance) {
+                return;
+            }
+
+            position = substep.Start;
+            velocity = Vector3.Zero;
+        }
+
+        /// <summary>
+        /// Up to <see cref="CornerPasses"/> joint pushes from <paramref name="moved"/>, each one solving the whole
+        /// accumulated constraint set for the total push. False when the set has no push of at most a capsule
+        /// radius or the last push still leaves more than <see cref="CornerTolerance"/> of overlap.
+        /// </summary>
+        private static bool TryPushJointly(
+            in Vector3 moved,
+            bool startedGrounded,
+            MovementProfile profile,
+            CollisionWorld world,
+            uint simTick,
+            Span<CollisionContact> contacts,
+            ref PawnCornerConstraints constraints,
+            out Vector3 resolved) {
+            float reachSquared = (float)(profile.CapsuleRadius * profile.CapsuleRadius);
+            Vector3 push = Vector3.Zero;
+            resolved = moved;
+
+            for (int pass = 0; pass < CornerPasses; pass++) {
+                CapsulePose pose = BuildPose(in resolved, profile, startedGrounded);
+                int contactCount = world.CollectContacts(in pose, simTick, contacts);
+                if (DeepestDepth(contacts.Slice(0, contactCount)) <= CornerSettledDepth) {
+                    return true;
+                }
+
+                constraints.Merge(contacts.Slice(0, contactCount), in push, startedGrounded);
+                if (!constraints.TrySolve(out push) || PawnContactSolver.Dot(in push, in push) > reachSquared) {
+                    return false;
+                }
+
+                resolved = new Vector3((float)(moved.X + push.X), (float)(moved.Y + push.Y), (float)(moved.Z + push.Z));
+            }
+
+            return DeepestDepthAt(in resolved, startedGrounded, profile, world, simTick) <= CornerTolerance;
+        }
+
+        /// <summary>
+        /// The smallest change to <paramref name="velocity"/> that leaves it heading into none of the constraint
+        /// rows, with the airborne rule that a contact never hands a descending pawn upward speed.
+        /// </summary>
+        private static Vector3 ClipVelocity(in Vector3 velocity, ReadOnlySpan<Vector3> rows, Span<float> scratch) {
+            Span<float> bounds = scratch.Slice(0, rows.Length);
+            for (int index = 0; index < rows.Length; index++) {
+                bounds[index] = -PawnContactSolver.Dot(in rows[index], in velocity);
+            }
+
+            if (!PawnContactSolver.TrySolve(rows, bounds, out Vector3 change)) {
+                return Vector3.Zero;
+            }
+
+            var clipped = new Vector3((float)(velocity.X + change.X), (float)(velocity.Y + change.Y), (float)(velocity.Z + change.Z));
+            if (velocity.Y <= 0f && clipped.Y > 0f) {
+                clipped.Y = 0f;
+            }
+
+            return clipped;
+        }
+
+        /// <summary>The deepest overlap the capsule has at <paramref name="position"/>, or zero when it is clear.</summary>
+        private static float DeepestDepthAt(in Vector3 position, bool startedGrounded, MovementProfile profile, CollisionWorld world, uint simTick) {
+            CapsulePose pose = BuildPose(in position, profile, startedGrounded);
+            return TryFindDeepestContact(in pose, world, simTick, out CollisionContact contact) ? contact.Depth : 0f;
+        }
+
+        private static float DeepestDepth(ReadOnlySpan<CollisionContact> contacts) {
+            float deepest = 0f;
+            for (int index = 0; index < contacts.Length; index++) {
+                deepest = MathF.Max(deepest, contacts[index].Depth);
+            }
+
+            return deepest;
+        }
+
+        /// <summary>
+        /// The half-space row a contact puts on a push: the full normal for an airborne pawn, and for a grounded one
+        /// the horizontal direction scaled so that a unit of depth asks for the same horizontal push
+        /// <see cref="ApplyWallResponse"/> would make, slant clamp included.
+        /// </summary>
+        internal static Vector3 BuildCornerRow(in CollisionContact contact, bool startedGrounded) {
+            if (!startedGrounded) {
+                return contact.Normal;
+            }
+
+            float horizontalSquared = (float)((float)(contact.Normal.X * contact.Normal.X) + (float)(contact.Normal.Z * contact.Normal.Z));
+            if (horizontalSquared <= WallNormalEpsilon) {
+                return contact.Normal;
+            }
+
+            float horizontalLength = (float)MathF.Sqrt(horizontalSquared);
+            float slant = (float)(MathF.Max(horizontalLength, MinimumWallSlant) / horizontalLength);
+            return new Vector3((float)(contact.Normal.X * slant), 0f, (float)(contact.Normal.Z * slant));
         }
 
         /// <summary>
