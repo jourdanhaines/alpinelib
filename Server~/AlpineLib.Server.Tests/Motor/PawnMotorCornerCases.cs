@@ -5,13 +5,14 @@ using AlpineLib.Netcode.Replication;
 
 namespace AlpineLib.Server.Tests.Motor {
     /// <summary>
-    /// Acute concave corners lifted from a consuming game's generated mesas: only the shapes near the walk, the state a
-    /// few ticks before the pawn reaches the corner, and the input it keeps pushing. Coordinates are the game's own.
+    /// Walks lifted from a consuming game's generated mesas where the one-contact motor ends steps inside its colliders —
+    /// acute concave corners, and ground clamps beside low rocks and under overhangs: only the shapes near the walk, the
+    /// state a few ticks before, and the input it keeps pushing. Coordinates are the game's own.
     /// </summary>
     public static class PawnMotorCornerCases {
         /// <summary>Every case, in a fixed order.</summary>
         public static CornerCase[] All() {
-            return new[] { CleftTail(), VNotch(), TiltedBoxA(), TiltedBoxB(), BoxOnTalus(), RockSlot() };
+            return new[] { CleftTail(), VNotch(), TiltedBoxA(), TiltedBoxB(), BoxOnTalus(), RockSlot(), StepDownBesideRock(), StepUpUnderOverhang(), StepDownBesideTiltedBox() };
         }
 
         /// <summary>MesaMedium v0 cleft tail, walk 6/8; the old motor is left 0.194 m inside.</summary>
@@ -134,6 +135,61 @@ namespace AlpineLib.Server.Tests.Motor {
                 CollisionShape.MakeBox(new Vector3(0f, -1f, 0f), new Vector3(1f, 0f, 0f), new Vector3(0f, 1f, 0f), new Vector3(0f, 0f, 1f), new Vector3(400f, 1f, 400f)),
             };
             return new CornerCase("RockSlot", shapes, in start, 243u, 95, new Vector2(0.9335804f, 0.35836795f), 278u, new Vector2(-0.35836795f, 0.9335804f));
+        }
+
+        /// <summary>seed 7 cell (2,-4) MesaMedium v5 heading 110, the gate's walk; the old motor is left 0.138 m inside.</summary>
+        public static CornerCase StepDownBesideRock() {
+            var start = new PawnState(new Vector3(-4.2927265f, 0.16650002f, -1.7208567f), 0f, new Vector3(0.37119007f, 0f, 0.35781932f), PawnState.PackFlags(WireLocomotion.Walk, false, true));
+            var shapes = new[] {
+                CollisionShape.MakeBox(new Vector3(0f, -0.5f, 0f), new Vector3(1f, 0f, 0f), new Vector3(0f, 1f, 0f), new Vector3(0f, 0f, 1f), new Vector3(64f, 0.5f, 64f)),
+                CollisionShape.MakePrism(new Vector3(-18.77945f, 3.6075f, -12.150701f), 4.1625f, new[] { new Vector2(5.0586f, -13.8182f), new Vector2(15.6722f, 8.9042f), new Vector2(9.2061f, 13.8182f), new Vector2(-15.6722f, 11.0699f) }),
+                CollisionShape.MakePrism(new Vector3(-13.064651f, 10.429283f, -14.342401f), 2.6592827f, new[] { new Vector2(2.6907f, -16.2605f), new Vector2(21.9265f, 2.4241f), new Vector2(3.5648f, 16.2605f), new Vector2(-21.9265f, 13.479f) }),
+                CollisionShape.MakePrism(new Vector3(-12.57265f, 15.747791f, -13.98085f), 2.6592264f, new[] { new Vector2(2.3575f, -13.6762f), new Vector2(18.3298f, 1.8847f), new Vector2(2.4819f, 13.6762f), new Vector2(-18.3298f, 11.4679f) }),
+                CollisionShape.MakePrism(new Vector3(-19.62645f, -0.19425f, -12.1304f), 0.36075002f, new[] { new Vector2(5.3865f, -14.9498f), new Vector2(17f, 9.9128f), new Vector2(10.3716f, 14.9498f), new Vector2(-17f, 11.9261f) }),
+                CollisionShape.MakePrism(new Vector3(-12.738f, 26.17985f, -13.84095f), 7.772831f, new[] { new Vector2(2.541f, -13.24f), new Vector2(17.7473f, 1.7394f), new Vector2(2.561f, 13.24f), new Vector2(-17.7473f, 11.1618f) }),
+                CollisionShape.MakeBox(new Vector3(-3.718692f, 0.2431836f, -1.7837709f), new Vector3(-0.9688074f, -0.0866783f, 0.2321617f), new Vector3(-0.0593753f, 0.9907374f, 0.1221225f), new Vector3(-0.2405966f, 0.1045285f, -0.9649803f), new Vector3(0.3807416f, 0.2459891f, 0.31191543f)),
+            };
+            return new CornerCase("StepDownBesideRock", shapes, in start, 501u, 70, new Vector2(0.34202015f, -0.9396926f), 511u, new Vector2(0.9396926f, 0.34202015f));
+        }
+
+        /// <summary>seed 42 cell (-1,3) MesaSmall v11 heading 173, the gate's walk; the old motor is left 0.136 m inside.</summary>
+        public static CornerCase StepUpUnderOverhang() {
+            var start = new PawnState(new Vector3(37.669884f, 1.8402141f, -42.251305f), 0f, new Vector3(0.024752332f, 0f, 0.15257813f), PawnState.PackFlags(WireLocomotion.Walk, false, true));
+            var shapes = new[] {
+                CollisionShape.MakeBox(new Vector3(0f, -0.5f, 0f), new Vector3(1f, 0f, 0f), new Vector3(0f, 1f, 0f), new Vector3(0f, 0f, 1f), new Vector3(64f, 0.5f, 64f)),
+                CollisionShape.MakePrism(new Vector3(44.76975f, 3.1005f, -43.55755f), 3.5774999f, new[] { new Vector2(7.9022f, 3.7974f), new Vector2(2.4086f, 6.637f), new Vector2(-6.214f, 3.7694f), new Vector2(-7.9022f, -6.637f), new Vector2(2.9685f, -6.4822f) }),
+                CollisionShape.MakePrism(new Vector3(44.85305f, 7.724204f, -43.45295f), 1.0462042f, new[] { new Vector2(8.1684f, 3.8132f), new Vector2(2.3872f, 6.897f), new Vector2(-6.5096f, 3.8456f), new Vector2(-8.1684f, -6.897f), new Vector2(3.0499f, -6.852f) }),
+                CollisionShape.MakePrism(new Vector3(44.872547f, 9.816612f, -43.4724f), 1.0462037f, new[] { new Vector2(7.9434f, 3.7694f), new Vector2(2.3358f, 6.6663f), new Vector2(-6.4556f, 3.7765f), new Vector2(-7.9434f, -6.6663f), new Vector2(2.8504f, -6.5186f) }),
+                CollisionShape.MakePrism(new Vector3(44.83435f, 12.260713f, -43.5291f), 1.3978963f, new[] { new Vector2(8.3219f, 3.9336f), new Vector2(2.368f, 6.9705f), new Vector2(-6.447f, 3.9202f), new Vector2(-8.3219f, -6.9705f), new Vector2(3.1456f, -6.9f) }),
+                CollisionShape.MakePrism(new Vector3(44.8108f, -0.16695f, -43.53895f), 0.31005f, new[] { new Vector2(8.6177f, 4.0321f), new Vector2(2.416f, 7.2376f), new Vector2(-6.7646f, 4.1846f), new Vector2(-8.6177f, -7.2376f), new Vector2(3.2901f, -7.068f) }),
+                CollisionShape.MakePrism(new Vector3(44.81265f, 14.023132f, -43.87165f), 0.84152347f, new[] { new Vector2(6.2863f, 4.1214f), new Vector2(4.7652f, 5.8804f), new Vector2(2.465f, 6.5182f), new Vector2(-2.3262f, 4.6718f), new Vector2(-4.6256f, 3.0989f), new Vector2(-4.9854f, 2.6752f), new Vector2(-6.165f, 0.1516f), new Vector2(-6.6158f, -2.467f), new Vector2(-6.075f, -4.4488f), new Vector2(-4.4152f, -6.5182f), new Vector2(0.738f, -6.4866f), new Vector2(2.5816f, -5.9446f), new Vector2(2.862f, -5.7668f), new Vector2(4.1368f, -4.3292f), new Vector2(6.4601f, 0.5332f), new Vector2(6.6158f, 3.1485f) }),
+                CollisionShape.MakeSlopedPrism(new Vector3(42.20535f, 0.9623662f, -36.3646f), -0.28620002f, 1.0577698f, 0.1527033f, -0.4591719f, new[] { new Vector2(3.5594f, 3.6951f), new Vector2(-5.0634f, 0.8275f), new Vector2(-3.5594f, -3.6951f), new Vector2(5.0634f, -0.8275f) }),
+                CollisionShape.MakeSlopedPrism(new Vector3(36.3446f, 0.8931446f, -37.6627f), -0.28620002f, 0.34063244f, 0.4307367f, -0.3667074f, new[] { new Vector2(0.7973f, 2.12555f), new Vector2(-2.2111f, -1.40815f), new Vector2(2.2111f, -2.12555f) }),
+                CollisionShape.MakeSlopedPrism(new Vector3(35.6417f, 0.96237147f, -44.6556f), -0.28620002f, 1.0577494f, 0.4776564f, -0.0774904f, new[] { new Vector2(3.19645f, 4.8216f), new Vector2(-1.5082499f, 5.5848f), new Vector2(-3.19645f, -4.8215f), new Vector2(1.5082501f, -5.5848f) }),
+                CollisionShape.MakeBox(new Vector3(36.26801f, 1.6289881f, -41.37025f), new Vector3(0.3918846f, -0.127141f, 0.9111869f), new Vector3(-0.3308878f, 0.904655f, 0.2685382f), new Vector3(-0.8584519f, -0.4067366f, 0.3124509f), new Vector3(0.9019436f, 0.92413074f, 1.3044138f)),
+            };
+            return new CornerCase("StepUpUnderOverhang", shapes, in start, 285u, 71, new Vector2(0.99254614f, -0.12186934f), 296u, new Vector2(0.12186934f, 0.99254614f));
+        }
+
+        /// <summary>seed 7 cell (0,-2) MesaSmall v6 heading 189, the gate's walk; the old motor is left 0.160 m inside.</summary>
+        public static CornerCase StepDownBesideTiltedBox() {
+            var start = new PawnState(new Vector3(43.00372f, 0.32050636f, -9.320336f), 0f, new Vector3(3.9507535f, 0f, 0.62573785f), PawnState.PackFlags(WireLocomotion.Walk, false, true));
+            var shapes = new[] {
+                CollisionShape.MakeBox(new Vector3(0f, -0.5f, 0f), new Vector3(1f, 0f, 0f), new Vector3(0f, 1f, 0f), new Vector3(0f, 0f, 1f), new Vector3(64f, 0.5f, 64f)),
+                CollisionShape.MakePrism(new Vector3(40.71545f, 3.16875f, -6.83925f), 3.65625f, new[] { new Vector2(5.9912f, 2.7114f), new Vector2(-5.9912f, 0.4432f), new Vector2(-2.2224f, -2.7114f), new Vector2(5.7482f, -1.2028f) }),
+                CollisionShape.MakePrism(new Vector3(51.107403f, 3.16875f, -5.258f), 3.65625f, new[] { new Vector2(3.8261f, -1.1808f), new Vector2(1.8613f, 2.3156f), new Vector2(-3.8261f, 1.239f), new Vector2(-2.1694f, -2.3156f) }),
+                CollisionShape.MakePrism(new Vector3(43.26295f, 8.259128f, -1.2539f), 1.4341276f, new[] { new Vector2(10.6823f, -4.708f), new Vector2(5.9194f, 3.8139f), new Vector2(-4.9666f, 7.4853f), new Vector2(-10.6823f, -2.4284f), new Vector2(-4.55f, -7.4853f) }),
+                CollisionShape.MakePrism(new Vector3(43.34785f, 11.070394f, -1.1844f), 1.3771386f, new[] { new Vector2(11.4758f, -5.1877f), new Vector2(6.2296f, 4.2145f), new Vector2(-5.3698f, 8.2225f), new Vector2(-11.4758f, -2.6262f), new Vector2(-4.827f, -8.2225f) }),
+                CollisionShape.MakePrism(new Vector3(40.343803f, -0.170625f, -7.1523f), 0.316875f, new[] { new Vector2(6.3628f, 3.02455f), new Vector2(-6.3628f, 0.61564994f), new Vector2(-2.014f, -3.02455f), new Vector2(6.0824f, -1.49205f) }),
+                CollisionShape.MakePrism(new Vector3(51.561802f, -0.170625f, -5.4741f), 0.316875f, new[] { new Vector2(4.2805f, -1.388f), new Vector2(2.0135f, 2.6466f), new Vector2(-4.2805f, 1.4551f), new Vector2(-2.3688f, -2.6466f) }),
+                CollisionShape.MakePrism(new Vector3(44.07035f, 12.624203f, -6.2809f), 0.66417f, new[] { new Vector2(7.7516f, 3.03215f), new Vector2(-7.784f, -1.1306499f), new Vector2(-5.5248f, -3.03215f), new Vector2(4.6786f, -1.1327499f), new Vector2(7.1668f, 0.79015005f), new Vector2(7.784f, 2.10495f) }),
+                CollisionShape.MakeSlopedPrism(new Vector3(38.34745f, 1.1665918f, -11.8666f), -0.29250002f, 1.2283216f, 0.0194129f, 0.602157f, new[] { new Vector2(3.5404f, -2.3159f), new Vector2(0.1456f, 2.3159f), new Vector2(-3.5404f, -2.0876f) }),
+                CollisionShape.MakeSlopedPrism(new Vector3(41.3143f, 1.1665858f, -11.3326f), -0.29250002f, 0.78777516f, -0.5215508f, 0.2056634f, new[] { new Vector2(2.82125f, 2.8499f), new Vector2(-2.82125f, 1.7819f), new Vector2(0.57364994f, -2.8499f) }),
+                CollisionShape.MakeBox(new Vector3(46.285267f, 0.02320932f, -9.521557f), new Vector3(0.8846562f, -0.0170051f, 0.4659337f), new Vector3(-0.0901825f, 0.9742217f, 0.2067832f), new Vector3(-0.4574391f, -0.2249511f, 0.8603177f), new Vector3(0.87066215f, 0.27307275f, 0.71327364f)),
+                CollisionShape.MakeBox(new Vector3(46.273712f, 0.52481675f, -9.458628f), new Vector3(0.8846562f, -0.0170051f, 0.4659337f), new Vector3(-0.0901825f, 0.9742217f, 0.2067832f), new Vector3(-0.4574391f, -0.2249511f, 0.8603177f), new Vector3(0.83501923f, 0.22976238f, 0.6313673f)),
+                CollisionShape.MakeBox(new Vector3(46.207623f, 0.8158525f, -9.458618f), new Vector3(0.8846562f, -0.0170051f, 0.4659337f), new Vector3(-0.0901825f, 0.9742217f, 0.2067832f), new Vector3(-0.4574391f, -0.2249511f, 0.8603177f), new Vector3(0.70063287f, 0.05973307f, 0.5174964f)),
+            };
+            return new CornerCase("StepDownBesideTiltedBox", shapes, in start, 195u, 105, new Vector2(0.98768836f, 0.15643446f), 302u, new Vector2(-0.15643446f, 0.98768836f));
         }
     }
 }

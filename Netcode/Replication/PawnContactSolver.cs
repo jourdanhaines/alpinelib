@@ -32,6 +32,13 @@ namespace AlpineLib.Netcode.Replication {
         private const float DegenerateShare = 1e-6f;
 
         /// <summary>
+        /// Opposing rows (more than 90° apart) whose Gram determinant falls below this share — normals within about 2°
+        /// of straight opposite — are a gap, not a corner: their joint push runs along the gap as depth over the
+        /// sine of the angle, so the pair is not offered at all.
+        /// </summary>
+        private const float OpposingShare = 1e-3f;
+
+        /// <summary>
         /// Solves for the shortest <paramref name="solution"/> with <c>rows[i] · solution ≥ bounds[i]</c> for every
         /// row, or reports that no single row, pair or triple yields one.
         /// </summary>
@@ -108,7 +115,8 @@ namespace AlpineLib.Netcode.Replication {
             float ab = Dot(rowA, rowB);
             float scale = (float)(aa * bb);
             float determinant = (float)((float)(aa * bb) - (float)(ab * ab));
-            if (!(determinant > (float)(scale * DegenerateShare))) {
+            float share = ab < 0f ? OpposingShare : DegenerateShare;
+            if (!(determinant > (float)(scale * share))) {
                 return false;
             }
 

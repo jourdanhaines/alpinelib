@@ -8,12 +8,14 @@ using Xunit;
 
 namespace AlpineLib.Server.Tests.Motor {
     /// <summary>
-    /// Away from acute corners the joint corner resolution never changes a step: random walks over seeded scenes are
-    /// stepped by the motor with and without it, and every state must match bit for bit.
+    /// Away from acute corners the motor's later resolutions never change a step that the one-contact motor ends clear:
+    /// random walks over seeded scenes are stepped with and without them from the same state, and every step whose
+    /// one-contact result ends within the 2 mm tolerance must match bit for bit.
     /// </summary>
     public sealed class PawnMotorCornerIdentityTests {
         private const int PawnsPerScene = 12;
         private const int TicksPerPawn = 300;
+        private const float Tolerance = 0.002f;
 
         public static IEnumerable<object[]> Scenes() {
             for (int seed = 1; seed <= 10; seed++) yield return new object[] { "scatter", seed };
@@ -47,16 +49,15 @@ namespace AlpineLib.Server.Tests.Motor {
         private static int WalkBoth(CollisionWorld world, MovementProfile profile, Random random, float spread) {
             Vector3 start = ClearStart(world, profile, random, spread);
             var joint = new PawnState(start, 0f, Vector3.Zero, PawnState.PackFlags(WireLocomotion.Walk, false, false));
-            PawnState single = joint;
             PawnInput input = default;
             int touching = 0;
             for (int index = 0; index < TicksPerPawn; index++) {
                 uint tick = (uint)index + 1u;
                 if (index % 23 == 0 || random.Next(18) == 0) input = RandomInput(random, tick);
                 input = new PawnInput(tick, input.MoveDirection, input.Gait, input.Jump && random.Next(6) == 0, input.Crouch);
+                PawnState single = PawnMotor.Step(in input, in joint, profile, world, tick, CornerGeometry.TickSeconds, false);
                 joint = PawnMotor.Step(in input, in joint, profile, world, tick, CornerGeometry.TickSeconds, true);
-                single = PawnMotor.Step(in input, in single, profile, world, tick, CornerGeometry.TickSeconds, false);
-                AssertSameBits(in single, in joint, tick);
+                if (CornerGeometry.Residual(world, in single, profile, tick) <= Tolerance) AssertSameBits(in single, in joint, tick);
                 if (IsTouching(world, in joint, profile, tick)) touching++;
             }
 

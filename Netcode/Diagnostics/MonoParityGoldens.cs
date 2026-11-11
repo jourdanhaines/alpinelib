@@ -46,7 +46,7 @@ namespace AlpineLib.Netcode.Diagnostics {
         public const ulong RoughPrismGolden = 0xA52A7C80C478586EUL;
 
         /// <summary>Pawn motor states walking and jumping into acute concave corners; see <see cref="CornerMotorHash()"/>.</summary>
-        public const ulong CornerMotorGolden = 0x23CB97FED57D73ABUL;
+        public const ulong CornerMotorGolden = 0x7B8A18580091B449UL;
 
         private const ulong OffsetBasis = 14695981039346656037UL;
         private const ulong Prime = 1099511628211UL;

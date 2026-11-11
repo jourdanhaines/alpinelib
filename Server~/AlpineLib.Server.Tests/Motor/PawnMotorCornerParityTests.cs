@@ -9,7 +9,7 @@ namespace AlpineLib.Server.Tests.Motor {
     public sealed class PawnMotorCornerParityTests {
         [Fact]
         public void TheCornerGoldenHolds() {
-            Assert.Equal(0x23CB97FED57D73ABUL, MonoParityGoldens.CornerMotorGolden);
+            Assert.Equal(0x7B8A18580091B449UL, MonoParityGoldens.CornerMotorGolden);
             Assert.Equal(MonoParityGoldens.CornerMotorGolden, MonoParityGoldens.CornerMotorHash());
         }
 
