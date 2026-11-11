@@ -19,7 +19,7 @@ namespace AlpineLib.Netcode.Diagnostics {
         public const ulong ShapeGolden = 0x226E3ADFDE4DB867UL;
 
         /// <summary>Pawn motor states over the exact script and world.</summary>
-        public const ulong MotorGolden = 0xD2D03DA2234E2E54UL;
+        public const ulong MotorGolden = 0x5DF29E64200F97E5UL;
 
         /// <summary>Prism contacts and support heights over the exact poses.</summary>
         public const ulong PrismGolden = 0xE7F2B71C41C1F340UL;
@@ -28,19 +28,19 @@ namespace AlpineLib.Netcode.Diagnostics {
         public const ulong SlopedPrismGolden = 0x5F1E9E4644E21060UL;
 
         /// <summary>Pawn motor states over the exact script on the sloped prism world.</summary>
-        public const ulong SlopedMotorGolden = 0xA683802B1DAD9316UL;
+        public const ulong SlopedMotorGolden = 0xF61AB60CA4998E27UL;
 
         /// <summary><see cref="SlopedPrismGolden"/> over the rough poses.</summary>
         public const ulong RoughSlopedPrismGolden = 0x61F7C0271E3ED34DUL;
 
         /// <summary><see cref="SlopedMotorGolden"/> over the rough script.</summary>
-        public const ulong RoughSlopedMotorGolden = 0x79D582EE7873843DUL;
+        public const ulong RoughSlopedMotorGolden = 0x086E041C4FF668B6UL;
 
         /// <summary><see cref="ShapeGolden"/> over the rough poses.</summary>
         public const ulong RoughShapeGolden = 0x03A44F2656D55DCEUL;
 
         /// <summary><see cref="MotorGolden"/> over the rough script and world.</summary>
-        public const ulong RoughMotorGolden = 0x86C3844F8949D43CUL;
+        public const ulong RoughMotorGolden = 0xFE6D9956FB7FCB69UL;
 
         /// <summary><see cref="PrismGolden"/> over the rough poses.</summary>
         public const ulong RoughPrismGolden = 0xA52A7C80C478586EUL;

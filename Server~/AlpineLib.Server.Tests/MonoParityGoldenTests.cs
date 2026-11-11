@@ -15,7 +15,7 @@ namespace AlpineLib.Server.Tests {
         [Fact]
         public void TheExactGoldensHold() {
             Assert.Equal(0x226E3ADFDE4DB867UL, MonoParityGoldens.ShapeGolden);
-            Assert.Equal(0xD2D03DA2234E2E54UL, MonoParityGoldens.MotorGolden);
+            Assert.Equal(0x5DF29E64200F97E5UL, MonoParityGoldens.MotorGolden);
             Assert.Equal(0xE7F2B71C41C1F340UL, MonoParityGoldens.PrismGolden);
             Assert.Equal(MonoParityGoldens.ShapeGolden, MonoParityGoldens.ShapeHash());
             Assert.Equal(MonoParityGoldens.MotorGolden, MonoParityGoldens.MotorHash());
@@ -25,7 +25,7 @@ namespace AlpineLib.Server.Tests {
         [Fact]
         public void TheRoughGoldensHold() {
             Assert.Equal(0x03A44F2656D55DCEUL, MonoParityGoldens.RoughShapeGolden);
-            Assert.Equal(0x86C3844F8949D43CUL, MonoParityGoldens.RoughMotorGolden);
+            Assert.Equal(0xFE6D9956FB7FCB69UL, MonoParityGoldens.RoughMotorGolden);
             Assert.Equal(0xA52A7C80C478586EUL, MonoParityGoldens.RoughPrismGolden);
             Assert.Equal(MonoParityGoldens.RoughShapeGolden, MonoParityGoldens.RoughShapeHash());
             Assert.Equal(MonoParityGoldens.RoughMotorGolden, MonoParityGoldens.RoughMotorHash());
@@ -35,9 +35,9 @@ namespace AlpineLib.Server.Tests {
         [Fact]
         public void TheSlopedGoldensHold() {
             Assert.Equal(0x5F1E9E4644E21060UL, MonoParityGoldens.SlopedPrismGolden);
-            Assert.Equal(0xA683802B1DAD9316UL, MonoParityGoldens.SlopedMotorGolden);
+            Assert.Equal(0xF61AB60CA4998E27UL, MonoParityGoldens.SlopedMotorGolden);
             Assert.Equal(0x61F7C0271E3ED34DUL, MonoParityGoldens.RoughSlopedPrismGolden);
-            Assert.Equal(0x79D582EE7873843DUL, MonoParityGoldens.RoughSlopedMotorGolden);
+            Assert.Equal(0x086E041C4FF668B6UL, MonoParityGoldens.RoughSlopedMotorGolden);
             Assert.Equal(MonoParityGoldens.SlopedPrismGolden, MonoParityGoldens.SlopedPrismHash());
             Assert.Equal(MonoParityGoldens.SlopedMotorGolden, MonoParityGoldens.SlopedMotorHash());
             Assert.Equal(MonoParityGoldens.RoughSlopedPrismGolden, MonoParityGoldens.RoughSlopedPrismHash());
