@@ -145,7 +145,8 @@ the Unity editor (Mono, which evaluates float expressions in double and rounds o
 and `MathF.Sqrt` on that path is wrapped in an explicit `(float)` cast; keep it that way when editing
 `Netcode/Collision/**` or `PawnMotor`. `AlpineLib.Netcode.Diagnostics.MonoParityGoldens` hashes
 integer-built inputs (`ShapeHash`, `MotorHash`, `PrismHash`, `SlopedPrismHash`, `SlopedMotorHash`, plus `Rough*` twins whose inputs carry
-full mantissas) and publishes the CoreCLR values as constants; `MonoParityGoldenTests` pins them on .NET, and a game's Unity gate compares the editor's
+full mantissas, and `CornerMotorHash`, which walks and jumps pawns into acute concave corners so `PawnMotor`'s joint corner
+resolution runs) and publishes the CoreCLR values as constants; `MonoParityGoldenTests` pins them on .NET, and a game's Unity gate compares the editor's
 results against the same constants.
 
 To reproduce the editor's Mono without Unity running, compile `Netcode/**/*.cs` and a small `Main` with the .NET SDK's Roslyn against Unity's Mono profile, then run it with the
@@ -163,7 +164,7 @@ dotnet "$CSC" -nostdlib -noconfig -unsafe -t:exe -out:parity.exe \
 $EDITOR/bin/mono -O=-float32 parity.exe   # the editor's behaviour; plain `mono` matches CoreCLR
 ```
 
-`Main.cs` only prints the ten hashes; each must equal its `MonoParityGoldens` constant. Yaw comes from `MathF.Atan2` and is left out of the motor hash.
+`Main.cs` only prints the eleven hashes; each must equal its `MonoParityGoldens` constant. Yaw comes from `MathF.Atan2` and is left out of the motor hash.
 The slope threshold and air drag decay are computed once in double by `MovementProfile`
 (`WalkableNormalY`, `GetAirDragDecay`), so no float libm call runs on the position path.
 

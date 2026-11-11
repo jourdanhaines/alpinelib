@@ -45,6 +45,9 @@ namespace AlpineLib.Netcode.Diagnostics {
         /// <summary><see cref="PrismGolden"/> over the rough poses.</summary>
         public const ulong RoughPrismGolden = 0xA52A7C80C478586EUL;
 
+        /// <summary>Pawn motor states walking and jumping into acute concave corners; see <see cref="CornerMotorHash()"/>.</summary>
+        public const ulong CornerMotorGolden = 0x23CB97FED57D73ABUL;
+
         private const ulong OffsetBasis = 14695981039346656037UL;
         private const ulong Prime = 1099511628211UL;
         private const float TickSeconds = 1f / 30f;
@@ -56,6 +59,8 @@ namespace AlpineLib.Netcode.Diagnostics {
         private const float Diagonal = 0.70710677f;
         private const int SlopedPawnCount = 12;
         private const int SlopedTickCount = 150;
+        private const int CornerPawnCount = 9;
+        private const int CornerTickCount = 150;
 
         /// <summary>
         /// The narrow-phase golden's shapes: turned, plain and tilted boxes, a sphere, two capsules, a plane, a
@@ -223,6 +228,96 @@ namespace AlpineLib.Netcode.Diagnostics {
                 }
             }
             return hash;
+        }
+
+        /// <summary>
+        /// Pawn states, tick by tick, pushed into two V notches between prisms (wall normals about 162° and 127° apart)
+        /// and along a wall into the slot under a box leaning on it, walking, sprinting, jumping and falling in. These
+        /// are the corners where one contact at a time ping-pongs, so the joint corner resolution runs every few ticks.
+        /// </summary>
+        public static ulong CornerMotorHash() {
+            return CornerMotorHash(true, out _);
+        }
+
+        /// <summary>
+        /// <see cref="CornerMotorHash()"/>, optionally without the joint corner resolution, with the deepest overlap any
+        /// step ended in.
+        /// </summary>
+        internal static ulong CornerMotorHash(bool resolveCorners, out float worstResidual) {
+            var world = new CollisionWorld(new SceneGeometry("CornerParity", 1u, CornerShapes(), Array.Empty<MoverDefinition>()), TickSeconds);
+            MovementProfile narrow = new MovementProfile { CapsuleRadius = 0.35f, CapsuleHeight = 1.1f, StepOffset = 0.3f, SlopeLimitDegrees = 45f };
+            MovementProfile wide = new MovementProfile { CapsuleRadius = 0.5f, CapsuleHeight = 1.5f, StepOffset = 0.25f, SlopeLimitDegrees = 40f };
+            var states = new PawnState[CornerPawnCount];
+            for (int pawn = 0; pawn < CornerPawnCount; pawn++) states[pawn] = CornerStartState(pawn);
+
+            ulong hash = OffsetBasis;
+            worstResidual = 0f;
+            for (uint tick = 1u; tick <= CornerTickCount; tick++) {
+                for (int pawn = 0; pawn < CornerPawnCount; pawn++) {
+                    PawnInput input = CornerInput(pawn, (int)tick);
+                    MovementProfile profile = pawn % 2 == 0 ? narrow : wide;
+                    states[pawn] = PawnMotor.Step(in input, in states[pawn], profile, world, tick, TickSeconds, resolveCorners);
+                    worstResidual = MathF.Max(worstResidual, Residual(world, in states[pawn], profile, tick));
+                    hash = HashState(hash, in states[pawn]);
+                }
+            }
+            return hash;
+        }
+
+        // A floor; a 162° notch at the origin opening to −X; a 127° notch at z = 10; a wall at z = −10 with a box leaning on it.
+        private static CollisionShape[] CornerShapes() {
+            return new[] {
+                CollisionShape.MakePlane(0f),
+                CollisionShape.MakePrism(new Vector3(0f, 1.5f, 0f), 1.5f, new[] { new Vector2(1f, 3f), new Vector2(-8f, 3f), new Vector2(-8f, 1f), new Vector2(1f, -0.125f) }),
+                CollisionShape.MakePrism(new Vector3(0f, 1.5f, 0f), 1.5f, new[] { new Vector2(1f, 0.1875f), new Vector2(-8f, -1.5f), new Vector2(-8f, -3.5f), new Vector2(1f, -3.5f) }),
+                CollisionShape.MakePrism(new Vector3(0f, 1.5f, 10f), 1.5f, new[] { new Vector2(1f, 5f), new Vector2(-6f, 5f), new Vector2(-6f, 3f), new Vector2(1f, -0.5f) }),
+                CollisionShape.MakePrism(new Vector3(0f, 1.5f, 10f), 1.5f, new[] { new Vector2(1f, 0.5f), new Vector2(-6f, -3f), new Vector2(-6f, -5f), new Vector2(1f, -5f) }),
+                CollisionShape.MakePrism(new Vector3(0f, 1.5f, -10f), 1.5f, new[] { new Vector2(-4f, 0f), new Vector2(4f, 0f), new Vector2(4f, 2f), new Vector2(-4f, 2f) }),
+                CollisionShape.MakeBox(new Vector3(0.5f, 0.5f, -11.25f), new Vector3(0.96f, 0f, 0.28f), new Vector3(-0.168f, 0.8f, 0.576f), new Vector3(-0.224f, -0.6f, 0.768f), new Vector3(2.5f, 0.5f, 0.5f)),
+            };
+        }
+
+        // Four pawns in the sharp notch (one dropped in from above), two in the wider one, two along the wall.
+        private static PawnState CornerStartState(int pawn) {
+            Vector3 start = pawn switch {
+                0 => new Vector3(-6f, 0f, -0.25f),
+                1 => new Vector3(-6f, 0f, 0f),
+                2 => new Vector3(-5.5f, 0f, 0.125f),
+                3 => new Vector3(-6.5f, 0f, -0.375f),
+                4 => new Vector3(-4f, 0f, 10f),
+                5 => new Vector3(-3.5f, 0f, 10.5f),
+                6 => new Vector3(-3.5f, 0f, -10.5f),
+                7 => new Vector3(-3f, 0f, -10.75f),
+                _ => new Vector3(-3f, 1.5f, -0.0625f),
+            };
+            return new PawnState(start, 0f, Vector3.Zero, PawnState.PackFlags(WireLocomotion.Walk, false, pawn != 8));
+        }
+
+        // Each pawn holds a heading into its corner; gaits cycle, and three pawns jump every 47 ticks.
+        private static PawnInput CornerInput(int pawn, int tick) {
+            Vector2 direction = pawn switch {
+                1 => new Vector2(1f, 0.25f),
+                2 => new Vector2(1f, -0.3125f),
+                3 => new Vector2(1f, 0.125f),
+                5 => new Vector2(1f, -0.1875f),
+                6 => new Vector2(1f, 0.125f),
+                _ => new Vector2(1f, 0f),
+            };
+            var gait = (WireLocomotion)((tick / 40 + pawn) % 4);
+            bool jump = (pawn == 2 || pawn == 3 || pawn == 5) && tick % 47 == 0;
+            return new PawnInput((uint)tick, direction, gait, jump, false);
+        }
+
+        // The deepest overlap of the capsule the motor collides with: feet raised by the step offset while grounded.
+        private static float Residual(CollisionWorld world, in PawnState state, MovementProfile profile, uint tick) {
+            float lift = state.IsGrounded ? profile.StepOffset : 0f;
+            float height = MathF.Max((float)(profile.CapsuleHeight - lift), (float)(profile.CapsuleRadius * 2f));
+            var pose = new CapsulePose(new Vector3(state.Position.X, (float)(state.Position.Y + lift), state.Position.Z), profile.CapsuleRadius, height);
+            Span<CollisionContact> contacts = stackalloc CollisionContact[CollisionWorld.MaxContacts];
+            int count = world.CollectContacts(in pose, tick, contacts);
+            float deepest = 0f;
+            for (int index = 0; index < count; index++) deepest = MathF.Max(deepest, contacts[index].Depth);
+            return deepest;
         }
 
         private static CapsulePose Pose(int index, bool rough) {
