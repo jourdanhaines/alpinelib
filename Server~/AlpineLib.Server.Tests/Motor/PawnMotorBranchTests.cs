@@ -121,6 +121,64 @@ namespace AlpineLib.Server.Tests.Motor {
         }
 
         [Fact]
+        public void WalkingOffALedgeBesideASteepFaceRisesNoHigherThanTheOneContactMotor() {
+            MovementProfile profile = CornerGeometry.ShippedProfile();
+            CollisionShape[] shapes = { CollisionShape.MakePlane(0f), Box(-4f, 0f, 0f, 0.25f, -3f, 3f), SideFace(-0.3f, 50f) };
+            var world = new CollisionWorld(new SceneGeometry("steep face", 1u, shapes, Array.Empty<MoverDefinition>()), CornerGeometry.TickSeconds);
+            PawnState state = Standing(-1f, 0.25f, 0f);
+            PawnState single = state;
+            float highest = state.Position.Y;
+            float singleHighest = state.Position.Y;
+            for (uint tick = 1u; tick <= 45u; tick++) {
+                var input = new PawnInput(tick, Vector2.UnitX, WireLocomotion.Sprint, false, false);
+                state = PawnMotor.Step(in input, in state, profile, world, tick, CornerGeometry.TickSeconds);
+                single = PawnMotor.Step(in input, in single, profile, world, tick, CornerGeometry.TickSeconds, false);
+                highest = MathF.Max(highest, state.Position.Y);
+                singleHighest = MathF.Max(singleHighest, single.Position.Y);
+            }
+
+            Assert.Equal(singleHighest, highest);
+        }
+
+        [Fact]
+        public void WalkingOntoALowRockIsPushedClearTheStepItLeavesTheGround() {
+            MovementProfile profile = CornerGeometry.ShippedProfile();
+            CollisionShape[] shapes = { CollisionShape.MakePlane(0f), Box(-4f, 0f, 0f, 0.15f, -3f, 3f), CollisionShape.MakeSphere(new Vector3(0.3f, -0.05f, 0.2f), 0.3f) };
+            var world = new CollisionWorld(new SceneGeometry("rock", 1u, shapes, Array.Empty<MoverDefinition>()), CornerGeometry.TickSeconds);
+            PawnState state = Standing(-1f, 0.15f, 0f);
+            uint tick = 1u;
+            for (; tick <= 45u; tick++) {
+                var input = new PawnInput(tick, Vector2.UnitX, WireLocomotion.WalkSlow, false, false);
+                PawnState after = PawnMotor.Step(in input, in state, profile, world, tick, CornerGeometry.TickSeconds);
+                bool leftTheGround = state.IsGrounded && !after.IsGrounded;
+                state = after;
+                if (leftTheGround) break;
+            }
+
+            // The airborne passes' push out of the rock, taken on the step itself: clear, and the velocity they clipped.
+            Assert.Equal(17u, tick);
+            Assert.True(CornerGeometry.Residual(world, in state, profile, tick) <= Tolerance);
+            Assert.Equal(new Vector3(0.07218067f, 0.16408935f, -0.07338312f), state.Position);
+            Assert.Equal(new Vector3(1.6561123f, 0f, -0.41266516f), state.Velocity);
+        }
+
+        [Fact]
+        public void APushOffARockLongerThanAStrideIsNotTaken() {
+            MovementProfile profile = CornerGeometry.ShippedProfile();
+            CollisionShape[] shapes = { CollisionShape.MakePlane(0f), Box(-4f, 0f, 0f, 0.3f, -3f, 3f), CollisionShape.MakeSphere(new Vector3(0.3f, -0.15f, 0.2f), 0.3f) };
+            var world = new CollisionWorld(new SceneGeometry("rock", 1u, shapes, Array.Empty<MoverDefinition>()), CornerGeometry.TickSeconds);
+            float strideLimit = profile.MaxSpeed * CornerGeometry.TickSeconds;
+            PawnState state = Standing(-1f, 0.3f, 0f);
+            for (uint tick = 1u; tick <= 45u; tick++) {
+                var input = new PawnInput(tick, Vector2.UnitX, WireLocomotion.Walk, false, false);
+                PawnState after = PawnMotor.Step(in input, in state, profile, world, tick, CornerGeometry.TickSeconds);
+                float stride = Vector2.Distance(new Vector2(after.Position.X, after.Position.Z), new Vector2(state.Position.X, state.Position.Z));
+                Assert.True(stride <= strideLimit + 1e-4f, $"tick {tick}: carried {stride:F4} m, beyond the {strideLimit:F4} m stride");
+                state = after;
+            }
+        }
+
+        [Fact]
         public void AStandingPawnWhoseMoveIsTakenBackStaysOnTheGroundItStoodOn() {
             MovementProfile profile = CornerGeometry.ShippedProfile();
             var world = new CollisionWorld(new SceneGeometry("talus run", 1u, TalusRun(0.3f), Array.Empty<MoverDefinition>()), CornerGeometry.TickSeconds);
@@ -166,6 +224,15 @@ namespace AlpineLib.Server.Tests.Motor {
             }
 
             return apex;
+        }
+
+        // A face steeper than the slope limit rising across the walk toward +z from footZ, along x from 0 to 3.
+        private static CollisionShape SideFace(float footZ, float degrees) {
+            float angle = degrees * MathF.PI / 180f;
+            var rise = new Vector3(0f, MathF.Sin(angle), MathF.Cos(angle));
+            var normal = new Vector3(0f, MathF.Cos(angle), -MathF.Sin(angle));
+            Vector3 center = new Vector3(1.5f, 0f, footZ) + rise * 2f - normal * 0.5f;
+            return CollisionShape.MakeBox(center, Vector3.Cross(normal, rise), normal, rise, new Vector3(1.5f, 0.5f, 2f));
         }
 
         // A talus rising at the slope beside a cliff, with a row of half-buried rocks along its foot.
