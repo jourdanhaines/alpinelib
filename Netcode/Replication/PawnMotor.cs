@@ -57,7 +57,7 @@ namespace AlpineLib.Netcode.Replication {
     /// one face pushes into the other — the substep is resolved again jointly against every contact at once
     /// (see <see cref="ResolveCorner"/>). (5) A single vertical support query decides
     /// grounding, clamps the feet to the surface and zeroes vertical velocity; a clamp that would put the capsule
-    /// more than the tolerance into something, and a walk off a ledge whose whole capsule lands inside a low one,
+    /// more than the tolerance into something, and a walk off support whose whole capsule lands inside something,
     /// are settled in the same step (<see cref="LimitSnapDown"/>, <see cref="ClearSnapUp"/>,
     /// <see cref="SettleOffLedge"/>). (6) Yaw and the flags byte are packed.
     /// </para>
@@ -137,6 +137,12 @@ namespace AlpineLib.Netcode.Replication {
         private const int SnapSearchSteps = 10;
 
         /// <summary>
+        /// Highest a held-back ground clamp may leave a pawn above a mover it stands on: half the ground tolerance, so the
+        /// next tick's ride probe still finds the platform with room for rounding.
+        /// </summary>
+        private const float HeldOnMoverLimit = 0.01f;
+
+        /// <summary>
         /// Advances a pawn by one fixed step.
         /// </summary>
         /// <param name="input">The owner's intent for this tick.</param>
@@ -207,18 +213,19 @@ namespace AlpineLib.Netcode.Replication {
 
             Integrate(ref position, ref velocity, startedGrounded, profile, world, simTick, deltaSeconds, resolveCorners);
             float unsnappedY = position.Y;
-            bool isGrounded = ResolveGrounding(ref position, ref velocity, startedGrounded, profile, world, simTick);
+            bool isGrounded = ResolveGrounding(ref position, ref velocity, startedGrounded, profile, world, simTick, out bool onMover);
             float strideLimit = (float)(profile.MaxSpeed * deltaSeconds);
             if (resolveCorners && isGrounded && position.Y < unsnappedY) {
-                LimitSnapDown(ref position, unsnappedY, profile, world, simTick);
+                LimitSnapDown(ref position, unsnappedY, onMover, profile, world, simTick);
             }
 
             if (resolveCorners && isGrounded && position.Y > unsnappedY) {
                 ClearSnapUp(ref position, ref velocity, unsnappedY, in stepStart, strideLimit, profile, world, simTick);
             }
 
-            if (resolveCorners && startedGrounded && !isGrounded) {
-                SettleOffLedge(ref position, profile, world, simTick);
+            bool jumped = input.Jump && startedGrounded;
+            if (resolveCorners && startedGrounded && !isGrounded && !jumped && velocity.Y <= 0f) {
+                SettleOffLedge(ref position, ref velocity, in stepStart, strideLimit, profile, world, simTick);
             }
 
             float yawDegrees = ResolveYaw(moveDirection, state.YawDegrees);
@@ -301,6 +308,7 @@ namespace AlpineLib.Netcode.Replication {
                 (float)(velocity.Z * deltaSeconds));
             int substepCount = ResolveSubstepCount(in displacement, (float)(profile.CapsuleRadius * 0.5f));
             float substepSeconds = (float)(deltaSeconds / substepCount);
+            Span<CollisionContact> movedContacts = stackalloc CollisionContact[CollisionWorld.MaxContacts];
 
             for (int substep = 0; substep < substepCount; substep++) {
                 Vector3 substepStart = position;
@@ -310,12 +318,13 @@ namespace AlpineLib.Netcode.Replication {
                     (float)(position.Z + (float)(velocity.Z * substepSeconds)));
                 Vector3 moved = position;
                 Vector3 movedVelocity = velocity;
-                bool exhausted = Depenetrate(ref position, ref velocity, startedGrounded, profile, world, simTick);
+                bool exhausted = Depenetrate(ref position, ref velocity, startedGrounded, profile, world, simTick, movedContacts, out int movedCount);
                 if (!exhausted || !resolveCorners) {
                     continue;
                 }
 
-                ResolveCorner(ref position, ref velocity, new PawnSubstep(substepStart, moved, movedVelocity), startedGrounded, profile, world, simTick);
+                var substepMove = new PawnSubstep(substepStart, moved, movedVelocity);
+                ResolveCorner(ref position, ref velocity, in substepMove, movedContacts.Slice(0, movedCount), startedGrounded, profile, world, simTick);
             }
         }
 
@@ -360,7 +369,9 @@ namespace AlpineLib.Netcode.Replication {
         /// One contact per pass, re-collected each time, rather than every contact in one sweep: two
         /// shapes reporting overlaps against the same pre-push position would each ask for their full
         /// depth and together push a pawn resting in a seam twice as far as either needed. Resolving the
-        /// deepest and looking again costs an extra query and never overshoots.
+        /// deepest and looking again costs an extra query and never overshoots. The first pass's contacts — those
+        /// where the move put the pawn — are left in <paramref name="firstContacts"/> when it is not empty, for a
+        /// corner resolution starting from the same place.
         /// </remarks>
         private static bool Depenetrate(
             ref Vector3 position,
@@ -368,10 +379,22 @@ namespace AlpineLib.Netcode.Replication {
             bool startedGrounded,
             MovementProfile profile,
             CollisionWorld world,
-            uint simTick) {
+            uint simTick,
+            Span<CollisionContact> firstContacts,
+            out int firstCount) {
+            firstCount = 0;
             for (int iteration = 0; iteration < MaxDepenetrationIterations; iteration++) {
                 CapsulePose pose = BuildPose(in position, profile, startedGrounded);
-                if (!TryFindDeepestContact(in pose, world, simTick, out CollisionContact contact)) {
+                CollisionContact contact;
+                bool found;
+                if (iteration == 0 && firstContacts.Length > 0) {
+                    firstCount = world.CollectContacts(in pose, simTick, firstContacts);
+                    found = TryPickDeepest(firstContacts.Slice(0, firstCount), out contact);
+                } else {
+                    found = TryFindDeepestContact(in pose, world, simTick, out contact);
+                }
+
+                if (!found) {
                     return false;
                 }
 
@@ -419,10 +442,15 @@ namespace AlpineLib.Netcode.Replication {
             out CollisionContact deepest) {
             Span<CollisionContact> contacts = stackalloc CollisionContact[CollisionWorld.MaxContacts];
             int contactCount = world.CollectContacts(in pose, simTick, contacts);
+            return TryPickDeepest(contacts.Slice(0, contactCount), out deepest);
+        }
+
+        /// <summary>The deepest of <paramref name="contacts"/>, ties keeping the earlier one.</summary>
+        private static bool TryPickDeepest(ReadOnlySpan<CollisionContact> contacts, out CollisionContact deepest) {
             deepest = default;
             bool found = false;
 
-            for (int index = 0; index < contactCount; index++) {
+            for (int index = 0; index < contacts.Length; index++) {
                 if (found && contacts[index].Depth <= deepest.Depth) {
                     continue;
                 }
@@ -459,6 +487,7 @@ namespace AlpineLib.Netcode.Replication {
             ref Vector3 position,
             ref Vector3 velocity,
             in PawnSubstep substep,
+            ReadOnlySpan<CollisionContact> movedContacts,
             bool startedGrounded,
             MovementProfile profile,
             CollisionWorld world,
@@ -475,7 +504,7 @@ namespace AlpineLib.Netcode.Replication {
             Span<int> keys = stackalloc int[PawnCornerConstraints.Capacity];
             Span<CollisionContact> contacts = stackalloc CollisionContact[CollisionWorld.MaxContacts];
             var constraints = new PawnCornerConstraints(rows, bounds, keys);
-            if (TryPushJointly(in substep, reach, startedGrounded, profile, world, simTick, contacts, ref constraints, out Vector3 resolved)) {
+            if (TryPushJointly(in substep, reach, startedGrounded, profile, world, simTick, movedContacts, contacts, ref constraints, out Vector3 resolved)) {
                 position = resolved;
                 velocity = ClipVelocity(in substep.MovedVelocity, constraints.Rows);
                 return;
@@ -492,7 +521,8 @@ namespace AlpineLib.Netcode.Replication {
         /// Up to <see cref="CornerPasses"/> joint pushes from where the substep's move put the pawn, each solving the
         /// held constraint set for the total push. False when the set has no push of at most <paramref name="reach"/>,
         /// when a push would leave the pawn further than <paramref name="reach"/> from where the substep started, or
-        /// when the last push still leaves more than <see cref="CornerTolerance"/> of overlap.
+        /// when the last push still leaves more than <see cref="CornerTolerance"/> of overlap. The first pass reuses
+        /// <paramref name="movedContacts"/>, the contacts already collected where the move put the pawn.
         /// </summary>
         private static bool TryPushJointly(
             in PawnSubstep substep,
@@ -501,6 +531,7 @@ namespace AlpineLib.Netcode.Replication {
             MovementProfile profile,
             CollisionWorld world,
             uint simTick,
+            ReadOnlySpan<CollisionContact> movedContacts,
             Span<CollisionContact> contacts,
             ref PawnCornerConstraints constraints,
             out Vector3 resolved) {
@@ -510,14 +541,18 @@ namespace AlpineLib.Netcode.Replication {
             resolved = moved;
 
             for (int pass = 0; pass < CornerPasses; pass++) {
-                CapsulePose pose = BuildPose(in resolved, profile, startedGrounded);
-                int contactCount = world.CollectContacts(in pose, simTick, contacts);
-                if (DeepestDepth(contacts.Slice(0, contactCount)) <= CornerSettledDepth) {
+                ReadOnlySpan<CollisionContact> found = movedContacts;
+                if (pass > 0) {
+                    CapsulePose pose = BuildPose(in resolved, profile, startedGrounded);
+                    found = contacts.Slice(0, world.CollectContacts(in pose, simTick, contacts));
+                }
+
+                if (DeepestDepth(found) <= CornerSettledDepth) {
                     constraints.DropInactive(in push);
                     return true;
                 }
 
-                constraints.Merge(contacts.Slice(0, contactCount), in push, startedGrounded);
+                constraints.Merge(found, in push, startedGrounded);
                 if (!constraints.TrySolve(out push) || PawnContactSolver.Dot(in push, in push) > reachSquared) {
                     return false;
                 }
@@ -533,9 +568,10 @@ namespace AlpineLib.Netcode.Replication {
         }
 
         /// <summary>
-        /// Takes back a substep's move into a gap the capsule does not fit. The vertical part is kept when, resolved
-        /// on its own, it ends no deeper than the substep began, so a pawn stopped at a gap's mouth still falls and
-        /// lands; otherwise the pawn stays where the substep started. Either way it stops horizontally.
+        /// Takes back a substep's move into a gap the capsule does not fit. A standing pawn stays where the substep
+        /// started, on the ground it stood on. For a falling one the vertical part is kept when, resolved on its own,
+        /// it ends no deeper than the substep began, so a pawn stopped at a gap's mouth still falls and lands;
+        /// otherwise it stays where the substep started. Either way it stops horizontally.
         /// </summary>
         private static void UndoMove(
             ref Vector3 position,
@@ -546,9 +582,15 @@ namespace AlpineLib.Netcode.Replication {
             MovementProfile profile,
             CollisionWorld world,
             uint simTick) {
+            if (startedGrounded) {
+                position = substep.Start;
+                velocity = new Vector3(0f, substep.MovedVelocity.Y, 0f);
+                return;
+            }
+
             var dropped = new Vector3(substep.Start.X, substep.Moved.Y, substep.Start.Z);
             var droppedVelocity = new Vector3(0f, substep.MovedVelocity.Y, 0f);
-            Depenetrate(ref dropped, ref droppedVelocity, startedGrounded, profile, world, simTick);
+            Depenetrate(ref dropped, ref droppedVelocity, startedGrounded, profile, world, simTick, Span<CollisionContact>.Empty, out int _);
             float allowed = MathF.Max(startResidual, CornerTolerance);
             if (DeepestDepthAt(in dropped, startedGrounded, profile, world, simTick) <= allowed) {
                 position = dropped;
@@ -608,7 +650,7 @@ namespace AlpineLib.Netcode.Replication {
         /// <summary>The deepest overlap the capsule has at <paramref name="position"/>, or zero when it is clear.</summary>
         private static float DeepestDepthAt(in Vector3 position, bool startedGrounded, MovementProfile profile, CollisionWorld world, uint simTick) {
             CapsulePose pose = BuildPose(in position, profile, startedGrounded);
-            return TryFindDeepestContact(in pose, world, simTick, out CollisionContact contact) ? contact.Depth : 0f;
+            return world.DeepestContactDepth(in pose, simTick);
         }
 
         private static float DeepestDepth(ReadOnlySpan<CollisionContact> contacts) {
@@ -705,9 +747,10 @@ namespace AlpineLib.Netcode.Replication {
         /// The feet stop where that capsule just clears, found by halving the clamp a fixed
         /// <see cref="SnapSearchSteps"/> times, so a pawn beside such a rock stands on its edge until it walks
         /// clear rather than being thrown sideways off it. Held feet are never lower than before the clamp, so
-        /// nothing accumulates from tick to tick. A clamp that leaves the capsule clear is untouched.
+        /// nothing accumulates from tick to tick. A clamp that leaves the capsule clear is untouched. Over a mover the
+        /// hold stops at <see cref="HeldOnMoverLimit"/>, where the next tick's ride probe still finds the platform.
         /// </remarks>
-        private static void LimitSnapDown(ref Vector3 position, float unsnappedY, MovementProfile profile, CollisionWorld world, uint simTick) {
+        private static void LimitSnapDown(ref Vector3 position, float unsnappedY, bool onMover, MovementProfile profile, CollisionWorld world, uint simTick) {
             float snappedDepth = DeepestDepthAt(in position, true, profile, world, simTick);
             if (snappedDepth <= CornerTolerance) {
                 return;
@@ -719,7 +762,8 @@ namespace AlpineLib.Netcode.Replication {
                 return;
             }
 
-            position.Y = SearchClearHeight(in position, unsnappedY, position.Y, true, allowed, profile, world, simTick);
+            float heldY = SearchClearHeight(in position, unsnappedY, position.Y, true, allowed, profile, world, simTick);
+            position.Y = onMover ? MathF.Min(heldY, (float)(position.Y + HeldOnMoverLimit)) : heldY;
         }
 
         /// <summary>
@@ -754,8 +798,10 @@ namespace AlpineLib.Netcode.Replication {
             Vector3 snapped = position;
             Vector3 cleared = position;
             Vector3 clearedVelocity = velocity;
-            if (Depenetrate(ref cleared, ref clearedVelocity, true, profile, world, simTick)) {
-                ResolveCorner(ref cleared, ref clearedVelocity, new PawnSubstep(snapped, snapped, velocity), true, profile, world, simTick);
+            Span<CollisionContact> snappedContacts = stackalloc CollisionContact[CollisionWorld.MaxContacts];
+            if (Depenetrate(ref cleared, ref clearedVelocity, true, profile, world, simTick, snappedContacts, out int snappedCount)) {
+                var stay = new PawnSubstep(snapped, snapped, velocity);
+                ResolveCorner(ref cleared, ref clearedVelocity, in stay, snappedContacts.Slice(0, snappedCount), true, profile, world, simTick);
             }
 
             float allowedStride = MathF.Max(strideLimit, HorizontalDistance(in snapped, in stepStart));
@@ -770,22 +816,52 @@ namespace AlpineLib.Netcode.Replication {
 
         /// <summary>
         /// A pawn that walked off its support this step changes from the shortened capsule to its whole one, whose
-        /// lower part — a step offset tall — may already be inside a low ledge the shortened one stepped over. When
-        /// it is more than <see cref="CornerTolerance"/> inside, it is lifted out now rather than pushed a tick later.
+        /// lower part — a step offset tall — may already be inside something the shortened one passed over: a low
+        /// object beside a ledge it walked off, or a steep bump it cannot stand on. When the whole capsule is more
+        /// than <see cref="CornerTolerance"/> inside, it is settled now rather than pushed a tick later.
         /// </summary>
         /// <remarks>
-        /// The shortened capsule was clear, so the whole one is clear once lifted by at most the step offset: the
-        /// lift is the lowest that clears, found by halving a fixed <see cref="SnapSearchSteps"/> times, straight up
-        /// like a step onto the ledge, so it adds no ground speed. Only the position moves; the fall it has just begun
-        /// carries on. When even the full lift does not clear (something overhead), the step's result stands.
+        /// First choice is the push the airborne passes would make on the next tick, taken now when it clears and
+        /// keeps the step within <paramref name="strideLimit"/> of <paramref name="stepStart"/>. Otherwise, when
+        /// nothing at all lies under the pawn's centre within a step offset above its feet — a walk-off, not a bump —
+        /// it is lifted straight up to the lowest height that clears, by halving a fixed
+        /// <see cref="SnapSearchSteps"/> times. Otherwise the step's result stands, as it did before. With open air
+        /// required under the centre, a lift never hoists a pawn up a steep face; neither runs on a jump.
         /// </remarks>
-        private static void SettleOffLedge(ref Vector3 position, MovementProfile profile, CollisionWorld world, uint simTick) {
+        private static void SettleOffLedge(
+            ref Vector3 position,
+            ref Vector3 velocity,
+            in Vector3 stepStart,
+            float strideLimit,
+            MovementProfile profile,
+            CollisionWorld world,
+            uint simTick) {
             if (DeepestDepthAt(in position, false, profile, world, simTick) <= CornerTolerance) {
+                return;
+            }
+
+            Vector3 pushed = position;
+            Vector3 pushedVelocity = velocity;
+            Span<CollisionContact> wholeContacts = stackalloc CollisionContact[CollisionWorld.MaxContacts];
+            if (Depenetrate(ref pushed, ref pushedVelocity, false, profile, world, simTick, wholeContacts, out int wholeCount)) {
+                var stay = new PawnSubstep(position, position, velocity);
+                ResolveCorner(ref pushed, ref pushedVelocity, in stay, wholeContacts.Slice(0, wholeCount), false, profile, world, simTick);
+            }
+
+            float allowedStride = MathF.Max(strideLimit, HorizontalDistance(in position, in stepStart));
+            bool pushClears = DeepestDepthAt(in pushed, false, profile, world, simTick) <= CornerTolerance;
+            if (pushClears && HorizontalDistance(in pushed, in stepStart) <= allowedStride) {
+                position = pushed;
+                velocity = pushedVelocity;
                 return;
             }
 
             var lifted = new Vector3(position.X, (float)(position.Y + profile.StepOffset), position.Z);
             if (DeepestDepthAt(in lifted, false, profile, world, simTick) > CornerTolerance) {
+                return;
+            }
+
+            if (world.TryGetSupport(position.X, position.Z, lifted.Y, position.Y, simTick, out SupportHit _)) {
                 return;
             }
 
@@ -845,7 +921,9 @@ namespace AlpineLib.Netcode.Replication {
             bool startedGrounded,
             MovementProfile profile,
             CollisionWorld world,
-            uint simTick) {
+            uint simTick,
+            out bool onMover) {
+            onMover = false;
             if (velocity.Y > 0f) {
                 return false;
             }
@@ -867,6 +945,7 @@ namespace AlpineLib.Netcode.Replication {
 
             position.Y = hit.Height;
             velocity.Y = 0f;
+            onMover = hit.IsMover;
             return true;
         }
 

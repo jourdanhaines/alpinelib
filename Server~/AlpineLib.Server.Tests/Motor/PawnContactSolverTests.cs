@@ -63,6 +63,18 @@ namespace AlpineLib.Server.Tests.Motor {
         }
 
         [Fact]
+        public void FacesAlmostOppositeAreAGapNotACorner() {
+            float tilt = MathF.PI / 180f;
+            var almostOpposite = new Vector3(-MathF.Cos(tilt), 0f, MathF.Sin(tilt));
+            Assert.False(PawnContactSolver.TrySolve(new[] { Vector3.UnitX, almostOpposite }, new[] { 0.05f, 0.05f }, out _));
+
+            float wide = 20f * MathF.PI / 180f;
+            var opposing = new Vector3(-MathF.Cos(wide), 0f, MathF.Sin(wide));
+            Assert.True(PawnContactSolver.TrySolve(new[] { Vector3.UnitX, opposing }, new[] { 0.05f, 0.05f }, out Vector3 push));
+            Assert.True(push.Length() < 0.5f, $"pushed {push.Length():F3} m along the gap");
+        }
+
+        [Fact]
         public void PushingIntoACornerAllocatesNothing() {
             MovementProfile profile = CornerGeometry.ShippedProfile();
             var world = new CollisionWorld(new SceneGeometry("Corner", 1u, CornerGeometry.Wedge(160.0, Vector2.Zero, Vector2.UnitX), Array.Empty<MoverDefinition>()), CornerGeometry.TickSeconds);
